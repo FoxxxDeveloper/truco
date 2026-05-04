@@ -1,0 +1,99 @@
+const express = require('express');
+const jwt = require('jsonwebtoken');
+const User = require('../models/User');
+const Ranking = require('../models/Ranking');
+const rateLimit = require('express-rate-limit');
+
+const router = express.Router();
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  message: { error: 'Too many requests, try again later' },
+});
+
+// POST /api/auth/register
+router.post('/register', authLimiter, async (req, res) => {
+  try {
+    const { username, email, password } = req.body;
+
+    if (!username || !email || !password) {
+      return res.status(400).json({ error: 'All fields required' });
+    }
+    if (username.length < 3 || username.length > 50) {
+      return res.status(400).json({ error: 'Username must be 3–50 characters' });
+    }
+    if (password.length < 6) {
+      return res.status(400).json({ error: 'Password must be at least 6 characters' });
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return res.status(400).json({ error: 'Invalid email' });
+    }
+
+    const existingUser = await User.findByEmail(email);
+    if (existingUser) return res.status(409).json({ error: 'Email already registered' });
+
+    const existingUsername = await User.findByUsername(username);
+    if (existingUsername) return res.status(409).json({ error: 'Username taken' });
+
+    const id = await User.create({ username, email, password });
+    // Create initial ranking entry for the new user
+    await Ranking.initForUser(id);
+    const user = await User.findById(id);
+
+    const token = jwt.sign(
+      { id: user.id, username: user.username, role: user.role || 'user' },
+      process.env.JWT_SECRET,
+      { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
+    );
+
+    return res.status(201).json({ token, user: User.toPublic(user) });
+  } catch (err) {
+    return res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// POST /api/auth/login
+router.post('/login', authLimiter, async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    if (!email || !password) return res.status(400).json({ error: 'All fields required' });
+
+    const user = await User.findByEmail(email);
+    if (!user) return res.status(401).json({ error: 'Invalid credentials' });
+
+    const valid = await User.verifyPassword(password, user.password);
+    if (!valid) return res.status(401).json({ error: 'Invalid credentials' });
+
+    if (user.status === 'banned') {
+      return res.status(403).json({ error: 'Account banned. Contact support.' });
+    }
+    if (user.status === 'suspended') {
+      return res.status(403).json({ error: 'Account suspended. Contact support.' });
+    }
+
+    const token = jwt.sign(
+      { id: user.id, username: user.username, role: user.role || 'user' },
+      process.env.JWT_SECRET,
+      { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
+    );
+
+    const publicUser = await User.findById(user.id);
+    return res.json({ token, user: User.toPublic(publicUser) });
+  } catch (err) {
+    return res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// GET /api/auth/me
+router.get('/me', require('../middleware/auth'), async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    return res.json({ user: User.toPublic(user) });
+  } catch (err) {
+    return res.status(500).json({ error: 'Server error' });
+  }
+});
+
+module.exports = router;
