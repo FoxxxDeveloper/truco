@@ -56,15 +56,37 @@ export const challengeApi = {
 };
 
 // ── Social ────────────────────────────────────────────────────────
+// ── Social ────────────────────────────────────────────────────────
 export const socialApi = {
-  getFriends:     ()        => api.get('/social/friends'),
-  addFriend:      (username)=> api.post('/social/friends', { username }),
-  acceptFriend:   (id)      => api.post(`/social/friends/${id}/accept`),
-  removeFriend:   (id)      => api.delete(`/social/friends/${id}`),
-  getMessages:    (userId)  => api.get(`/social/messages/${userId}`),
-  getNotifications: ()      => api.get('/social/notifications'),
-  markRead:       (id)      => api.patch(`/social/notifications/${id}/read`),
-  markAllRead:    ()        => api.post('/social/notifications/read-all'),
+  getFriends: () =>
+    api.get('/social/friends'),
+
+  getFriendRequests: () =>
+    api.get('/social/friends/requests'),
+
+  sendFriendRequest: (userId) =>
+    api.post(`/social/friends/${userId}/request`),
+
+  acceptFriend: (userId) =>
+    api.put(`/social/friends/${userId}/accept`),
+
+  removeFriend: (userId) =>
+    api.delete(`/social/friends/${userId}`),
+
+  getMessages: (userId) =>
+    api.get(`/social/messages/${userId}`),
+
+  getUnreadMessagesCount: () =>
+    api.get('/social/messages/unread-count'),
+
+  getNotifications: () =>
+    api.get('/social/notifications'),
+
+  markRead: (id) =>
+    api.put(`/social/notifications/${id}/read`),
+
+  markAllRead: () =>
+    api.put('/social/notifications/read-all'),
 };
 
 // ── Admin ─────────────────────────────────────────────────────────

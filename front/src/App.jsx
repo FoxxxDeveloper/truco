@@ -3,13 +3,12 @@ import { Toaster } from 'react-hot-toast';
 import { AuthProvider } from './context/AuthContext';
 import { GameProvider } from './context/GameContext';
 import ProtectedRoute from './components/ProtectedRoute';
-import Login    from './pages/Login';
+import Login from './pages/Login';
 import Register from './pages/Register';
-import Lobby    from './pages/Lobby';
-import Game     from './pages/Game';
-import Ranking  from './pages/Ranking';
-import Admin    from './pages/Admin';
-import './index.css';
+import Lobby from './pages/Lobby';
+import Game from './pages/Game';
+import Ranking from './pages/Ranking';
+import Admin from './pages/Admin';
 
 function App() {
   return (
@@ -18,16 +17,58 @@ function App() {
         <BrowserRouter>
           <Toaster
             position="top-center"
-            toastOptions={{ duration: 3000, style: { background: '#1e2a3a', color: '#fff' } }}
+            toastOptions={{
+              duration: 3000,
+              style: {
+                background: '#30210f',
+                color: '#fff4d8',
+                border: '1px solid rgba(255, 199, 87, .35)',
+                borderRadius: '16px',
+                boxShadow: '0 18px 45px rgba(0,0,0,.35)',
+              },
+            }}
           />
+
           <Routes>
-            <Route path="/"         element={<Navigate to="/lobby" replace />} />
-            <Route path="/login"    element={<Login />} />
+            <Route path="/" element={<Navigate to="/lobby" replace />} />
+            <Route path="/login" element={<Login />} />
             <Route path="/register" element={<Register />} />
-            <Route path="/lobby"    element={<ProtectedRoute><Lobby /></ProtectedRoute>} />
-            <Route path="/game"     element={<ProtectedRoute><Game /></ProtectedRoute>} />
-            <Route path="/ranking"  element={<ProtectedRoute><Ranking /></ProtectedRoute>} />
-            <Route path="/admin"    element={<ProtectedRoute><Admin /></ProtectedRoute>} />
+
+            <Route
+              path="/lobby"
+              element={
+                <ProtectedRoute>
+                  <Lobby />
+                </ProtectedRoute>
+              }
+            />
+
+            <Route
+              path="/game"
+              element={
+                <ProtectedRoute>
+                  <Game />
+                </ProtectedRoute>
+              }
+            />
+
+            <Route
+              path="/ranking"
+              element={
+                <ProtectedRoute>
+                  <Ranking />
+                </ProtectedRoute>
+              }
+            />
+
+            <Route
+              path="/admin"
+              element={
+                <ProtectedRoute>
+                  <Admin />
+                </ProtectedRoute>
+              }
+            />
           </Routes>
         </BrowserRouter>
       </GameProvider>

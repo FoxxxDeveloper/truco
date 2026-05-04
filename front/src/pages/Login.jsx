@@ -1,55 +1,108 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { useAuth } from '../context/AuthContext';
 import toast from 'react-hot-toast';
+import { useAuth } from '../context/AuthContext';
 
 export default function Login() {
-  const { login } = useAuth();
   const navigate = useNavigate();
-  const [form, setForm] = useState({ email: '', password: '' });
+  const { login } = useAuth();
+
+  const [form, setForm] = useState({
+    email: '',
+    password: '',
+  });
+
   const [loading, setLoading] = useState(false);
+
+  const handleChange = (e) => {
+    const { name, value } = e.target;
+
+    setForm((prev) => ({
+      ...prev,
+      [name]: value,
+    }));
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+
+    if (!form.email.trim() || !form.password.trim()) {
+      toast.error('Completá email y contraseña');
+      return;
+    }
+
     setLoading(true);
+
     try {
-      await login(form.email, form.password);
+      await login(form.email.trim(), form.password);
+      toast.success('Bienvenido');
       navigate('/lobby');
     } catch (err) {
-      toast.error(err.response?.data?.error || 'Error al iniciar sesión');
+      toast.error(err.response?.data?.error || 'No se pudo iniciar sesión');
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="auth-page">
-      <div className="auth-card">
-        <h1 className="auth-title">🃏 Truco</h1>
-        <h2>Iniciar Sesión</h2>
-        <form onSubmit={handleSubmit} className="auth-form">
-          <input
-            type="email"
-            placeholder="Email"
-            value={form.email}
-            onChange={e => setForm(f => ({ ...f, email: e.target.value }))}
-            required
-            autoComplete="email"
-          />
-          <input
-            type="password"
-            placeholder="Contraseña"
-            value={form.password}
-            onChange={e => setForm(f => ({ ...f, password: e.target.value }))}
-            required
-            autoComplete="current-password"
-          />
-          <button type="submit" disabled={loading} className="btn btn-primary">
+    <main className="auth-page">
+      <section className="auth-card animate-pop-in">
+
+
+     <div className="auth-logo">
+  <h1>Truco</h1>
+  <p>Truco Argentino Online</p>
+</div>
+
+        <form className="auth-form" onSubmit={handleSubmit}>
+          <div className="auth-title">
+            <h2>Iniciar sesión</h2>
+            <p>Entrá para jugar, competir y desafiar rivales.</p>
+          </div>
+
+          <div className="form-group">
+            <label className="form-label" htmlFor="email">
+              Email
+            </label>
+
+            <input
+              id="email"
+              className="form-input"
+              type="email"
+              name="email"
+              placeholder="tu@email.com"
+              value={form.email}
+              onChange={handleChange}
+              autoComplete="email"
+            />
+          </div>
+
+          <div className="form-group">
+            <label className="form-label" htmlFor="password">
+              Contraseña
+            </label>
+
+            <input
+              id="password"
+              className="form-input"
+              type="password"
+              name="password"
+              placeholder="••••••••"
+              value={form.password}
+              onChange={handleChange}
+              autoComplete="current-password"
+            />
+          </div>
+
+          <button className="btn btn-primary btn-block" disabled={loading}>
             {loading ? 'Entrando...' : 'Entrar'}
           </button>
         </form>
-        <p>¿No tenés cuenta? <Link to="/register">Registrate</Link></p>
-      </div>
-    </div>
+
+        <div className="auth-footer">
+          ¿No tenés cuenta? <Link to="/register">Registrate</Link>
+        </div>
+      </section>
+    </main>
   );
 }

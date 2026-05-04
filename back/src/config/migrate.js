@@ -1,10 +1,18 @@
 require('dotenv').config();
+
 const mysql2 = require('mysql2/promise');
 const logger = require('./logger');
 
 const DB_NAME = process.env.DB_NAME || 'truco_db';
 
-// ─── Core tables (original) ───────────────────────────────────────────────────
+/**
+ * Migración segura:
+ * - Crea tablas si no existen.
+ * - Agrega columnas faltantes si ya tenías una DB vieja.
+ * - Evita usar "ADD COLUMN IF NOT EXISTS" porque no siempre funciona en MySQL/MariaDB.
+ */
+
+// ─── Core tables ──────────────────────────────────────────────────────────────
 const CORE_TABLES = `
 CREATE TABLE IF NOT EXISTS usuarios (
   id                  INT AUTO_INCREMENT PRIMARY KEY,
@@ -19,7 +27,7 @@ CREATE TABLE IF NOT EXISTS usuarios (
   telegram_linked_at  DATETIME     DEFAULT NULL,
   created_at          DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at          DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-);
+) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS ranking (
   id          INT AUTO_INCREMENT PRIMARY KEY,
@@ -30,7 +38,7 @@ CREATE TABLE IF NOT EXISTS ranking (
   draws       INT NOT NULL DEFAULT 0,
   updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   FOREIGN KEY (user_id) REFERENCES usuarios(id) ON DELETE CASCADE
-);
+) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS partidas (
   id                  INT AUTO_INCREMENT PRIMARY KEY,
@@ -51,7 +59,7 @@ CREATE TABLE IF NOT EXISTS partidas (
   FOREIGN KEY (player1_id) REFERENCES usuarios(id),
   FOREIGN KEY (player2_id) REFERENCES usuarios(id),
   FOREIGN KEY (winner_id)  REFERENCES usuarios(id)
-);
+) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS historial_partidas (
   id               INT AUTO_INCREMENT PRIMARY KEY,
@@ -63,10 +71,10 @@ CREATE TABLE IF NOT EXISTS historial_partidas (
   envido_points_p2 INT NOT NULL DEFAULT 0,
   played_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (partida_id) REFERENCES partidas(id) ON DELETE CASCADE
-);
+) ENGINE=InnoDB;
 `;
 
-// ─── Wallet & economy tables ──────────────────────────────────────────────────
+// ─── Wallet & economy tables ─────────────────────────────────────────────────
 const WALLET_TABLES = `
 CREATE TABLE IF NOT EXISTS wallet (
   id          INT AUTO_INCREMENT PRIMARY KEY,
@@ -81,9 +89,9 @@ CREATE TABLE IF NOT EXISTS wallet (
 CREATE TABLE IF NOT EXISTS transactions (
   id               INT AUTO_INCREMENT PRIMARY KEY,
   user_id          INT            NOT NULL,
-  type             ENUM('deposit','withdrawal','bet_lock','bet_win','bet_refund','commission') NOT NULL,
+  type             ENUM('deposit','withdrawal','bet_lock','bet_win','bet_refund','commission','refund','prize') NOT NULL,
   amount           DECIMAL(15,2)  NOT NULL,
-  status           ENUM('pending','completed','cancelled','failed') NOT NULL DEFAULT 'pending',
+  status           ENUM('pending','completed','cancelled','failed','rejected') NOT NULL DEFAULT 'pending',
   reference        VARCHAR(255)   DEFAULT NULL,
   metadata         JSON           DEFAULT NULL,
   idempotency_key  VARCHAR(128)   DEFAULT NULL,
@@ -136,7 +144,7 @@ CREATE TABLE IF NOT EXISTS telegram_requests (
 ) ENGINE=InnoDB;
 `;
 
-// ─── Social tables ────────────────────────────────────────────────────────────
+// ─── Social tables ───────────────────────────────────────────────────────────
 const SOCIAL_TABLES = `
 CREATE TABLE IF NOT EXISTS friends (
   id           INT AUTO_INCREMENT PRIMARY KEY,
@@ -181,7 +189,7 @@ CREATE TABLE IF NOT EXISTS notifications (
 ) ENGINE=InnoDB;
 `;
 
-// ─── Admin tables ─────────────────────────────────────────────────────────────
+// ─── Admin tables ────────────────────────────────────────────────────────────
 const ADMIN_TABLES = `
 CREATE TABLE IF NOT EXISTS admin_logs (
   id          INT AUTO_INCREMENT PRIMARY KEY,
@@ -200,135 +208,138 @@ CREATE TABLE IF NOT EXISTS admin_logs (
 ) ENGINE=InnoDB;
 `;
 
-async function migrate() {
-  const conn = await mysql2.createConnection({
-    host:     process.env.DB_HOST     || 'localhost',
-    port:     parseInt(process.env.DB_PORT) || 3306,
-    user:     process.env.DB_USER     || 'root',
-    password: process.env.DB_PASSWORD || '',
-  });
-
-  await conn.query(
-    `CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`
+async function columnExists(conn, tableName, columnName) {
+  const [rows] = await conn.query(
+    `
+    SELECT COUNT(*) AS count
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = ?
+      AND TABLE_NAME = ?
+      AND COLUMN_NAME = ?
+    `,
+    [DB_NAME, tableName, columnName]
   );
-  logger.info(`Database '${DB_NAME}' ready`);
-  await conn.query(`USE \`${DB_NAME}\``);
 
-  const allStatements = [CORE_TABLES, WALLET_TABLES, SOCIAL_TABLES, ADMIN_TABLES]
-    .join('\n')
+  return Number(rows[0].count) > 0;
+}
+
+async function addColumnIfMissing(conn, tableName, columnName, definition) {
+  const exists = await columnExists(conn, tableName, columnName);
+
+  if (exists) {
+    logger.info(`SKIP: ${tableName}.${columnName} already exists`);
+    return;
+  }
+
+  await conn.query(`ALTER TABLE \`${tableName}\` ADD COLUMN ${definition}`);
+  logger.info(`ADD: ${tableName}.${columnName}`);
+}
+
+async function indexExists(conn, tableName, indexName) {
+  const [rows] = await conn.query(
+    `
+    SELECT COUNT(*) AS count
+    FROM INFORMATION_SCHEMA.STATISTICS
+    WHERE TABLE_SCHEMA = ?
+      AND TABLE_NAME = ?
+      AND INDEX_NAME = ?
+    `,
+    [DB_NAME, tableName, indexName]
+  );
+
+  return Number(rows[0].count) > 0;
+}
+
+async function addIndexIfMissing(conn, tableName, indexName, sql) {
+  const exists = await indexExists(conn, tableName, indexName);
+
+  if (exists) {
+    logger.info(`SKIP: index ${tableName}.${indexName} already exists`);
+    return;
+  }
+
+  await conn.query(sql);
+  logger.info(`ADD: index ${tableName}.${indexName}`);
+}
+
+async function runStatements(conn, sqlBlock) {
+  const statements = sqlBlock
     .split(';')
-    .map(s => s.trim())
-    .filter(s => s.length > 0);
+    .map((statement) => statement.trim())
+    .filter(Boolean);
 
-  for (const stmt of allStatements) {
-    await conn.query(stmt);
-    logger.info('OK: ' + stmt.split('\n')[0].trim().substring(0, 70));
+  for (const statement of statements) {
+    await conn.query(statement);
+    logger.info('OK: ' + statement.split('\n')[0].trim().substring(0, 80));
   }
-
-  // ── Additive migrations for existing databases ───────────────────
-  const ALTER_STMTS = [
-    `ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS role   ENUM('user','admin') NOT NULL DEFAULT 'user'`,
-    `ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS status ENUM('active','banned','suspended') NOT NULL DEFAULT 'active'`,
-  ];
-  for (const stmt of ALTER_STMTS) {
-    try { await conn.query(stmt); } catch { /* column already exists */ }
-  }
-
-  await conn.end();
-  logger.info('Migration complete ✓');
-  process.exit(0);
 }
 
-migrate().catch(err => {
-  logger.error('Migration failed: ' + err.message);
-  process.exit(1);
-});
+async function runAdditiveMigrations(conn) {
+  // usuarios: columnas nuevas para perfil/admin/telegram
+  await addColumnIfMissing(conn, 'usuarios', 'avatar', 'avatar VARCHAR(255) DEFAULT NULL');
+  await addColumnIfMissing(conn, 'usuarios', 'bio', 'bio VARCHAR(500) DEFAULT NULL');
+  await addColumnIfMissing(conn, 'usuarios', 'role', "role ENUM('user','admin') NOT NULL DEFAULT 'user'");
+  await addColumnIfMissing(conn, 'usuarios', 'status', "status ENUM('active','banned','suspended') NOT NULL DEFAULT 'active'");
+  await addColumnIfMissing(conn, 'usuarios', 'telegram_user_id', 'telegram_user_id BIGINT DEFAULT NULL');
+  await addColumnIfMissing(conn, 'usuarios', 'telegram_linked_at', 'telegram_linked_at DATETIME DEFAULT NULL');
 
-const DB_NAME = process.env.DB_NAME || 'truco_db';
+  // partidas: columnas nuevas para reconexión/challenges
+  await addColumnIfMissing(conn, 'partidas', 'status', "status ENUM('active','paused','abandoned','finished','cancelled') NOT NULL DEFAULT 'active'");
+  await addColumnIfMissing(conn, 'partidas', 'challenge_id', 'challenge_id VARCHAR(36) DEFAULT NULL');
+  await addColumnIfMissing(conn, 'partidas', 'p1_disconnected_at', 'p1_disconnected_at DATETIME DEFAULT NULL');
+  await addColumnIfMissing(conn, 'partidas', 'p2_disconnected_at', 'p2_disconnected_at DATETIME DEFAULT NULL');
 
-const TABLES = `
-CREATE TABLE IF NOT EXISTS usuarios (
-  id          INT AUTO_INCREMENT PRIMARY KEY,
-  username    VARCHAR(50)  NOT NULL UNIQUE,
-  email       VARCHAR(120) NOT NULL UNIQUE,
-  password    VARCHAR(255) NOT NULL,
-  avatar      VARCHAR(255) DEFAULT NULL,
-  created_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-);
+  // wallet: por si venías de una versión vieja
+  await addColumnIfMissing(conn, 'wallet', 'reserved', 'reserved DECIMAL(15,2) NOT NULL DEFAULT 0.00');
 
-CREATE TABLE IF NOT EXISTS ranking (
-  id          INT AUTO_INCREMENT PRIMARY KEY,
-  user_id     INT          NOT NULL UNIQUE,
-  elo         INT          NOT NULL DEFAULT 1000,
-  wins        INT          NOT NULL DEFAULT 0,
-  losses      INT          NOT NULL DEFAULT 0,
-  draws       INT          NOT NULL DEFAULT 0,
-  updated_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  FOREIGN KEY (user_id) REFERENCES usuarios(id) ON DELETE CASCADE
-);
-
-CREATE TABLE IF NOT EXISTS partidas (
-  id              INT AUTO_INCREMENT PRIMARY KEY,
-  room_id         VARCHAR(36)  NOT NULL UNIQUE,
-  player1_id      INT          NOT NULL,
-  player2_id      INT          NOT NULL,
-  winner_id       INT          DEFAULT NULL,
-  state           ENUM('waiting','playing','finished') NOT NULL DEFAULT 'waiting',
-  score_p1        INT          NOT NULL DEFAULT 0,
-  score_p2        INT          NOT NULL DEFAULT 0,
-  started_at      DATETIME     DEFAULT NULL,
-  finished_at     DATETIME     DEFAULT NULL,
-  created_at      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (player1_id) REFERENCES usuarios(id),
-  FOREIGN KEY (player2_id) REFERENCES usuarios(id),
-  FOREIGN KEY (winner_id)  REFERENCES usuarios(id)
-);
-
-CREATE TABLE IF NOT EXISTS historial_partidas (
-  id              INT AUTO_INCREMENT PRIMARY KEY,
-  partida_id      INT          NOT NULL,
-  round_number    INT          NOT NULL,
-  winner_id       INT          DEFAULT NULL,
-  truco_value     INT          NOT NULL DEFAULT 1,
-  envido_points_p1 INT         NOT NULL DEFAULT 0,
-  envido_points_p2 INT         NOT NULL DEFAULT 0,
-  played_at       DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (partida_id) REFERENCES partidas(id) ON DELETE CASCADE
-);
-`;
+  // Índices útiles si la tabla existía antes.
+  await addIndexIfMissing(
+    conn,
+    'wallet',
+    'uk_wallet_user',
+    'ALTER TABLE `wallet` ADD UNIQUE KEY uk_wallet_user (user_id)'
+  );
+}
 
 async function migrate() {
-  // Connect WITHOUT specifying a database so we can create it
-  const conn = await mysql2.createConnection({
-    host:     process.env.DB_HOST     || 'localhost',
-    port:     parseInt(process.env.DB_PORT) || 3306,
-    user:     process.env.DB_USER     || 'root',
-    password: process.env.DB_PASSWORD || '',
-  });
+  let conn;
 
-  // 1. Create database if it doesn't exist
-  await conn.query(
-    `CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`
-  );
-  logger.info(`Database '${DB_NAME}' ready`);
+  try {
+    conn = await mysql2.createConnection({
+      host: process.env.DB_HOST || 'localhost',
+      port: parseInt(process.env.DB_PORT, 10) || 3306,
+      user: process.env.DB_USER || 'root',
+      password: process.env.DB_PASSWORD || '',
+      multipleStatements: false,
+    });
 
-  // 2. Switch to it
-  await conn.query(`USE \`${DB_NAME}\``);
+    await conn.query(
+      `CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`
+    );
 
-  // 3. Create tables
-  const statements = TABLES.split(';').map(s => s.trim()).filter(s => s.length > 0);
-  for (const stmt of statements) {
-    await conn.query(stmt);
-    logger.info('OK: ' + stmt.split('\n')[0].trim().substring(0, 60));
+    logger.info(`Database '${DB_NAME}' ready`);
+
+    await conn.query(`USE \`${DB_NAME}\``);
+
+    await runStatements(conn, CORE_TABLES);
+    await runStatements(conn, WALLET_TABLES);
+    await runStatements(conn, SOCIAL_TABLES);
+    await runStatements(conn, ADMIN_TABLES);
+
+    await runAdditiveMigrations(conn);
+
+    logger.info('Migration complete ✓');
+  } catch (err) {
+    logger.error('Migration failed: ' + err.message);
+    console.error(err);
+    process.exitCode = 1;
+  } finally {
+    if (conn) {
+      await conn.end();
+    }
+
+    process.exit(process.exitCode || 0);
   }
-
-  await conn.end();
-  logger.info('Migration complete ✓');
-  process.exit(0);
 }
 
-migrate().catch(err => {
-  logger.error('Migration failed: ' + err.message);
-  process.exit(1);
-});
+migrate();

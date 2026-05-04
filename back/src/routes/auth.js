@@ -54,34 +54,78 @@ router.post('/register', authLimiter, async (req, res) => {
 });
 
 // POST /api/auth/login
+// POST /api/auth/login
 router.post('/login', authLimiter, async (req, res) => {
   try {
     const { email, password } = req.body;
-    if (!email || !password) return res.status(400).json({ error: 'All fields required' });
+
+    console.log('LOGIN BODY:', req.body);
+
+    if (!email || !password) {
+      return res.status(400).json({ error: 'All fields required' });
+    }
 
     const user = await User.findByEmail(email);
-    if (!user) return res.status(401).json({ error: 'Invalid credentials' });
+
+    console.log('LOGIN USER FOUND:', user ? {
+      id: user.id,
+      username: user.username,
+      email: user.email,
+      role: user.role,
+      status: user.status,
+      hasPassword: !!user.password,
+    } : null);
+
+    if (!user) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
 
     const valid = await User.verifyPassword(password, user.password);
-    if (!valid) return res.status(401).json({ error: 'Invalid credentials' });
+
+    console.log('LOGIN PASSWORD VALID:', valid);
+
+    if (!valid) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
 
     if (user.status === 'banned') {
       return res.status(403).json({ error: 'Account banned. Contact support.' });
     }
+
     if (user.status === 'suspended') {
       return res.status(403).json({ error: 'Account suspended. Contact support.' });
     }
 
+    if (!process.env.JWT_SECRET) {
+      console.error('JWT_SECRET is missing in .env');
+      return res.status(500).json({ error: 'JWT_SECRET not configured' });
+    }
+
     const token = jwt.sign(
-      { id: user.id, username: user.username, role: user.role || 'user' },
+      {
+        id: user.id,
+        username: user.username,
+        role: user.role || 'user',
+      },
       process.env.JWT_SECRET,
-      { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
+      {
+        expiresIn: process.env.JWT_EXPIRES_IN || '7d',
+      }
     );
 
     const publicUser = await User.findById(user.id);
-    return res.json({ token, user: User.toPublic(publicUser) });
+
+    return res.json({
+      token,
+      user: User.toPublic(publicUser),
+    });
   } catch (err) {
-    return res.status(500).json({ error: 'Server error' });
+    console.error('LOGIN ERROR:', err);
+
+    return res.status(500).json({
+      error: 'Server error',
+      detail: process.env.NODE_ENV === 'development' ? err.message : undefined,
+    });
   }
 });
 
