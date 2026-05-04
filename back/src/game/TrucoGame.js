@@ -84,7 +84,9 @@ class TrucoGame {
     this.trucoPendingBy = null;     // who announced last truco bet waiting for response
     this.trucoAccepted = false;
     this.trucoResolved = false;
-
+// If Envido is sung while Truco is pending, we store the pending Truco here
+// and restore it after Envido is resolved.
+this.pendingTrucoAfterEnvido = null;
     // Indicates if envido can still be sung (before first card played)
     this.envidoAvailable = true;
 
@@ -139,9 +141,7 @@ class TrucoGame {
     this.playedCards[this.currentMano].push({ playerId, card });
 
     // Mark envido as no longer available after first card in mano 0
-    if (this.currentMano === 0 && this.playedCards[0].length === 1 && !this.envidoResolved) {
-      this.envidoAvailable = false;
-    }
+   
 
     const manoCards = this.playedCards[this.currentMano];
 
@@ -161,80 +161,125 @@ class TrucoGame {
    * betType: 'envido' | 'real_envido' | 'falta_envido'
    */
   announceEnvido(playerId, betType) {
-    if (!['envido', 'real_envido', 'falta_envido'].includes(betType)) {
-      return { ok: false, error: 'Invalid bet type' };
-    }
-    if (this.envidoResolved) return { ok: false, error: 'Envido already resolved' };
-    if (!this.envidoAvailable) return { ok: false, error: 'Envido no longer available' };
-    if (this.state !== STATES.PLAYER_TURN && this.state !== STATES.ENVIDO_PENDING) {
-      return { ok: false, error: 'Cannot announce envido now' };
-    }
-
-    // If envido is pending, only the OTHER player can respond with a raise
-    if (this.state === STATES.ENVIDO_PENDING) {
-      if (playerId === this.envidoPendingBy) {
-        return { ok: false, error: 'Waiting for other player to respond' };
-      }
-      // Can raise with higher bet
-      const ENVIDO_LADDER = ['envido', 'real_envido', 'falta_envido'];
-      const lastIdx = ENVIDO_LADDER.indexOf(this.envidoBetStack[this.envidoBetStack.length - 1]);
-      const newIdx = ENVIDO_LADDER.indexOf(betType);
-      if (newIdx <= lastIdx) {
-        return { ok: false, error: 'Must raise higher than current bet' };
-      }
-    } else {
-      // Fresh envido announcement — only the current turn player can initiate
-      if (this.waitingForPlayer !== playerId) {
-        return { ok: false, error: 'Not your turn to sing envido' };
-      }
-    }
-
-    this.envidoBetStack.push(betType);
-    this.envidoPendingBy = playerId;
-    this.state = STATES.ENVIDO_PENDING;
-
-    return {
-      ok: true,
-      event: 'ENVIDO_ANNOUNCED',
-      betType,
-      by: playerId,
-      respondingPlayer: this._otherPlayer(playerId),
-    };
+  if (!['envido', 'real_envido', 'falta_envido'].includes(betType)) {
+    return { ok: false, error: 'Invalid bet type' };
   }
+
+  if (this.envidoResolved) {
+    return { ok: false, error: 'Envido already resolved' };
+  }
+
+  if (!this.envidoAvailable) {
+    return { ok: false, error: 'Envido no longer available' };
+  }
+
+  if (
+    this.state !== STATES.PLAYER_TURN &&
+    this.state !== STATES.ENVIDO_PENDING &&
+    this.state !== STATES.TRUCO_PENDING
+  ) {
+    return { ok: false, error: 'Cannot announce envido now' };
+  }
+
+  // If envido is pending, only the OTHER player can respond with a raise.
+  // Raising/answering an already-pending envido is allowed even if that player already played,
+  // because the envido was already opened legally.
+  if (this.state === STATES.ENVIDO_PENDING) {
+    if (Number(playerId) === Number(this.envidoPendingBy)) {
+      return { ok: false, error: 'Waiting for other player to respond' };
+    }
+
+    const ENVIDO_LADDER = ['envido', 'real_envido', 'falta_envido'];
+    const lastIdx = ENVIDO_LADDER.indexOf(this.envidoBetStack[this.envidoBetStack.length - 1]);
+    const newIdx = ENVIDO_LADDER.indexOf(betType);
+
+    if (newIdx <= lastIdx) {
+      return { ok: false, error: 'Must raise higher than current bet' };
+    }
+  } else {
+    const canEnvidoOnTurn =
+      this.state === STATES.PLAYER_TURN &&
+      Number(this.waitingForPlayer) === Number(playerId) &&
+      this._canPlayerInitiateEnvido(playerId);
+
+    const canEnvidoBeforeAnsweringTruco =
+      this.state === STATES.TRUCO_PENDING &&
+      Number(this.trucoPendingBy) !== Number(playerId) &&
+      this._canPlayerInitiateEnvido(playerId);
+
+    if (!canEnvidoOnTurn && !canEnvidoBeforeAnsweringTruco) {
+      return { ok: false, error: 'No podés cantar envido ahora' };
+    }
+
+    // If the player sings Envido while Truco is pending,
+    // save the Truco pending state to restore it after Envido is resolved.
+    if (this.state === STATES.TRUCO_PENDING) {
+      this.pendingTrucoAfterEnvido = {
+        trucoPendingBy: this.trucoPendingBy,
+        waitingForPlayer: this.waitingForPlayer,
+        trucoBetStack: [...this.trucoBetStack],
+      };
+    }
+  }
+
+  this.envidoBetStack.push(betType);
+  this.envidoPendingBy = playerId;
+  this.state = STATES.ENVIDO_PENDING;
+  this.waitingForPlayer = this._otherPlayer(playerId);
+
+  return {
+    ok: true,
+    event: 'ENVIDO_ANNOUNCED',
+    betType,
+    by: playerId,
+    respondingPlayer: this._otherPlayer(playerId),
+  };
+}
 
   /**
    * Respond to envido: 'accept' | 'reject'
    */
   respondEnvido(playerId, response) {
-    if (this.state !== STATES.ENVIDO_PENDING) {
-      return { ok: false, error: 'No envido pending' };
-    }
-    if (playerId === this.envidoPendingBy) {
-      return { ok: false, error: 'You announced this bet, wait for opponent' };
-    }
-
-    if (response === 'accept') {
-      return this._resolveEnvido(true);
-    }
-
-    if (response === 'reject') {
-      // The announcer wins the rejection stake
-      const rejectionPts = this.envidoBetStack.length === 1 ? 1 : this._getEnvidoRejectionPts();
-      this.envidoResolved = true;
-      this.envidoWinner = this.envidoPendingBy;
-      this.scores[this.envidoPendingBy] += rejectionPts;
-
-      this.state = STATES.PLAYER_TURN;
-      return {
-        ok: true,
-        event: 'ENVIDO_REJECTED',
-        winner: this.envidoPendingBy,
-        points: rejectionPts,
-      };
-    }
-
-    return { ok: false, error: 'Invalid response' };
+  if (this.state !== STATES.ENVIDO_PENDING) {
+    return { ok: false, error: 'No envido pending' };
   }
+
+  if (Number(playerId) === Number(this.envidoPendingBy)) {
+    return { ok: false, error: 'You announced this bet, wait for opponent' };
+  }
+
+  if (response === 'accept') {
+    return this._resolveEnvido(true);
+  }
+
+  if (response === 'reject') {
+    const rejectionPts =
+      this.envidoBetStack.length === 1
+        ? 1
+        : this._getEnvidoRejectionPts();
+
+    this.envidoResolved = true;
+    this.envidoWinner = this.envidoPendingBy;
+    this.scores[this.envidoPendingBy] += rejectionPts;
+
+    const gameOverInfo = this._checkGameOver();
+
+    if (!gameOverInfo.gameOver) {
+      this._restorePendingTrucoAfterEnvidoOrPlayerTurn();
+    }
+
+    return {
+      ok: true,
+      event: 'ENVIDO_REJECTED',
+      winner: this.envidoPendingBy,
+      points: rejectionPts,
+      scores: { ...this.scores },
+      ...gameOverInfo,
+    };
+  }
+
+  return { ok: false, error: 'Invalid response' };
+}
 
   /**
    * Announce a truco bet.
@@ -267,10 +312,10 @@ class TrucoGame {
       }
     }
 
-    this.trucoBetStack.push(betType);
-    this.trucoPendingBy = playerId;
-    this.state = STATES.TRUCO_PENDING;
-
+   this.trucoBetStack.push(betType);
+this.trucoPendingBy = playerId;
+this.state = STATES.TRUCO_PENDING;
+this.waitingForPlayer = this._otherPlayer(playerId);
     return {
       ok: true,
       event: 'TRUCO_ANNOUNCED',
@@ -373,12 +418,27 @@ class TrucoGame {
       case 'playCard':
         return this.state === STATES.PLAYER_TURN && isMyTurn;
 
-      case 'envido':
-      case 'real_envido':
-      case 'falta_envido':
-        if (!this.envidoAvailable || this.envidoResolved) return false;
-        if (this.state === STATES.ENVIDO_PENDING) return playerId !== this.envidoPendingBy;
-        return this.state === STATES.PLAYER_TURN && isMyTurn;
+     case 'envido':
+case 'real_envido':
+case 'falta_envido':
+  if (!this.envidoAvailable || this.envidoResolved) return false;
+
+  if (this.state === STATES.ENVIDO_PENDING) {
+    return Number(playerId) !== Number(this.envidoPendingBy);
+  }
+
+  if (this.state === STATES.TRUCO_PENDING) {
+    return (
+      Number(playerId) !== Number(this.trucoPendingBy) &&
+      this._canPlayerInitiateEnvido(playerId)
+    );
+  }
+
+  return (
+    this.state === STATES.PLAYER_TURN &&
+    isMyTurn &&
+    this._canPlayerInitiateEnvido(playerId)
+  );
 
       case 'respondEnvido':
         return this.state === STATES.ENVIDO_PENDING && playerId !== this.envidoPendingBy;
@@ -695,7 +755,43 @@ class TrucoGame {
     }
     return { gameOver: false };
   }
+_playerAlreadyPlayedInCurrentMano(playerId) {
+  const currentMano = this.currentMano ?? 0;
+  const cards = this.playedCards?.[currentMano] || [];
 
+  return cards.some((played) => Number(played.playerId) === Number(playerId));
+}
+
+_canPlayerInitiateEnvido(playerId) {
+  // Envido can only be initiated during the first mano of the round.
+  if (this.currentMano !== 0) return false;
+
+  // Cannot initiate Envido after already playing your first card.
+  if (this._playerAlreadyPlayedInCurrentMano(playerId)) return false;
+
+  // Already resolved or disabled.
+  if (this.envidoResolved || !this.envidoAvailable) return false;
+
+  return true;
+}
+
+_restorePendingTrucoAfterEnvidoOrPlayerTurn() {
+  if (this.pendingTrucoAfterEnvido) {
+    this.trucoPendingBy = this.pendingTrucoAfterEnvido.trucoPendingBy;
+    this.waitingForPlayer = this.pendingTrucoAfterEnvido.waitingForPlayer;
+    this.trucoBetStack = [...this.pendingTrucoAfterEnvido.trucoBetStack];
+    this.pendingTrucoAfterEnvido = null;
+    this.state = STATES.TRUCO_PENDING;
+    return;
+  }
+
+  this.state = STATES.PLAYER_TURN;
+
+  // If nobody is waiting for some reason, fallback to mano player.
+  if (!this.waitingForPlayer) {
+    this.waitingForPlayer = this.manoPlayer;
+  }
+}
   _otherPlayer(playerId) {
     return this.players.find(p => p !== playerId);
   }
@@ -712,41 +808,51 @@ class TrucoGame {
   }
 
   _resolveEnvido(accepted) {
-    if (!accepted) return this.respondEnvido; // handled outside
-    const stake = getEnvidoStake(
-      this.envidoBetStack,
-      this.scores[this.players[0]],
-      this.scores[this.players[1]],
-      this.config.puntosMaximos
-    );
+  if (!accepted) return this.respondEnvido;
 
-    const p1 = this.players[0];
-    const p2 = this.players[1];
-    const pts1 = calculateEnvido(this.hands[p1]);
-    const pts2 = calculateEnvido(this.hands[p2]);
+  const stake = getEnvidoStake(
+    this.envidoBetStack,
+    this.scores[this.players[0]],
+    this.scores[this.players[1]],
+    this.config.puntosMaximos
+  );
 
-    let winner;
-    if (pts1 > pts2) winner = p1;
-    else if (pts2 > pts1) winner = p2;
-    else winner = this.manoPlayer; // tie → mano player wins
+  const p1 = this.players[0];
+  const p2 = this.players[1];
 
-    this.envidoResolved = true;
-    this.envidoWinner = winner;
-    this.scores[winner] += stake;
-    this.state = STATES.PLAYER_TURN;
+  const pts1 = calculateEnvido(this.hands[p1]);
+  const pts2 = calculateEnvido(this.hands[p2]);
 
-    const gameOverInfo = this._checkGameOver();
+  let winner;
 
-    return {
-      ok: true,
-      event: 'ENVIDO_RESOLVED',
-      winner,
-      points: stake,
-      envidoPoints: { [p1]: pts1, [p2]: pts2 },
-      scores: { ...this.scores },
-      ...gameOverInfo,
-    };
+  if (pts1 > pts2) {
+    winner = p1;
+  } else if (pts2 > pts1) {
+    winner = p2;
+  } else {
+    winner = this.manoPlayer;
   }
+
+  this.envidoResolved = true;
+  this.envidoWinner = winner;
+  this.scores[winner] += stake;
+
+  const gameOverInfo = this._checkGameOver();
+
+  if (!gameOverInfo.gameOver) {
+    this._restorePendingTrucoAfterEnvidoOrPlayerTurn();
+  }
+
+  return {
+    ok: true,
+    event: 'ENVIDO_RESOLVED',
+    winner,
+    points: stake,
+    envidoPoints: { [p1]: pts1, [p2]: pts2 },
+    scores: { ...this.scores },
+    ...gameOverInfo,
+  };
+}
 }
 
 module.exports = { TrucoGame, STATES };

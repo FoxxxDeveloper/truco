@@ -12,7 +12,8 @@ import NotificationBell from '../components/social/NotificationBell';
 
 export default function Lobby() {
   const { user, logout } = useAuth();
-  const { inQueue, joinQueue, leaveQueue, gameState, attachListeners } = useGame();
+  const [activeRoom, setActiveRoom] = useState(null);
+ const { inQueue, joinQueue, leaveQueue, gameState, roomId, attachListeners,reconnectGame  } = useGame();
   const navigate = useNavigate();
   const [myRank, setMyRank] = useState(null);
   const [gameOptions, setGameOptions] = useState({ puntosMaximos: 30, florHabilitada: false, modo: 'casual' });
@@ -26,12 +27,16 @@ export default function Lobby() {
   useEffect(() => {
     attachListeners();
   }, [attachListeners]);
-
+useEffect(() => {
+  setActiveRoom(localStorage.getItem('truco_active_room'));
+}, []);
   // Navigate to game when match found
-  useEffect(() => {
-    if (gameState) navigate('/game');
-  }, [gameState, navigate]);
-
+useEffect(() => {
+  if (gameState || roomId) {
+    console.log('LOBBY navegando a /game', { roomId, gameState });
+    navigate('/game');
+  }
+}, [gameState, roomId, navigate]);
   useEffect(() => {
     rankingApi.getMe().then(r => setMyRank(r.data)).catch(() => {});
   }, []);
@@ -70,13 +75,18 @@ export default function Lobby() {
                 exit={{ opacity: 0, y: -20 }}
                 className="ready-state"
               >
-                <div className="cards-preview">
-                  {['1_espada','3_oro','7_espada'].map(id => (
-                    <div key={id} className={`card-preview suit-${id.split('_')[1]}`}>
-                      <span>{id.split('_')[0]}</span>
-                    </div>
-                  ))}
-                </div>
+               <div className="cards-preview">
+  {[
+    { value: 1, suit: 'espada', icon: '⚔️' },
+    { value: 3, suit: 'oro', icon: '🪙' },
+    { value: 7, suit: 'espada', icon: '⚔️' },
+  ].map(card => (
+    <div key={`${card.value}_${card.suit}`} className={`card-preview suit-${card.suit}`}>
+      <span className="preview-value">{card.value}</span>
+      <span className="preview-suit">{card.icon}</span>
+    </div>
+  ))}
+</div>
                 <h2>¿Listo para jugar?</h2>
                 <p>Encontramos un oponente automáticamente</p>
 
@@ -110,7 +120,17 @@ export default function Lobby() {
                     </select>
                   </label>
                 </div>
-
+{activeRoom && !inQueue && (
+  <button
+    className="btn btn-primary-alt btn-large"
+    onClick={() => {
+      reconnectGame(activeRoom);
+      navigate('/game');
+    }}
+  >
+    Volver a partida en curso
+  </button>
+)}
                 <button className="btn btn-primary btn-large" onClick={handleJoin}>
                   Buscar Partida
                 </button>

@@ -12,22 +12,52 @@ import Chat          from '../components/game/Chat';
 import GameOverModal from '../components/game/GameOverModal';
 import ReconnectOverlay from '../components/game/ReconnectOverlay';
 import TurnTimer     from '../components/game/TurnTimer';
-
+import toast from 'react-hot-toast';
 export default function Game() {
+
   const { user }   = useAuth();
   const navigate   = useNavigate();
   const {
-    gameState, opponent, gameOver, chatMessages, lastEvent,
+   gameState, opponent, gameOver, chatMessages, lastEvent,
+  reconnectGame, reconnectingGame,
     playCard, envido, envidoResp, truco, trucoResp, flor, florResp, irseAlMazo,
     sendMessage, sendReaction,
     turnTimer,          // { playerId, seconds } from 'game:turnTimer' event
     opponentDisconnected, // { playerId, gracePeriodSecs } | null
   } = useGame();
-
+ const [autoReconnectTried, setAutoReconnectTried] = useState(false);
   // Redirect if no game
-  useEffect(() => {
-    if (!gameState && !gameOver) navigate('/lobby');
-  }, [gameState, gameOver, navigate]);
+ useEffect(() => {
+  if (gameState || gameOver) return;
+
+  const activeRoom = localStorage.getItem('truco_active_room');
+
+  if (activeRoom && !autoReconnectTried) {
+    setAutoReconnectTried(true);
+    reconnectGame(activeRoom);
+    return;
+  }
+
+  if (!activeRoom) {
+    const t = setTimeout(() => {
+      navigate('/lobby');
+    }, 1200);
+
+    return () => clearTimeout(t);
+  }
+}, [gameState, gameOver, autoReconnectTried, reconnectGame, navigate]);
+useEffect(() => {
+  if (!reconnectingGame) return;
+
+  const t = setTimeout(() => {
+    if (!gameState) {
+      toast.error('No se pudo reconectar automáticamente. Volvé desde el lobby.');
+      navigate('/lobby');
+    }
+  }, 5000);
+
+  return () => clearTimeout(t);
+}, [reconnectingGame, gameState, navigate]);
 
   // Show "abandoned" result in gameOver modal
   useEffect(() => {
@@ -36,8 +66,16 @@ export default function Game() {
     }
   }, [lastEvent]);
 
-  if (!gameState) return <div className="loading-screen"><div className="spinner" /></div>;
-
+if (!gameState) {
+  return (
+    <div className="loading-screen">
+      <div className="spinner" />
+      <p style={{ color: 'var(--text-soft)', marginTop: 12 }}>
+        {reconnectingGame ? 'Reconectando a tu partida...' : 'Cargando partida...'}
+      </p>
+    </div>
+  );
+}
   const myId       = user.id;
   const isMyTurn   = gameState.waitingForPlayer === myId;
   const myHand     = gameState.myHand || [];
