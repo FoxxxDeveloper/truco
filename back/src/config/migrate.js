@@ -331,7 +331,6 @@ async function migrate() {
     logger.info('Migration complete ✓');
   } catch (err) {
     logger.error('Migration failed: ' + err.message);
-    console.error(err);
     process.exitCode = 1;
   } finally {
     if (conn) {

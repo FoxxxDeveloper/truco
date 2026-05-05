@@ -14,6 +14,8 @@ const WalletService = require('./walletService');
 const logger = require('../config/logger');
 
 const CHALLENGE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+const MIN_BET    = 2500;   // créditos mínimos
+const COMMISSION = 0.10;   // 10% de comisión para la casa
 
 const ChallengeService = {
   /**
@@ -23,6 +25,7 @@ const ChallengeService = {
   async createChallenge({ creatorId, amount, isPrivate = false, opponentId = null, gameConfig = {} }) {
     const n = parseFloat(amount);
     if (!isFinite(n) || n <= 0) throw new Error('Invalid amount');
+    if (n < MIN_BET) throw new Error(`El monto mínimo para apostar es ${MIN_BET} créditos`);
 
     const challengeId = uuidv4();
     const expiresAt   = new Date(Date.now() + CHALLENGE_TTL_MS);
@@ -34,13 +37,14 @@ const ChallengeService = {
 
       await conn.execute(
         `INSERT INTO challenges
-           (id, creator_id, opponent_id, amount, is_private, game_config, creator_tx_id, expires_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+           (id, creator_id, opponent_id, amount, commission_rate, is_private, game_config, creator_tx_id, expires_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           challengeId,
           creatorId,
           opponentId || null,
           n,
+          COMMISSION,
           isPrivate ? 1 : 0,
           JSON.stringify(gameConfig),
           creatorTxId,
@@ -94,7 +98,7 @@ const ChallengeService = {
         creatorId:      ch.creator_id,
         opponentId,
         commissionRate: parseFloat(ch.commission_rate),
-        gameConfig:     ch.game_config ? JSON.parse(ch.game_config) : {},
+        gameConfig:     typeof ch.game_config === 'string' ? JSON.parse(ch.game_config) : (ch.game_config || {}),
       };
     });
   },
@@ -195,6 +199,7 @@ const ChallengeService = {
 
   /** Get open (public) challenges, optionally by amount range */
   async listOpen({ minAmount = 0, maxAmount = 999999, limit = 20 } = {}) {
+    const safeLimit = Math.min(Math.max(parseInt(limit) || 20, 1), 50);
     return query(
       `SELECT c.id, c.amount, c.commission_rate, c.expires_at, c.game_config,
               u.username AS creator_username, u.avatar AS creator_avatar,
@@ -204,8 +209,8 @@ const ChallengeService = {
        LEFT JOIN ranking r ON r.user_id = c.creator_id
        WHERE c.status = 'open' AND c.is_private = 0
          AND c.amount BETWEEN ? AND ? AND c.expires_at > NOW()
-       ORDER BY c.created_at DESC LIMIT ?`,
-      [minAmount, maxAmount, Math.min(parseInt(limit) || 20, 50)]
+       ORDER BY c.created_at DESC LIMIT ${safeLimit}`,
+      [minAmount, maxAmount]
     );
   },
 };

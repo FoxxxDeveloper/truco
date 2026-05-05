@@ -1,10 +1,15 @@
 /**
- * chatHandler — In-game chat with rate limiting and spam prevention.
+ * chatHandler — In-game chat with rate limiting, spam prevention and
+ * room-membership validation.
+ *
+ * Security: validates that the sender is an active player in the target room
+ * before broadcasting any message or reaction.
  *
  * Rate limit: max 2 messages per 2 seconds per socket (sliding window).
- * Banned words list is intentionally minimal — extend as needed.
  */
-const { securityLog } = require('../../config/logger');
+const { securityLog }  = require('../../config/logger');
+const gameSession      = require('../../services/gameSession');
+const { isValidRoomId } = require('../../middleware/errorHandler');
 
 // Per-socket message timestamps (sliding window rate limiter)
 // socketId → number[] (timestamps in ms)
@@ -33,11 +38,46 @@ function checkRateLimit(socketId) {
   return true;
 }
 
+/**
+ * Returns the active game if roomId is valid and user is one of its players.
+ * Returns null otherwise (and optionally emits chat:error).
+ */
+async function _getAuthorizedGame(socket, user, roomId) {
+  if (!isValidRoomId(roomId)) {
+    socket.emit('chat:error', { error: 'Sala inválida' });
+    return null;
+  }
+
+  const game = await gameSession.getGame(roomId);
+  if (!game) {
+    socket.emit('chat:error', { error: 'Sala no encontrada' });
+    return null;
+  }
+
+  // Ensure the sender is actually a player in this game
+  const playerIds = game.players.map(Number);
+  if (!playerIds.includes(Number(user.id))) {
+    securityLog('chat_unauthorized_room', {
+      userId: user.id,
+      socketId: socket.id,
+      roomId,
+    });
+    socket.emit('chat:error', { error: 'No sos jugador de esta partida' });
+    return null;
+  }
+
+  return game;
+}
+
 function registerChatHandlers(io, socket, user) {
-  socket.on('chat:message', ({ roomId, text }) => {
-    if (!roomId || typeof text !== 'string') return;
+  socket.on('chat:message', async ({ roomId, text }) => {
+    if (typeof text !== 'string') return;
     const sanitized = text.trim().substring(0, MAX_LEN);
     if (!sanitized) return;
+
+    // Room membership check
+    const game = await _getAuthorizedGame(socket, user, roomId);
+    if (!game) return;
 
     // Rate limit
     if (!checkRateLimit(socket.id)) {
@@ -54,23 +94,27 @@ function registerChatHandlers(io, socket, user) {
     }
 
     io.to(roomId).emit('chat:message', {
-      from: { id: user.id, username: user.username },
-      text: sanitized,
-      timestamp: Date.now(),
+      from:      { id: user.id, username: user.username },
+      text:      sanitized,
+      createdAt: new Date().toISOString(),
     });
   });
 
-  socket.on('chat:reaction', ({ roomId, reaction }) => {
+  socket.on('chat:reaction', async ({ roomId, reaction }) => {
     const allowed = ['👍','👎','😂','😤','🃏','🔥','👏','🤔'];
     if (!allowed.includes(reaction)) return;
+
+    // Room membership check
+    const game = await _getAuthorizedGame(socket, user, roomId);
+    if (!game) return;
 
     // Reactions also rate-limited
     if (!checkRateLimit(socket.id)) return;
 
     io.to(roomId).emit('chat:reaction', {
-      from: { id: user.id, username: user.username },
+      from:      { id: user.id, username: user.username },
       reaction,
-      timestamp: Date.now(),
+      createdAt: new Date().toISOString(),
     });
   });
 

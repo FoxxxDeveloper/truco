@@ -10,32 +10,41 @@ import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '../../context/AuthContext';
 import { getSocket } from '../../services/socket';
+import { socialApi } from '../../services/api';
 
-const API = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+import { BellIcon, GameIcon, CoinIcon, UsersIcon, SwordsIcon } from '../Icons';
 
-const typeIcon = (type) =>
-  ({ game_result: '🎮', deposit: '💰', withdrawal: '💸', friend_request: '👥', challenge: '⚔️' })[type] || '🔔';
+const TYPE_LABEL = {
+  game_result: 'Partida',
+  deposit: 'Depósito',
+  withdrawal: 'Retiro',
+  friend_request: 'Amigos',
+  challenge: 'Desafío',
+};
+
+const TYPE_ICON = {
+  game_result: <GameIcon size={16} />,
+  deposit: <CoinIcon size={16} />,
+  withdrawal: <CoinIcon size={16} />,
+  friend_request: <UsersIcon size={16} />,
+  challenge: <SwordsIcon size={16} />,
+};
 
 export default function NotificationBell() {
-  const { token }       = useAuth();
+  const { user }        = useAuth();
   const socket          = getSocket();
   const [open, setOpen] = useState(false);
   const [notifications, setNotifications] = useState([]);
   const ref             = useRef(null);
 
-  const authHeaders = { Authorization: `Bearer ${token}` };
-
   const fetchNotifs = async () => {
     try {
-      const res = await fetch(`${API}/api/social/notifications`, { headers: authHeaders });
-      if (res.ok) {
-        const data = await res.json();
-        setNotifications(data.notifications || []);
-      }
+      const res = await socialApi.getNotifications();
+      setNotifications(res.data.notifications || []);
     } catch {}
   };
 
-  useEffect(() => { fetchNotifs(); }, [token]);
+  useEffect(() => { if (user) fetchNotifs(); }, [user]);
 
   useEffect(() => {
     if (!socket) return;
@@ -56,12 +65,12 @@ export default function NotificationBell() {
   const unreadCount = notifications.filter(n => !n.read_at).length;
 
   const markAllRead = async () => {
-    await fetch(`${API}/api/social/notifications/read-all`, { method: 'PUT', headers: authHeaders });
+    await socialApi.markAllRead().catch(() => {});
     setNotifications(prev => prev.map(n => ({ ...n, read_at: n.read_at || new Date().toISOString() })));
   };
 
   const markOneRead = async (id) => {
-    await fetch(`${API}/api/social/notifications/${id}/read`, { method: 'PUT', headers: authHeaders });
+    await socialApi.markRead(id).catch(() => {});
     setNotifications(prev => prev.map(n => n.id === id ? { ...n, read_at: new Date().toISOString() } : n));
   };
 
@@ -70,11 +79,12 @@ export default function NotificationBell() {
       <button
         onClick={() => { setOpen(o => !o); if (!open && unreadCount > 0) setTimeout(markAllRead, 2000); }}
         style={{
-          position: 'relative', background: '#243447', border: 'none', borderRadius: 8,
-          padding: '8px 12px', cursor: 'pointer', fontSize: 18,
+          position: 'relative', background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.1)',
+          borderRadius: 8, padding: '6px 10px', cursor: 'pointer', display: 'flex', alignItems: 'center',
+          color: 'var(--clr-cream, #fff4d8)',
         }}
       >
-        🔔
+        <BellIcon size={18} />
         {unreadCount > 0 && (
           <span style={{
             position: 'absolute', top: 2, right: 2,
@@ -122,7 +132,9 @@ export default function NotificationBell() {
                   }}
                 >
                   <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
-                    <span style={{ fontSize: 18 }}>{typeIcon(n.type)}</span>
+                    <span style={{ fontSize: 16, color: '#9ca3af', flexShrink: 0, paddingTop: 1 }}>
+                      {TYPE_ICON[n.type] || <BellIcon size={16} />}
+                    </span>
                     <div>
                       <div style={{ color: '#fff', fontSize: 13, fontWeight: 600 }}>{n.title}</div>
                       <div style={{ color: '#9ca3af', fontSize: 12 }}>{n.body}</div>

@@ -21,11 +21,14 @@ const financialLimit = rateLimit({
 
 router.use(authMiddleware);
 
-// GET /api/wallet — current balance
+// GET /api/wallet — current balance (auto-creates wallet if missing)
 router.get('/', async (req, res) => {
   try {
-    const wallet = await WalletService.getBalance(req.user.id);
-    if (!wallet) return res.status(404).json({ error: 'Wallet not found' });
+    let wallet = await WalletService.getBalance(req.user.id);
+    if (!wallet) {
+      await WalletService.init(req.user.id);
+      wallet = { balance: 0, reserved: 0 };
+    }
     return res.json(wallet);
   } catch (err) {
     logger.error('wallet GET: ' + err.message);

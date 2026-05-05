@@ -4,6 +4,30 @@
 import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 
+/**
+ * Returns true if `newBet` is a valid envido raise given the current `stack`.
+ * Mirrors the same logic in back/src/game/rules/envido.js.
+ */
+function canRaiseEnvido(stack, newBet) {
+  if (stack.includes('falta_envido')) return false;
+  if (newBet === 'falta_envido') return true;
+  if (newBet === 'real_envido') {
+    if (stack.includes('real_envido')) return false;
+    return stack.every(b => b === 'envido');
+  }
+  if (newBet === 'envido') {
+    if (stack.includes('real_envido')) return false;
+    return stack.length <= 1 && stack.every(b => b === 'envido');
+  }
+  return false;
+}
+
+const ENVIDO_BET_LABELS = {
+  envido: 'Envido',
+  real_envido: 'Real Envido',
+  falta_envido: 'Falta Envido',
+};
+
 export default function ActionButtons({
   gameState,
   myId,
@@ -83,16 +107,31 @@ const canEnvidoAsTrucoResponse =
     trucoBetStack.length === 0 &&
     isMyTurn;
 
+  // Allow raising (retruco/vale4) while in TRUCO_PENDING if it's our turn to respond
+  const canTrucoRaise =
+    !trucoResolved &&
+    state === 'TRUCO_PENDING' &&
+    isMyTrucoTurn &&
+    trucoBetStack.length < 3;
+
   const canMazo =
     (state === 'PLAYER_TURN' && isMyTurn) ||
     (isPendingTruco && isMyTrucoTurn);
 
+  // Flor: the backend sends p1HasFlor/p2HasFlor indexed to game.players array
+  // We need to know if THIS player has flor
+  const myPlayerIndex = (gameState.players || []).findIndex(
+    (pid) => Number(pid) === Number(myId)
+  );
+  const myHasFlor =
+    myPlayerIndex === 0 ? florState?.p1HasFlor : florState?.p2HasFlor;
+
   const canFlor =
     florHabilitada &&
+    !!myHasFlor &&
     !florState?.resolved &&
     state === 'PLAYER_TURN' &&
-    isMyTurn &&
-    florState?.p1HasFlor !== undefined;
+    isMyTurn;
 
   const nextTrucoBet =
     trucoBetStack.length === 0
@@ -101,17 +140,13 @@ const canEnvidoAsTrucoResponse =
         ? 'vale4'
         : 'retruco';
 
-  const nextEnvidoBet =
-    envidoBetStack.length === 0
-      ? 'envido'
-      : envidoBetStack.includes('real_envido')
-        ? 'falta_envido'
-        : envidoBetStack[envidoBetStack.length - 1] === 'envido'
-          ? 'real_envido'
-          : null;
-
   const currentTrucoBet = trucoBetStack[trucoBetStack.length - 1] || 'truco';
   const currentEnvidoBet = envidoBetStack[envidoBetStack.length - 1] || 'envido';
+
+  // All valid raises for the responding player given the current envido stack
+  const validEnvidoRaises = ['envido', 'real_envido', 'falta_envido'].filter(
+    bet => canRaiseEnvido(envidoBetStack, bet)
+  );
 
   /**
    * Si me cantaron Truco y todavía puedo cantar Envido,
@@ -268,7 +303,7 @@ const canEnvidoAsTrucoResponse =
                   Quiero
                 </button>
 
-                {nextTrucoBet !== null && trucoBetStack.length < 3 && (
+                {canTrucoRaise && nextTrucoBet !== null && (
                   <button
                     className="btn btn-raise"
                     onClick={() => onTruco(nextTrucoBet)}
@@ -313,16 +348,15 @@ const canEnvidoAsTrucoResponse =
                   Quiero
                 </button>
 
-                {nextEnvidoBet && (
+                {validEnvidoRaises.map(bet => (
                   <button
+                    key={bet}
                     className="btn btn-raise"
-                    onClick={() => onEnvido(nextEnvidoBet)}
+                    onClick={() => onEnvido(bet)}
                   >
-                    {nextEnvidoBet === 'real_envido'
-                      ? 'Real Envido'
-                      : 'Falta Envido'}
+                    {ENVIDO_BET_LABELS[bet]}
                   </button>
-                )}
+                ))}
 
                 <button
                   className="btn btn-reject"

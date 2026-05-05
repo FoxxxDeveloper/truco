@@ -16,10 +16,12 @@ const authRoutes      = require('./routes/auth');
 const rankingRoutes   = require('./routes/ranking');
 const walletRoutes    = require('./routes/wallet');
 const challengeRoutes = require('./routes/challenge');
+const battlesRoutes   = require('./routes/battles');
 const profileRoutes   = require('./routes/profile');
 const socialRoutes    = require('./routes/social');
 const telegramRoutes  = require('./routes/telegram');
 const adminRoutes     = require('./routes/admin');
+const BattleService   = require('./services/battleService');
 
 const app    = express();
 const server = http.createServer(app);
@@ -69,6 +71,7 @@ app.use('/api/auth',       authRoutes);
 app.use('/api/ranking',    rankingRoutes);
 app.use('/api/wallet',     walletRoutes);
 app.use('/api/challenges', challengeRoutes);
+app.use('/api/battles',    battlesRoutes);
 app.use('/api/profile',    profileRoutes);
 app.use('/api/social',     socialRoutes);
 app.use('/api/telegram',   telegramRoutes);
@@ -100,6 +103,11 @@ async function start() {
   if (!dbOk) {
     logger.warn('Starting without DB connection — some features unavailable');
   }
+
+  // Cron: expire old battle rooms every 2 minutes
+  setInterval(() => {
+    BattleService.expireOld().catch(err => logger.error('Expire battles cron: ' + err.message));
+  }, 2 * 60 * 1000);
 
   server.listen(PORT, () => {
     logger.info(`Truco server running on port ${PORT} [${process.env.NODE_ENV || 'development'}]`);

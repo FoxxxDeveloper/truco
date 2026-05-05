@@ -9,7 +9,7 @@ const logger      = require('../../config/logger');
  */
 function registerMatchmakingHandlers(io, socket, user) {
   // ── JOIN QUEUE ──────────────────────────────────────────────────
-  socket.on('queue:join', (options = {}) => {
+  socket.on('queue:join', async (options = {}) => {
     const gameOptions = normalizeGameOptions(options);
 
     logger.info(
@@ -29,16 +29,15 @@ function registerMatchmakingHandlers(io, socket, user) {
       options: gameOptions,
     });
 
-    /**
-     * IMPORTANT:
-     * tryMatch debe buscar un rival compatible con estas opciones.
-     * Si tu service todavía no acepta argumentos, abajo te dejo cómo corregirlo.
-     */
     const match = matchmaking.tryMatch(gameOptions);
 
     if (!match) return;
 
-    _startMatch(io, match);
+    try {
+      await _startMatch(io, match);
+    } catch (err) {
+      logger.error(`_startMatch error: ${err.message}`);
+    }
   });
 
   // ── LEAVE QUEUE ─────────────────────────────────────────────────
@@ -50,6 +49,19 @@ function registerMatchmakingHandlers(io, socket, user) {
   socket.on('disconnect', () => {
     matchmaking.dequeue(user.id);
   });
+}
+
+/**
+ * Find the currently-connected socket for a user by their userId.
+ * Used as a fallback when the socket ID stored in the queue is stale
+ * (the player's socket may have reconnected with a new ID between enqueue
+ * and the async completion of _startMatch).
+ */
+function findUserSocket(io, userId) {
+  for (const [, s] of io.sockets.sockets) {
+    if (s.data?.user?.id === userId) return s;
+  }
+  return null;
 }
 
 function normalizeGameOptions(options = {}) {
@@ -123,43 +135,58 @@ async function _startMatch(io, { player1, player2, roomId }) {
     logger.error('DB game create failed: ' + err.message);
   }
 
-  // Join both sockets to the room
-  const p1Socket = io.sockets.sockets.get(player1.socketId);
-  const p2Socket = io.sockets.sockets.get(player2.socketId);
+  // Join both sockets to the room.
+  // First try the cached socket ID; fall back to searching by userId in case
+  // the player's socket reconnected with a new ID during the async DB operations.
+  const p1Socket = io.sockets.sockets.get(player1.socketId) || findUserSocket(io, player1.userId);
+  const p2Socket = io.sockets.sockets.get(player2.socketId) || findUserSocket(io, player2.userId);
 
-  if (p1Socket) p1Socket.join(roomId);
-  if (p2Socket) p2Socket.join(roomId);
+  if (!p1Socket || !p2Socket) {
+    logger.error(
+      `Match aborted: socket missing. P1=${player1.userId}(${!!p1Socket}) P2=${player2.userId}(${!!p2Socket}) room=${roomId}`
+    );
+    // Re-enqueue whichever player is still connected so they can find a new match
+    if (p1Socket) {
+      matchmaking.enqueue(p1Socket.id, player1.userId, player1.username, player1.elo, player1.gameOptions);
+      p1Socket.emit('queue:joined', { queueSize: matchmaking.getQueueSize(), options: player1.gameOptions });
+    }
+    if (p2Socket) {
+      matchmaking.enqueue(p2Socket.id, player2.userId, player2.username, player2.elo, player2.gameOptions);
+      p2Socket.emit('queue:joined', { queueSize: matchmaking.getQueueSize(), options: player2.gameOptions });
+    }
+    await gameSession.deleteGame(roomId);
+    return;
+  }
+
+  p1Socket.join(roomId);
+  p2Socket.join(roomId);
 
   // Track userId → roomId for disconnect handling
   trackUserRoom(player1.userId, roomId);
   trackUserRoom(player2.userId, roomId);
 
   // Send personalized views
-  if (p1Socket) {
-    p1Socket.emit('game:start', {
-      roomId,
-      opponent: {
-        id: player2.userId,
-        username: player2.username,
-        elo: player2.elo,
-      },
-      gameState: game.getPlayerView(player1.userId),
-      gameOptions,
-    });
-  }
+  p1Socket.emit('game:start', {
+    roomId,
+    opponent: {
+      id: player2.userId,
+      username: player2.username,
+      elo: player2.elo,
+    },
+    gameState: game.getPlayerView(player1.userId),
+    gameOptions,
+  });
 
-  if (p2Socket) {
-    p2Socket.emit('game:start', {
-      roomId,
-      opponent: {
-        id: player1.userId,
-        username: player1.username,
-        elo: player1.elo,
-      },
-      gameState: game.getPlayerView(player2.userId),
-      gameOptions,
-    });
-  }
+  p2Socket.emit('game:start', {
+    roomId,
+    opponent: {
+      id: player1.userId,
+      username: player1.username,
+      elo: player1.elo,
+    },
+    gameState: game.getPlayerView(player2.userId),
+    gameOptions,
+  });
 
   // Start initial turn timer
   if (startTurnTimerPublic) {

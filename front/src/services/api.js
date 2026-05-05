@@ -39,6 +39,13 @@ export const rankingApi = {
   getMe:     ()            => api.get('/ranking/me'),
 };
 
+// ── Profile ───────────────────────────────────────────────────────
+export const profileApi = {
+  getMe:      ()          => api.get('/profile/me'),
+  getUser:    (username)  => api.get(`/profile/${encodeURIComponent(username)}`),
+  update:     (body)      => api.put('/profile', body),
+};
+
 // ── Wallet ────────────────────────────────────────────────────────
 export const walletApi = {
   getBalance:     ()           => api.get('/wallet'),
@@ -89,6 +96,19 @@ export const socialApi = {
     api.put('/social/notifications/read-all'),
 };
 
+// ── Battles ───────────────────────────────────────────────────────
+export const battleApi = {
+  list:        ()           => api.get('/battles'),
+  create:      (body)       => api.post('/battles', body),
+  listMine:    ()           => api.get('/battles/my'),
+  getActive:   ()           => api.get('/battles/active'),
+  getHistory:  (p = {})     => api.get('/battles/history', { params: p }),
+  getById:     (id)         => api.get(`/battles/${id}`),
+  accept:      (id)         => api.post(`/battles/${id}/accept`),
+  cancel:      (id)         => api.delete(`/battles/${id}`),
+  joinPrivate: (code)       => api.post(`/battles/join/${encodeURIComponent(code)}`),
+};
+
 // ── Admin ─────────────────────────────────────────────────────────
 export const adminApi = {
   dashboard:        ()         => api.get('/admin/dashboard'),
@@ -99,6 +119,7 @@ export const adminApi = {
   rejectDeposit:    (id, body) => api.post(`/admin/transactions/${id}/reject`, body),
   listGames:        (p = {})   => api.get('/admin/games', { params: p }),
   adjustBalance:    (userId, body) => api.post(`/admin/users/${userId}/adjust`, body),
+  listLogs:         (p = {})   => api.get('/admin/logs', { params: p }),
 };
 
 export default api;

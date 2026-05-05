@@ -15,7 +15,7 @@
 
 const { Deck } = require('./Deck');
 const { compareCards, getCardPower } = require('./rules/cardHierarchy');
-const { calculateEnvido, getEnvidoStake } = require('./rules/envido');
+const { calculateEnvido, canRaiseEnvido, getEnvidoStake } = require('./rules/envido');
 const {
   getTrucoStake,
   getTrucoRejectionStake,
@@ -70,14 +70,17 @@ class TrucoGame {
     this.playedCards = [[], [], []]; // 3 manos, each [{playerId, card}]
     this.currentMano = 0;           // 0, 1, 2
     this.manoResults = [];          // 'p1' | 'p2' | 'tie'
-    this.manoFirst = 0;             // index in this.players who plays first this mano
+    this.manoFirst = this.manoPlayer;  // playerId who plays first in this mano (for parda tiebreaks)
     this.waitingForPlayer = null;   // playerId whose turn it is
 
     // Envido
     this.envidoBetStack = [];
-    this.envidoPendingBy = null;    // who announced last envido bet
+    this.envidoPendingBy = null;           // who announced last envido bet
     this.envidoResolved = false;
     this.envidoWinner = null;
+    // Saved when envido is initiated from PLAYER_TURN so we can restore the
+    // correct card-play turn after envido resolves, regardless of who raised last.
+    this.envidoOriginalTurnPlayer = null;
 
     // Truco
     this.trucoBetStack = [];
@@ -140,8 +143,9 @@ this.pendingTrucoAfterEnvido = null;
     const card = hand.splice(cardIdx, 1)[0];
     this.playedCards[this.currentMano].push({ playerId, card });
 
-    // Mark envido as no longer available after first card in mano 0
-   
+    // envidoAvailable stays true until mano 0 ends (both cards played).
+    // Per Argentine Truco rules: you can call envido as long as you haven't played
+    // your own first card in mano 0. The per-player check is in _canPlayerInitiateEnvido.
 
     const manoCards = this.playedCards[this.currentMano];
 
@@ -189,12 +193,8 @@ this.pendingTrucoAfterEnvido = null;
       return { ok: false, error: 'Waiting for other player to respond' };
     }
 
-    const ENVIDO_LADDER = ['envido', 'real_envido', 'falta_envido'];
-    const lastIdx = ENVIDO_LADDER.indexOf(this.envidoBetStack[this.envidoBetStack.length - 1]);
-    const newIdx = ENVIDO_LADDER.indexOf(betType);
-
-    if (newIdx <= lastIdx) {
-      return { ok: false, error: 'Must raise higher than current bet' };
+    if (!canRaiseEnvido(this.envidoBetStack, betType)) {
+      return { ok: false, error: 'Esa subida no es válida en esta cadena de envido' };
     }
   } else {
     const canEnvidoOnTurn =
@@ -219,6 +219,13 @@ this.pendingTrucoAfterEnvido = null;
         waitingForPlayer: this.waitingForPlayer,
         trucoBetStack: [...this.trucoBetStack],
       };
+    }
+
+    // Save whose card-play turn it was before envido started (PLAYER_TURN path).
+    // This ensures the turn returns to the correct player regardless of how many
+    // raises happened — the last envidoPendingBy is not necessarily the turn player.
+    if (this.state === STATES.PLAYER_TURN && this.envidoOriginalTurnPlayer === null) {
+      this.envidoOriginalTurnPlayer = this.waitingForPlayer;
     }
   }
 
@@ -268,11 +275,14 @@ this.pendingTrucoAfterEnvido = null;
       this._restorePendingTrucoAfterEnvidoOrPlayerTurn();
     }
 
-    return {
+  return {
       ok: true,
       event: 'ENVIDO_REJECTED',
       winner: this.envidoPendingBy,
       points: rejectionPts,
+      betStack: [...this.envidoBetStack],
+      accepted: false,
+      manoPlayerId: this.manoPlayer,
       scores: { ...this.scores },
       ...gameOverInfo,
     };
@@ -332,7 +342,7 @@ this.waitingForPlayer = this._otherPlayer(playerId);
     if (this.state !== STATES.TRUCO_PENDING) {
       return { ok: false, error: 'No truco pending' };
     }
-    if (playerId === this.trucoPendingBy) {
+    if (Number(playerId) === Number(this.trucoPendingBy)) {
       return { ok: false, error: 'You announced this bet, wait for opponent' };
     }
 
@@ -582,16 +592,20 @@ case 'falta_envido':
       scores: this.scores,
       currentMano: this.currentMano,
       manoResults: this.manoResults,
+      manoFirst: this.manoFirst,
+      manoPlayer: this.manoPlayer,
       waitingForPlayer: this.waitingForPlayer,
       envidoBetStack: this.envidoBetStack,
       envidoResolved: this.envidoResolved,
       envidoWinner: this.envidoWinner,
+      envidoAvailable: this.envidoAvailable,
+      envidoPendingBy: this.envidoPendingBy,
+      envidoOriginalTurnPlayer: this.envidoOriginalTurnPlayer,
       trucoBetStack: this.trucoBetStack,
       trucoAccepted: this.trucoAccepted,
       trucoResolved: this.trucoResolved,
       trucoPendingBy: this.trucoPendingBy,
-      envidoPendingBy: this.envidoPendingBy,
-      envidoAvailable: this.envidoAvailable,
+      pendingTrucoAfterEnvido: this.pendingTrucoAfterEnvido,
       playedCards: this.playedCards.map(mano =>
         mano.map(e => ({ playerId: e.playerId, card: e.card.toJSON() }))
       ),
@@ -629,6 +643,7 @@ case 'falta_envido':
 
     this.state = STATES.PLAYER_TURN;
     this.waitingForPlayer = this.manoPlayer;
+    this.manoFirst = this.manoPlayer; // who opens mano 0
   }
 
   _resolveMano() {
@@ -651,8 +666,16 @@ case 'falta_envido':
 
     // Next mano
     this.currentMano++;
-    // Winner of mano plays first next; tie → same order
-    this.waitingForPlayer = manoWinner || this.waitingForPlayer;
+    // Envido is definitely unavailable in mano 1+ (belt-and-suspenders)
+    if (!this.envidoResolved) this.envidoAvailable = false;
+    // Winner of mano plays first next; tie → same player who opened this mano goes again
+    if (manoWinner) {
+      this.waitingForPlayer = manoWinner;
+    } else {
+      this.waitingForPlayer = this.manoFirst;
+    }
+    // Track who opens next mano (used for tie resolution)
+    this.manoFirst = this.waitingForPlayer;
     this.state = STATES.PLAYER_TURN;
 
     return {
@@ -785,26 +808,38 @@ _restorePendingTrucoAfterEnvidoOrPlayerTurn() {
     return;
   }
 
+  // Restore the card-play turn to whoever had it before envido started.
+  // envidoOriginalTurnPlayer is saved in announceEnvido when coming from PLAYER_TURN,
+  // so multiple raises (mano→envido, pie raises, mano raises…) don't corrupt the result.
   this.state = STATES.PLAYER_TURN;
-
-  // If nobody is waiting for some reason, fallback to mano player.
-  if (!this.waitingForPlayer) {
-    this.waitingForPlayer = this.manoPlayer;
-  }
+  this.waitingForPlayer = this.envidoOriginalTurnPlayer || this.manoPlayer;
 }
   _otherPlayer(playerId) {
     return this.players.find(p => p !== playerId);
   }
 
   _getEnvidoRejectionPts() {
-    // When rejecting after envido was already called once, rejector loses previous stake
+    // Official rejection stakes per the traditional rules:
+    //   envido                         → no quiero = 1
+    //   real_envido                    → no quiero = 1
+    //   falta_envido                   → no quiero = 1
+    //   envido + envido                → no quiero = 2
+    //   envido + real_envido           → no quiero = 2  (the envido is already "in")
+    //   envido + falta_envido          → no quiero = 2
+    //   envido + envido + real_envido  → no quiero = 4
+    //   envido + envido + falta_envido → no quiero = 4
+    //   real_envido + falta_envido     → no quiero = 3  (real_envido already accepted)
     const stack = this.envidoBetStack;
     if (stack.length === 0) return 0;
-    // One envido: lose 1. envido+envido announced: lose 2. etc.
-    const lastTwoBets = stack.slice(-2);
-    if (lastTwoBets[lastTwoBets.length - 1] === 'falta_envido') return stack.length > 1 ? 2 : 1;
-    if (lastTwoBets[lastTwoBets.length - 1] === 'real_envido') return stack.length > 1 ? 3 : 2;
-    return 1;
+    if (stack.length === 1) return 1; // any single first bet: rejection = 1
+
+    // For stacks of 2+, points already "committed" before the last raise:
+    // The rejector must pay what was already accepted/implied before the final raise.
+    const withoutLast = stack.slice(0, -1);
+    // Recursively get what the second-to-last state was worth if accepted
+    // We use getEnvidoStake on the sub-stack with same scores (scores don't matter here
+    // since we only care about non-falta bets for the rejection calculation)
+    return getEnvidoStake(withoutLast, 0, 0, this.config.puntosMaximos);
   }
 
   _resolveEnvido(accepted) {
@@ -843,12 +878,32 @@ _restorePendingTrucoAfterEnvidoOrPlayerTurn() {
     this._restorePendingTrucoAfterEnvidoOrPlayerTurn();
   }
 
+  // Argentine Truco reveal rules:
+  // Pie (non-mano) always shows their count first.
+  // Mano only reveals their count if they won; otherwise says "son buenas".
+  const manoId = this.manoPlayer;
+  const pieId  = this._otherPlayer(manoId);
+  const manoWon = String(winner) === String(manoId);
+  const allPts  = { [p1]: pts1, [p2]: pts2 };
+  const shownPoints = {
+    [String(pieId)]: allPts[pieId],
+    ...(manoWon ? { [String(manoId)]: allPts[manoId] } : {}),
+  };
+  const envidoReveal = {
+    manoPlayerId: manoId,
+    sonBuenas:    !manoWon,
+    shownPoints,
+  };
+
   return {
     ok: true,
     event: 'ENVIDO_RESOLVED',
     winner,
     points: stake,
+    betStack: [...this.envidoBetStack],
+    accepted: true,
     envidoPoints: { [p1]: pts1, [p2]: pts2 },
+    envidoReveal,
     scores: { ...this.scores },
     ...gameOverInfo,
   };

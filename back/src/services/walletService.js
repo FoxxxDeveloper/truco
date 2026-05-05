@@ -187,6 +187,12 @@ const WalletService = {
   async lockFunds(userId, amount, reference, conn) {
     amount = assertPositive(amount, 'lock amount');
 
+    // Auto-create wallet if doesn't exist (e.g. legacy users)
+    await conn.execute(
+      'INSERT IGNORE INTO wallet (user_id, balance, reserved) VALUES (?, 0.00, 0.00)',
+      [userId]
+    );
+
     const [rows] = await conn.execute(
       'SELECT balance, reserved FROM wallet WHERE user_id = ? FOR UPDATE',
       [userId]
@@ -313,12 +319,15 @@ const WalletService = {
 
   /** Transaction history for a user (paginated). */
   async getHistory(userId, { limit = 20, offset = 0 } = {}) {
-    limit  = Math.min(Math.max(parseInt(limit)  || 20, 1), 100);
-    offset = Math.max(parseInt(offset) || 0, 0);
+    // Interpolate as safe integer literals — mysql2 prepared-statement placeholders
+    // for LIMIT/OFFSET are unreliable on some MySQL 8 configurations.
+    const safeLimit  = Math.min(Math.max(parseInt(limit,  10) || 20, 1), 100);
+    const safeOffset = Math.max(parseInt(offset, 10) || 0, 0);
     return query(
       `SELECT id, type, amount, status, reference, created_at
-       FROM transactions WHERE user_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?`,
-      [userId, limit, offset]
+       FROM transactions WHERE user_id = ? ORDER BY created_at DESC
+       LIMIT ${safeLimit} OFFSET ${safeOffset}`,
+      [userId]
     );
   },
 };

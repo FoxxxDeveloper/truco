@@ -3,7 +3,7 @@ const { calculateNewRatings } = require('../../services/elo');
 const Game              = require('../../models/Game');
 const Ranking           = require('../../models/Ranking');
 const matchmaking       = require('../../services/matchmaking');
-const ChallengeService  = require('../../services/challengeService');
+const BattleService     = require('../../services/battleService');
 const NotificationService = require('../../services/notificationService');
 const logger            = require('../../config/logger');
 const { securityLog }   = require('../../config/logger');
@@ -142,6 +142,25 @@ async function _autoNextRound(io, roomId) {
   });
 }
 
+/**
+ * Fetches the game for a room and verifies that the requesting user is a participant.
+ * Emits game:error and logs a security event if not.
+ * Returns the game object on success, null otherwise.
+ */
+async function getAuthorizedGame(socket, user, roomId, eventName) {
+  const game = await gameSession.getGame(roomId);
+  if (!game) {
+    socket.emit('game:error', { error: 'Game not found' });
+    return null;
+  }
+  if (!game.players.includes(user.id)) {
+    securityLog('game_unauthorized_room', { userId: user.id, roomId, event: eventName });
+    socket.emit('game:error', { error: 'No sos jugador de esta partida' });
+    return null;
+  }
+  return game;
+}
+
 function registerGameHandlers(io, socket, user) {
   // ── RECONNECT TO EXISTING GAME ───────────────────────────────────
   socket.on('game:reconnect', async ({ roomId }) => {
@@ -166,8 +185,8 @@ function registerGameHandlers(io, socket, user) {
       securityLog('invalid_input', { userId: user.id, event: 'game:playCard', roomId, cardId });
       return socket.emit('game:error', { error: 'Invalid input' });
     }
-    const game = await gameSession.getGame(roomId);
-    if (!game) return socket.emit('game:error', { error: 'Game not found' });
+    const game = await getAuthorizedGame(socket, user, roomId, 'game:playCard');
+    if (!game) return;
 
     const result = game.playCard(user.id, cardId);
     if (!result.ok) {
@@ -206,8 +225,8 @@ function registerGameHandlers(io, socket, user) {
       securityLog('invalid_input', { userId: user.id, event: 'game:envido', roomId, betType });
       return socket.emit('game:error', { error: 'Invalid input' });
     }
-    const game = await gameSession.getGame(roomId);
-    if (!game) return socket.emit('game:error', { error: 'Game not found' });
+    const game = await getAuthorizedGame(socket, user, roomId, 'game:envido');
+    if (!game) return;
 
     const result = game.announceEnvido(user.id, betType);
     if (!result.ok) {
@@ -230,8 +249,8 @@ function registerGameHandlers(io, socket, user) {
       securityLog('invalid_input', { userId: user.id, event: 'game:envidoResponse', roomId, response });
       return socket.emit('game:error', { error: 'Invalid input' });
     }
-    const game = await gameSession.getGame(roomId);
-    if (!game) return socket.emit('game:error', { error: 'Game not found' });
+    const game = await getAuthorizedGame(socket, user, roomId, 'game:envidoResponse');
+    if (!game) return;
 
     const result = game.respondEnvido(user.id, response);
     if (!result.ok) {
@@ -259,8 +278,8 @@ function registerGameHandlers(io, socket, user) {
       securityLog('invalid_input', { userId: user.id, event: 'game:truco', roomId, betType });
       return socket.emit('game:error', { error: 'Invalid input' });
     }
-    const game = await gameSession.getGame(roomId);
-    if (!game) return socket.emit('game:error', { error: 'Game not found' });
+    const game = await getAuthorizedGame(socket, user, roomId, 'game:truco');
+    if (!game) return;
 
     const result = game.announceTruco(user.id, betType);
     if (!result.ok) {
@@ -283,8 +302,8 @@ function registerGameHandlers(io, socket, user) {
       securityLog('invalid_input', { userId: user.id, event: 'game:trucoResponse', roomId, response });
       return socket.emit('game:error', { error: 'Invalid input' });
     }
-    const game = await gameSession.getGame(roomId);
-    if (!game) return socket.emit('game:error', { error: 'Game not found' });
+    const game = await getAuthorizedGame(socket, user, roomId, 'game:trucoResponse');
+    if (!game) return;
 
     const result = game.respondTruco(user.id, response);
     if (!result.ok) {
@@ -313,8 +332,8 @@ function registerGameHandlers(io, socket, user) {
   // ── IRSE AL MAZO ─────────────────────────────────────────────────
   socket.on('game:irseAlMazo', async ({ roomId }) => {
     if (!isValidRoomId(roomId)) return socket.emit('game:error', { error: 'Invalid input' });
-    const game = await gameSession.getGame(roomId);
-    if (!game) return socket.emit('game:error', { error: 'Game not found' });
+    const game = await getAuthorizedGame(socket, user, roomId, 'game:irseAlMazo');
+    if (!game) return;
 
     const result = game.irseAlMazo(user.id);
     if (!result.ok) {
@@ -343,8 +362,8 @@ function registerGameHandlers(io, socket, user) {
   // ── ANNOUNCE FLOR ────────────────────────────────────────────────
   socket.on('game:flor', async ({ roomId }) => {
     if (!isValidRoomId(roomId)) return socket.emit('game:error', { error: 'Invalid input' });
-    const game = await gameSession.getGame(roomId);
-    if (!game) return socket.emit('game:error', { error: 'Game not found' });
+    const game = await getAuthorizedGame(socket, user, roomId, 'game:flor');
+    if (!game) return;
 
     const result = game.announceFlor(user.id);
     if (!result.ok) {
@@ -375,8 +394,8 @@ function registerGameHandlers(io, socket, user) {
       securityLog('invalid_input', { userId: user.id, event: 'game:florResponse', roomId, response });
       return socket.emit('game:error', { error: 'Invalid input' });
     }
-    const game = await gameSession.getGame(roomId);
-    if (!game) return socket.emit('game:error', { error: 'Game not found' });
+    const game = await getAuthorizedGame(socket, user, roomId, 'game:florResponse');
+    if (!game) return;
 
     const result = game.respondFlor(user.id, response);
     if (!result.ok) {
@@ -395,6 +414,25 @@ function registerGameHandlers(io, socket, user) {
     } else {
       broadcastGameState(io, roomId, game);
       _startTurnTimer(io, roomId, game);
+    }
+  });
+
+  // ── VOLUNTARY ABANDON ────────────────────────────────────────────
+  // Player explicitly chose to leave the game (e.g. pressed "Abandonar").
+  // Skip the grace period and forfeit immediately.
+  socket.on('game:abandon', async ({ roomId: rid }) => {
+    if (!rid || !isValidRoomId(rid)) return;
+    try {
+      const game = await gameSession.getGame(rid);
+      if (!game) return;
+      if (!game.players.includes(user.id)) {
+        securityLog('abandon_not_in_game', { userId: user.id, roomId: rid });
+        return;
+      }
+      logger.info(`Player ${user.username} voluntarily abandoned room ${rid}`);
+      await _handleAbandon(io, rid, user.id);
+    } catch (err) {
+      logger.error(`game:abandon error: ${err.message}`);
     }
   });
 
@@ -426,6 +464,9 @@ async function _handleDisconnect(io, userId) {
   }
 
   logger.info(`Player ${userId} disconnected from game ${roomId}`);
+
+  // Pause the turn timer so it doesn't auto-act while player is reconnecting
+  _clearTurnTimer(roomId);
 
   // Notify opponent
   io.to(roomId).emit('player:disconnected', {
@@ -496,6 +537,12 @@ async function _handleReconnect(io, socket, user, roomId) {
     username: user.username,
   });
 
+  // Restart the turn timer so the active player has their full time
+  if (game.state === 'PLAYER_TURN' || game.state === 'TRUCO_PENDING' || game.state === 'ENVIDO_PENDING' || game.state === 'FLOR_PENDING') {
+    const isbet = game.state !== 'PLAYER_TURN';
+    _startTurnTimer(io, roomId, game, isbet ? BET_RESPONSE_TIMEOUT_MS : TURN_TIMEOUT_MS);
+  }
+
   logger.info(`Player ${user.username} reconnected to ${roomId}`);
 }
 
@@ -512,29 +559,14 @@ async function _handleAbandon(io, roomId, abandonedUserId) {
 
   logger.info(`Game ${roomId}: ${abandonedUserId} abandoned — ${winnerId} wins`);
 
-  // Settle wallet (no-op if not a wagered game)
-  try {
-    const settlement = await ChallengeService.settleChallengeGame({ roomId, winnerId });
-    if (settlement) {
-      await NotificationService.create({
-        userId:   winnerId,
-        type:     'game_result',
-        title:    '¡Ganaste! (rival abandonó)',
-        body:     `Ganaste $${settlement.prize} — tu rival no volvió.`,
-        metadata: { roomId, prize: settlement.prize },
-      });
-    }
-  } catch (err) {
-    logger.error(`Settle on abandon for ${roomId}: ${err.message}`);
-  }
-
-  io.to(roomId).emit('game:abandoned', {
+  // Emit a single game:over with reason:'abandon' so the frontend handles it
+  // exactly once via its game:over handler (no separate game:abandoned event).
+  // _finishGame settles the wallet, updates DB/ELO, sends notifications and
+  // deletes the game session — nothing else needed here.
+  await _finishGame(io, roomId, game, winnerId, {
+    reason:      'abandon',
     abandonedBy: abandonedUserId,
-    winner:      winnerId,
   });
-
-  await _finishGame(io, roomId, game, winnerId);
-  userRooms.delete(abandonedUserId);
 }
 
 /**
@@ -552,7 +584,9 @@ function untrackUserRoom(userId) {
   userRooms.delete(userId);
 }
 
-async function _finishGame(io, roomId, game, winnerId) {
+// extraPayload: optional extra fields merged into the game:over event
+// (e.g. { reason: 'abandon', abandonedBy: userId })
+async function _finishGame(io, roomId, game, winnerId, extraPayload = {}) {
   const loserId = game.players.find(p => p !== winnerId);
   const scores  = game.scores;
 
@@ -562,8 +596,8 @@ async function _finishGame(io, roomId, game, winnerId) {
 
   try {
     // Settle wagered funds (no-op if not a challenge game)
-    await ChallengeService.settleChallengeGame({ roomId, winnerId }).catch(err => {
-      logger.error(`Settle challenge for ${roomId}: ${err.message}`);
+    await BattleService.settle({ roomId, winnerId }).catch(err => {
+      logger.error(`Settle battle for ${roomId}: ${err.message}`);
     });
 
     // DB: finish game
@@ -574,46 +608,61 @@ async function _finishGame(io, roomId, game, winnerId) {
       scoreP2: scores[game.players[1]],
     });
 
-    // ELO update
-    const [winnerRank, loserRank] = await Promise.all([
-      Ranking.getByUserId(winnerId),
-      Ranking.getByUserId(loserId),
-    ]);
-
+    // ELO update — only for ranked games
+    const isRanked = game.config?.modo === 'ranked';
     let eloDelta = null;
-    if (winnerRank && loserRank) {
-      const { newWinner, newLoser, delta } = calculateNewRatings(winnerRank.elo, loserRank.elo);
-      await Ranking.updateAfterGame({ winnerId, loserId, newWinnerElo: newWinner, newLoserElo: newLoser });
-      eloDelta = { [winnerId]: delta, [loserId]: -delta };
+    if (isRanked) {
+      // Ensure ranking rows exist (covers users registered before ranking feature was added)
+      await Promise.all([
+        Ranking.initForUser(winnerId),
+        Ranking.initForUser(loserId),
+      ]);
+
+      const [winnerRank, loserRank] = await Promise.all([
+        Ranking.getByUserId(winnerId),
+        Ranking.getByUserId(loserId),
+      ]);
+
+      if (winnerRank && loserRank) {
+        const { newWinner, newLoser, delta } = calculateNewRatings(winnerRank.elo, loserRank.elo);
+        await Ranking.updateAfterGame({ winnerId, loserId, newWinnerElo: newWinner, newLoserElo: newLoser });
+        eloDelta = { [winnerId]: delta, [loserId]: -delta };
+      }
     }
 
-    io.to(roomId).emit('game:over', { winner: winnerId, scores, eloDelta });
+    // Single authoritative end event — includes reason/abandonedBy when coming from abandon
+    io.to(roomId).emit('game:over', { winner: winnerId, scores, eloDelta, ...extraPayload });
 
     // Notifications
     const [winnerUser, loserUser] = await Promise.all([
       query('SELECT username FROM usuarios WHERE id = ?', [winnerId]),
       query('SELECT username FROM usuarios WHERE id = ?', [loserId]),
     ]);
+    const isAbandon = extraPayload.reason === 'abandon';
     await Promise.all([
       NotificationService.create({
         userId:   winnerId,
         type:     'game_result',
-        title:    '¡Ganaste la partida!',
-        body:     `Venciste a ${loserUser[0]?.username || 'tu rival'}`,
+        title:    isAbandon ? '¡Ganaste! (rival abandonó)' : '¡Ganaste la partida!',
+        body:     isAbandon
+          ? `Tu rival no volvió — ganás la partida.`
+          : `Venciste a ${loserUser[0]?.username || 'tu rival'}`,
         metadata: { roomId, result: 'win', eloDelta: eloDelta?.[winnerId] },
       }),
       NotificationService.create({
         userId:   loserId,
         type:     'game_result',
-        title:    'Perdiste la partida',
-        body:     `${winnerUser[0]?.username || 'Tu rival'} te ganó`,
+        title:    isAbandon ? 'Perdiste por abandono' : 'Perdiste la partida',
+        body:     isAbandon
+          ? 'Te desconectaste y tu rival ganó la partida.'
+          : `${winnerUser[0]?.username || 'Tu rival'} te ganó`,
         metadata: { roomId, result: 'loss', eloDelta: eloDelta?.[loserId] },
       }),
     ]).catch(() => {});
 
   } catch (err) {
     logger.error('Error finishing game: ' + err.message);
-    io.to(roomId).emit('game:over', { winner: winnerId, scores });
+    io.to(roomId).emit('game:over', { winner: winnerId, scores, ...extraPayload });
   }
 
   await gameSession.deleteGame(roomId);

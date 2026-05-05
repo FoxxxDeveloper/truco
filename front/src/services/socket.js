@@ -9,7 +9,10 @@ export function getSocket() {
 }
 
 export function connectSocket(token) {
-  if (socket?.connected) return socket;
+  // Reuse existing socket even while reconnecting — let Socket.IO handle reconnection
+  // internally. Creating a new socket while the old one is reconnecting orphans the
+  // old object (and its registered event listeners).
+  if (socket) return socket;
 
   socket = io(SOCKET_URL, {
     auth: { token },

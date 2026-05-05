@@ -33,11 +33,11 @@ async function auditAdmin(adminId, action, targetType, targetId, before, after, 
 // ── GET /api/admin/dashboard ─────────────────────────────────────
 router.get('/dashboard', async (req, res) => {
   try {
-    const [[users]]        = await query('SELECT COUNT(*) AS cnt FROM usuarios');
-    const [[activeGames]]  = await query("SELECT COUNT(*) AS cnt FROM partidas WHERE status = 'active'");
-    const [[pendingTxs]]   = await query("SELECT COUNT(*) AS cnt FROM transactions WHERE status = 'pending'");
-    const [[totalBalance]] = await query('SELECT COALESCE(SUM(balance),0) AS total FROM wallet');
-    const [[openChallenges]] = await query("SELECT COUNT(*) AS cnt FROM challenges WHERE status = 'open'");
+    const [users]          = await query('SELECT COUNT(*) AS cnt FROM usuarios');
+    const [activeGames]    = await query("SELECT COUNT(*) AS cnt FROM partidas WHERE status = 'active'");
+    const [pendingTxs]     = await query("SELECT COUNT(*) AS cnt FROM transactions WHERE status = 'pending'");
+    const [totalBalance]   = await query('SELECT COALESCE(SUM(balance),0) AS total FROM wallet');
+    const [openChallenges] = await query("SELECT COUNT(*) AS cnt FROM challenges WHERE status = 'open'");
 
     return res.json({
       users:          Number(users.cnt),
@@ -72,8 +72,7 @@ router.get('/users', async (req, res) => {
       sql += ' WHERE u.username LIKE ? OR u.email LIKE ?';
       params.push(`%${search}%`, `%${search}%`);
     }
-    sql += ' ORDER BY u.id DESC LIMIT ? OFFSET ?';
-    params.push(lim, off);
+    sql += ` ORDER BY u.id DESC LIMIT ${lim} OFFSET ${off}`;
 
     const users = await query(sql, params);
     return res.json({ users });
@@ -127,6 +126,9 @@ router.post('/users/:id/adjust', async (req, res) => {
       return res.status(400).json({ error: 'Reason required for balance adjustments' });
     }
 
+    // Auto-create wallet if user doesn't have one yet
+    await query('INSERT IGNORE INTO wallet (user_id, balance, reserved) VALUES (?, 0.00, 0.00)', [userId]);
+
     const [wallet] = await query('SELECT balance FROM wallet WHERE user_id = ?', [userId]);
     if (!wallet) return res.status(404).json({ error: 'Wallet not found' });
 
@@ -165,8 +167,7 @@ router.get('/transactions', async (req, res) => {
     `;
     const params = [];
     if (status) { sql += ' WHERE t.status = ?'; params.push(status); }
-    sql += ' ORDER BY t.created_at DESC LIMIT ? OFFSET ?';
-    params.push(lim, off);
+    sql += ` ORDER BY t.created_at DESC LIMIT ${lim} OFFSET ${off}`;
 
     const txs = await query(sql, params);
     return res.json({ transactions: txs });
@@ -245,8 +246,7 @@ router.get('/games', async (req, res) => {
     `;
     const params = [];
     if (status) { sql += ' WHERE p.status = ?'; params.push(status); }
-    sql += ' ORDER BY p.created_at DESC LIMIT ? OFFSET ?';
-    params.push(lim, Number(offset));
+    sql += ` ORDER BY p.created_at DESC LIMIT ${lim} OFFSET ${Number(offset)}`;
 
     const games = await query(sql, params);
     return res.json({ games });
@@ -260,11 +260,13 @@ router.get('/games', async (req, res) => {
 router.get('/logs', async (req, res) => {
   try {
     const { limit = 50, offset = 0 } = req.query;
+    const safeLogLimit = Math.min(Number(limit), 200);
+    const safeLogOffset = Math.max(Number(offset), 0);
     const logs = await query(
       `SELECT al.*, u.username AS admin_username
        FROM admin_logs al JOIN usuarios u ON u.id = al.admin_id
-       ORDER BY al.created_at DESC LIMIT ? OFFSET ?`,
-      [Math.min(Number(limit), 200), Number(offset)]
+       ORDER BY al.created_at DESC LIMIT ${safeLogLimit} OFFSET ${safeLogOffset}`,
+      []
     );
     return res.json({ logs });
   } catch (err) {

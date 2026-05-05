@@ -6,6 +6,7 @@ const { registerMatchmakingHandlers } = require('./handlers/matchmakingHandler')
 const { registerGameHandlers, userRooms } = require('./handlers/gameHandler');
 const { registerChatHandlers }        = require('./handlers/chatHandler');
 const { registerSocialHandlers }      = require('./handlers/socialHandler');
+const { registerBattleHandlers }      = require('./handlers/battleHandler');
 const logger = require('../config/logger');
 
 /**
@@ -38,7 +39,7 @@ function setupSocketIO(io) {
 
   // ── AUTH MIDDLEWARE ────────────────────────────────────────────
   io.use(async (socket, next) => {
-    const token = socket.handshake.auth?.token || socket.handshake.query?.token;
+    const token = socket.handshake.auth?.token;
     if (!token) return next(new Error('Authentication required'));
 
     try {
@@ -66,6 +67,7 @@ function setupSocketIO(io) {
     registerGameHandlers(io, socket, user);
     registerChatHandlers(io, socket, user);
     registerSocialHandlers(io, socket, user);
+    registerBattleHandlers(io, socket, user);
 
     // Presence query from clients
     socket.on('presence:get', ({ userIds }) => {

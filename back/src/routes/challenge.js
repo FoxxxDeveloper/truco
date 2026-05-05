@@ -20,6 +20,10 @@ router.post('/', async (req, res) => {
     const { amount, isPrivate = false, opponentId = null, gameConfig = {} } = req.body;
 
     if (!amount) return res.status(400).json({ error: 'amount is required' });
+    const parsedAmount = parseFloat(amount);
+    if (!isFinite(parsedAmount) || parsedAmount < 2500) {
+      return res.status(400).json({ error: 'El monto mínimo para apostar es 2500 créditos' });
+    }
 
     // Security: opponentId cannot be self
     if (opponentId && parseInt(opponentId) === req.user.id) {

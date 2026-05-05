@@ -5,13 +5,16 @@ const num = (v) => (v == null ? null : Number(v));
 
 const Ranking = {
   async getGlobal(limit = 50) {
+    // mysql2 execute() (prepared statements) fails with LIMIT ? on some MySQL versions.
+    // Embed limit as a validated integer literal instead.
+    const safeLimit = Math.max(1, Math.min(Math.floor(Number(limit)) || 50, 200));
     const rows = await query(
       `SELECT r.elo, r.wins, r.losses, r.draws, u.username, u.id as userId
        FROM ranking r
        JOIN usuarios u ON u.id = r.user_id
        ORDER BY r.elo DESC
-       LIMIT ?`,
-      [limit]
+       LIMIT ${safeLimit}`,
+      []
     );
     return rows.map(r => ({ ...r, elo: num(r.elo), wins: num(r.wins), losses: num(r.losses), draws: num(r.draws), userId: num(r.userId) }));
   },

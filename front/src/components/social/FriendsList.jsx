@@ -9,10 +9,12 @@
  *   PUT  /api/social/friends/:userId/accept
  *   DEL  /api/social/friends/:userId
  */
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { motion } from 'framer-motion';
 import toast from 'react-hot-toast';
+import { toastErrorOnce } from '../../utils/toastOnce';
 import { useAuth } from '../../context/AuthContext';
+import { getSocket } from '../../services/socket';
 
 const API = import.meta.env.VITE_API_URL || 'http://localhost:3001';
 
@@ -26,6 +28,9 @@ export default function FriendsList({ onClose, onStartChat }) {
   const [searchResult, setSearchResult] = useState(null);
   const [searching, setSearching] = useState(false);
   const [loadingAction, setLoadingAction] = useState(false);
+  // Online presence: userId → { status: 'lobby' | 'in_game' | 'offline' }
+  const [presence, setPresence] = useState({});
+  const presenceListenerRef = useRef(false);
 
   const getHeaders = () => {
     const token = localStorage.getItem('truco_token');
@@ -55,21 +60,45 @@ export default function FriendsList({ onClose, onStartChat }) {
       const requestsData = await parseResponse(rRes);
 
       if (fRes.ok) {
-        setFriends(friendsData.friends || []);
-      } else {
-        toast.error(friendsData.error || 'Error al cargar amigos');
+        const loadedFriends = friendsData.friends || [];
+        setFriends(loadedFriends);
+
+        // Query presence for all friends
+        const socket = getSocket();
+        if (socket?.connected && loadedFriends.length > 0) {
+          socket.emit('presence:get', { userIds: loadedFriends.map(f => f.id) });
+        }
       }
 
       if (rRes.ok) {
         setRequests(requestsData.requests || []);
-      } else {
-        toast.error(requestsData.error || 'Error al cargar solicitudes');
+      }
+
+      if (!fRes.ok || !rRes.ok) {
+        toastErrorOnce(friendsData.error || requestsData.error || 'Error al cargar amigos');
       }
     } catch (err) {
       console.error(err);
-      toast.error('Error de conexión al cargar amigos');
+      toastErrorOnce('Error de conexión al cargar amigos');
     }
   }, [user?.id]);
+
+  // Set up presence:update socket listener once
+  useEffect(() => {
+    const socket = getSocket();
+    if (!socket || presenceListenerRef.current) return;
+    presenceListenerRef.current = true;
+
+    const handlePresence = (data) => {
+      setPresence(prev => ({ ...prev, ...data }));
+    };
+
+    socket.on('presence:update', handlePresence);
+    return () => {
+      socket.off('presence:update', handlePresence);
+      presenceListenerRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     load();
@@ -227,7 +256,7 @@ export default function FriendsList({ onClose, onStartChat }) {
           }}
         >
           <h2 style={{ margin: 0, color: 'var(--gold-light, #ffe39b)' }}>
-            👥 Amigos
+            Amigos
           </h2>
 
           <button
@@ -309,44 +338,42 @@ export default function FriendsList({ onClose, onStartChat }) {
                   <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                     <div
                       style={{
-                        width: 38,
-                        height: 38,
-                        borderRadius: '50%',
+                        width: 38, height: 38, borderRadius: '50%',
                         background: 'linear-gradient(135deg, #e7a92f, #ef7f1a)',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        fontSize: 16,
-                        overflow: 'hidden',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        fontSize: 16, overflow: 'hidden', position: 'relative', flexShrink: 0,
                       }}
                     >
                       {f.avatar ? (
-                        <img
-                          src={f.avatar}
-                          alt=""
-                          style={{
-                            width: '100%',
-                            height: '100%',
-                            objectFit: 'cover',
-                            borderRadius: '50%',
-                          }}
-                        />
+                        <img src={f.avatar} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: '50%' }} />
                       ) : (
-                        '🧉'
+                        <span style={{ color: '#3a1800', fontWeight: 800, fontSize: 15 }}>
+                          {(f.username || '?').slice(0, 2).toUpperCase()}
+                        </span>
                       )}
+                      {/* Presence dot */}
+                      {(() => {
+                        const p = presence[f.id]?.status;
+                        const dotColor = p === 'lobby' ? '#4ade80' : p === 'in_game' ? '#facc15' : '#6b7280';
+                        return (
+                          <span style={{
+                            position: 'absolute', bottom: 0, right: 0,
+                            width: 11, height: 11, borderRadius: '50%',
+                            background: dotColor, border: '2px solid #2a1306',
+                          }} title={p === 'lobby' ? 'En línea' : p === 'in_game' ? 'En partida' : 'Desconectado'} />
+                        );
+                      })()}
                     </div>
 
                     <div>
                       <div style={{ color: '#fff', fontWeight: 800 }}>
                         {f.username}
                       </div>
-                      <div
-                        style={{
-                          color: 'var(--text-muted, #b98a56)',
-                          fontSize: 11,
-                        }}
-                      >
-                        ELO {f.elo || '—'}
+                      <div style={{ color: 'var(--text-muted, #b98a56)', fontSize: 11 }}>
+                        {presence[f.id]?.status === 'lobby' && <span style={{ color: '#4ade80' }}>● En línea </span>}
+                        {presence[f.id]?.status === 'in_game' && <span style={{ color: '#facc15' }}>● En partida </span>}
+                        {(!presence[f.id] || presence[f.id]?.status === 'offline' || presence[f.id]?.status === 'disconnected') && <span style={{ color: '#6b7280' }}>● Desconectado </span>}
+                        · ELO {f.elo || '—'}
                       </div>
                     </div>
                   </div>

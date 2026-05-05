@@ -9,11 +9,18 @@ import FriendsList from '../components/social/FriendsList';
 import PrivateChat from '../components/social/PrivateChat';
 import ChallengesBrowser from '../components/challenges/ChallengesBrowser';
 import NotificationBell from '../components/social/NotificationBell';
+import { UserIcon, UsersIcon, CoinIcon, SwordsIcon, BookIcon } from '../components/Icons';
+
+const PREVIEW_CARDS = [
+  { value: 1,  suit: 'espada', file: 'swords' },
+  { value: 3,  suit: 'oro',    file: 'coins'  },
+  { value: 7,  suit: 'espada', file: 'swords' },
+];
 
 export default function Lobby() {
   const { user, logout } = useAuth();
   const [activeRoom, setActiveRoom] = useState(null);
- const { inQueue, joinQueue, leaveQueue, gameState, roomId, attachListeners,reconnectGame  } = useGame();
+ const { inQueue, joinQueue, leaveQueue, gameState, gameOver, roomId, attachListeners, reconnectGame } = useGame();
   const navigate = useNavigate();
   const [myRank, setMyRank] = useState(null);
   const [gameOptions, setGameOptions] = useState({ puntosMaximos: 30, florHabilitada: false, modo: 'casual' });
@@ -32,11 +39,11 @@ useEffect(() => {
 }, []);
   // Navigate to game when match found
 useEffect(() => {
-  if (gameState || roomId) {
+  if ((gameState || roomId) && !gameOver) {
     console.log('LOBBY navegando a /game', { roomId, gameState });
     navigate('/game');
   }
-}, [gameState, roomId, navigate]);
+}, [gameState, roomId, gameOver, navigate]);
   useEffect(() => {
     rankingApi.getMe().then(r => setMyRank(r.data)).catch(() => {});
   }, []);
@@ -46,18 +53,22 @@ useEffect(() => {
   return (
     <div className="lobby-page">
       <header className="lobby-header">
-        <h1 className="logo">🃏 Truco Argentino</h1>
+        <h1 className="logo">Truco Argentino</h1>
         <div className="user-info" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <span className="username">{user?.username}</span>
           {myRank && <span className="elo-badge">ELO {myRank.elo}</span>}
 
           {/* Social actions */}
+          <button className="btn btn-ghost" style={{ padding: '6px 10px' }} title="Mi perfil"
+            onClick={() => navigate('/profile')}><UserIcon size={18} /></button>
           <button className="btn btn-ghost" style={{ padding: '6px 10px' }} title="Amigos"
-            onClick={() => setShowFriends(true)}>👥</button>
-          <button className="btn btn-ghost" style={{ padding: '6px 10px' }} title="Billetera"
-            onClick={() => setShowWallet(true)}>💰</button>
+            onClick={() => setShowFriends(true)}><UsersIcon size={18} /></button>
+          <button className="btn btn-ghost" style={{ padding: '6px 10px' }} title="Créditos"
+            onClick={() => setShowWallet(true)}><CoinIcon size={18} /></button>
           <button className="btn btn-ghost" style={{ padding: '6px 10px' }} title="Partidas con apuestas"
-            onClick={() => setShowChallenges(true)}>⚔️</button>
+            onClick={() => setShowChallenges(true)}><SwordsIcon size={18} /></button>
+          <button className="btn btn-ghost" style={{ padding: '6px 10px' }} title="Reglas del juego"
+            onClick={() => navigate('/reglas')}><BookIcon size={18} /></button>
           <NotificationBell />
 
           <button className="btn btn-ghost" onClick={logout}>Salir</button>
@@ -76,14 +87,14 @@ useEffect(() => {
                 className="ready-state"
               >
                <div className="cards-preview">
-  {[
-    { value: 1, suit: 'espada', icon: '⚔️' },
-    { value: 3, suit: 'oro', icon: '🪙' },
-    { value: 7, suit: 'espada', icon: '⚔️' },
-  ].map(card => (
-    <div key={`${card.value}_${card.suit}`} className={`card-preview suit-${card.suit}`}>
-      <span className="preview-value">{card.value}</span>
-      <span className="preview-suit">{card.icon}</span>
+  {PREVIEW_CARDS.map(card => (
+    <div key={`${card.value}_${card.suit}`} className="card-preview">
+      <img
+        src={`/cartas/card_${card.file}_${String(card.value).padStart(2, '0')}.svg`}
+        alt={`${card.value} de ${card.suit}`}
+        className="card-preview-img"
+        draggable={false}
+      />
     </div>
   ))}
 </div>
@@ -137,6 +148,9 @@ useEffect(() => {
                 <div className="lobby-links">
                   <button className="btn btn-ghost" onClick={() => navigate('/ranking')}>
                     🏆 Ranking
+                  </button>
+                  <button className="btn btn-ghost" onClick={() => navigate('/batallas')}>
+                    ⚔️ Batallas competitivas
                   </button>
                 </div>
               </motion.div>

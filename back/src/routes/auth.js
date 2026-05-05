@@ -1,8 +1,10 @@
-const express = require('express');
-const jwt = require('jsonwebtoken');
-const User = require('../models/User');
-const Ranking = require('../models/Ranking');
-const rateLimit = require('express-rate-limit');
+const express      = require('express');
+const jwt          = require('jsonwebtoken');
+const User         = require('../models/User');
+const Ranking      = require('../models/Ranking');
+const WalletService = require('../services/walletService');
+const rateLimit    = require('express-rate-limit');
+const logger       = require('../config/logger');
 
 const router = express.Router();
 
@@ -37,8 +39,11 @@ router.post('/register', authLimiter, async (req, res) => {
     if (existingUsername) return res.status(409).json({ error: 'Username taken' });
 
     const id = await User.create({ username, email, password });
-    // Create initial ranking entry for the new user
-    await Ranking.initForUser(id);
+    // Create initial ranking and wallet entries for the new user
+    await Promise.all([
+      Ranking.initForUser(id),
+      WalletService.init(id),
+    ]);
     const user = await User.findById(id);
 
     const token = jwt.sign(
@@ -59,30 +64,17 @@ router.post('/login', authLimiter, async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    console.log('LOGIN BODY:', req.body);
-
     if (!email || !password) {
       return res.status(400).json({ error: 'All fields required' });
     }
 
     const user = await User.findByEmail(email);
 
-    console.log('LOGIN USER FOUND:', user ? {
-      id: user.id,
-      username: user.username,
-      email: user.email,
-      role: user.role,
-      status: user.status,
-      hasPassword: !!user.password,
-    } : null);
-
     if (!user) {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
     const valid = await User.verifyPassword(password, user.password);
-
-    console.log('LOGIN PASSWORD VALID:', valid);
 
     if (!valid) {
       return res.status(401).json({ error: 'Invalid credentials' });
@@ -97,7 +89,7 @@ router.post('/login', authLimiter, async (req, res) => {
     }
 
     if (!process.env.JWT_SECRET) {
-      console.error('JWT_SECRET is missing in .env');
+      logger.error('JWT_SECRET is not configured');
       return res.status(500).json({ error: 'JWT_SECRET not configured' });
     }
 
@@ -120,7 +112,7 @@ router.post('/login', authLimiter, async (req, res) => {
       user: User.toPublic(publicUser),
     });
   } catch (err) {
-    console.error('LOGIN ERROR:', err);
+    logger.error('login error: ' + err.message, { ip: req.ip });
 
     return res.status(500).json({
       error: 'Server error',

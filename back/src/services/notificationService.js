@@ -69,12 +69,12 @@ const NotificationService = {
   },
 
   async getAll(userId, { limit = 30, offset = 0 } = {}) {
-    limit  = Math.min(Math.max(parseInt(limit) || 30, 1), 100);
-    offset = Math.max(parseInt(offset) || 0, 0);
+    const safeLimit  = Math.min(Math.max(parseInt(limit)  || 30, 1), 100);
+    const safeOffset = Math.max(parseInt(offset) || 0, 0);
     return query(
       `SELECT id, type, title, body, metadata, read_at, created_at
-       FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?`,
-      [userId, limit, offset]
+       FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT ${safeLimit} OFFSET ${safeOffset}`,
+      [userId]
     );
   },
 

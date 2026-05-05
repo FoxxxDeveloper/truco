@@ -9,6 +9,9 @@ import Lobby from './pages/Lobby';
 import Game from './pages/Game';
 import Ranking from './pages/Ranking';
 import Admin from './pages/Admin';
+import ProfilePage from './pages/ProfilePage';
+import RulesPage from './pages/RulesPage';
+import Battles from './pages/Battles';
 
 function App() {
   return (
@@ -66,6 +69,26 @@ function App() {
               element={
                 <ProtectedRoute>
                   <Admin />
+                </ProtectedRoute>
+              }
+            />
+
+            <Route
+              path="/profile"
+              element={
+                <ProtectedRoute>
+                  <ProfilePage />
+                </ProtectedRoute>
+              }
+            />
+
+            <Route path="/reglas" element={<RulesPage />} />
+
+            <Route
+              path="/batallas"
+              element={
+                <ProtectedRoute>
+                  <Battles />
                 </ProtectedRoute>
               }
             />

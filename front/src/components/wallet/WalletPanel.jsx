@@ -1,389 +1,320 @@
+/**
+ * WalletPanel — Modal panel showing wallet balance, transaction history,
+ * and deposit/withdraw request forms.
+ *
+ * Uses:
+ *   GET  /api/wallet              → { balance, reserved }
+ *   GET  /api/wallet/transactions → { transactions: [...] }
+ *   POST /api/wallet/deposit/request
+ *   POST /api/wallet/withdraw/request
+ */
 import { useState, useEffect, useCallback } from 'react';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 import toast from 'react-hot-toast';
 import { walletApi } from '../../services/api';
 
-const TABS = ['Historia', 'Depositar', 'Retirar'];
+const TABS = [
+  { id: 'balance',    label: '💰 Saldo'    },
+  { id: 'history',    label: '📋 Historial' },
+  { id: 'deposit',    label: '➕ Depositar' },
+  { id: 'withdraw',   label: '➖ Retirar'   },
+];
 
-export default function WalletPanel({ onClose }) {
-  const [balance, setBalance] = useState(null);
-  const [reserved, setReserved] = useState(0);
-  const [transactions, setTxs] = useState([]);
-  const [activeTab, setActiveTab] = useState('Historia');
-  const [amount, setAmount] = useState('');
-  const [reference, setReference] = useState('');
+// ── Transaction type display ─────────────────────────────────────────────────
+const TX_LABELS = {
+  deposit:       { label: 'Depósito',      color: '#4ade80' },
+  withdrawal:    { label: 'Retiro',         color: '#f87171' },
+  bet_lock:      { label: 'Apuesta bloq.',  color: '#fb923c' },
+  bet_refund:    { label: 'Reembolso',      color: '#60a5fa' },
+  bet_win:       { label: '¡Ganaste!',      color: '#4ade80' },
+  bet_loss:      { label: 'Pérdida',        color: '#f87171' },
+  commission:    { label: 'Comisión',       color: '#94a3b8' },
+  adjustment:    { label: 'Ajuste',         color: '#e2e8f0' },
+};
+
+function TxIcon({ type }) {
+  const map = {
+    deposit: '⬆️', withdrawal: '⬇️', bet_lock: '🔒',
+    bet_refund: '↩️', bet_win: '🏆', bet_loss: '💀',
+    commission: '🏛️', adjustment: '⚙️',
+  };
+  return <span style={{ fontSize: '1.1rem' }}>{map[type] || '💸'}</span>;
+}
+
+function formatDate(dt) {
+  if (!dt) return '';
+  return new Date(dt).toLocaleDateString('es-AR', {
+    day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit'
+  });
+}
+
+// ── Balance tab ───────────────────────────────────────────────────────────────
+function BalanceView({ wallet }) {
+  if (!wallet) return <p className="wp-loading">Cargando...</p>;
+  const available = parseFloat(wallet.balance || 0);
+  const reserved  = parseFloat(wallet.reserved || 0);
+  return (
+    <div className="wp-balance-view">
+      <div className="wp-balance-main">
+        <span className="wp-balance-label">Saldo disponible</span>
+        <span className="wp-balance-value">{available.toLocaleString('es-AR')} cr</span>
+      </div>
+      {reserved > 0 && (
+        <div className="wp-balance-reserved">
+          <span className="wp-balance-label">En apuestas activas</span>
+          <span className="wp-balance-value reserved">{reserved.toLocaleString('es-AR')} cr</span>
+        </div>
+      )}
+      <div className="wp-balance-total">
+        <span className="wp-balance-label">Total (disp. + bloq.)</span>
+        <span className="wp-balance-value total">{(available + reserved).toLocaleString('es-AR')} cr</span>
+      </div>
+      <p className="wp-balance-note">
+        Los créditos son virtuales para jugar en la plataforma.
+      </p>
+    </div>
+  );
+}
+
+// ── History tab ───────────────────────────────────────────────────────────────
+function HistoryView({ transactions, loading }) {
+  if (loading) return <p className="wp-loading">Cargando...</p>;
+  if (!transactions.length) return <p className="wp-empty">Sin transacciones recientes.</p>;
+  return (
+    <div className="wp-tx-list">
+      {transactions.map(tx => {
+        const meta = TX_LABELS[tx.type] || { label: tx.type, color: '#e2e8f0' };
+        const amount = parseFloat(tx.amount || 0);
+        const isPositive = amount > 0;
+        return (
+          <div key={tx.id} className="wp-tx-row">
+            <TxIcon type={tx.type} />
+            <div className="wp-tx-info">
+              <span className="wp-tx-label">{meta.label}</span>
+              {tx.description && <span className="wp-tx-desc">{tx.description}</span>}
+              <span className="wp-tx-date">{formatDate(tx.created_at)}</span>
+            </div>
+            <span className="wp-tx-amount" style={{ color: isPositive ? '#4ade80' : '#f87171' }}>
+              {isPositive ? '+' : ''}{amount.toLocaleString('es-AR')} cr
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── Deposit tab ───────────────────────────────────────────────────────────────
+function DepositForm() {
+  const [amount, setAmount]   = useState('');
+  const [method, setMethod]   = useState('mercadopago');
   const [loading, setLoading] = useState(false);
 
-  const fetchWallet = useCallback(async () => {
-    try {
-      const [walletRes, txRes] = await Promise.all([
-        walletApi.getBalance(),
-        walletApi.getHistory({ limit: 30, offset: 0 }),
-      ]);
-
-      setBalance(parseFloat(walletRes.data.balance || 0));
-      setReserved(parseFloat(walletRes.data.reserved || 0));
-      setTxs(txRes.data.transactions || []);
-    } catch (err) {
-      toast.error(err.response?.data?.error || 'Error al cargar billetera');
-    }
-  }, []);
-
-  useEffect(() => {
-    fetchWallet();
-  }, [fetchWallet]);
-
-  const handleRequest = async (type) => {
-    const amt = parseFloat(amount);
-
-    if (!amt || amt <= 0) {
-      toast.error('Monto inválido');
-      return;
-    }
-
-    if (!reference.trim()) {
-      toast.error('Ingresá una referencia');
-      return;
-    }
-
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    const n = parseFloat(amount);
+    if (!n || n <= 0) return toast.error('Monto inválido');
     setLoading(true);
-
     try {
-      const fn =
-        type === 'deposit'
-          ? walletApi.depositRequest
-          : walletApi.withdrawRequest;
-
-      const { data } = await fn({
-        amount: amt,
-        reference: reference.trim(),
-      });
-
-      toast.success(data.message || 'Solicitud enviada');
+      await walletApi.depositRequest({ amount: n, method });
+      toast.success('Solicitud enviada. El admin la procesará pronto.');
       setAmount('');
-      setReference('');
-      await fetchWallet();
     } catch (err) {
-      toast.error(err.response?.data?.error || err.message || 'Error en la solicitud');
+      toast.error(err.response?.data?.error || 'Error al solicitar depósito');
     } finally {
       setLoading(false);
     }
   };
 
-  const typeColor = (type) =>
-    ({
-      deposit: '#4ade80',
-      withdrawal: '#f87171',
-      prize: '#facc15',
-      bet_win: '#4ade80',
-      bet_lock: '#f87171',
-      commission: '#fb923c',
-      refund: '#60a5fa',
-      bet_refund: '#60a5fa',
-    }[type] || '#ccc');
+  return (
+    <form className="wp-form" onSubmit={handleSubmit}>
+      <p className="wp-form-note">
+        Enviá una solicitud. Un administrador acreditará los créditos manualmente.
+      </p>
+      <div className="form-group">
+        <label>Método de pago</label>
+        <select className="form-input" value={method} onChange={e => setMethod(e.target.value)}>
+          <option value="mercadopago">MercadoPago</option>
+          <option value="transferencia">Transferencia bancaria</option>
+          <option value="otro">Otro</option>
+        </select>
+      </div>
+      <div className="form-group">
+        <label>Monto (créditos)</label>
+        <input
+          type="number"
+          className="form-input"
+          min="100"
+          step="100"
+          value={amount}
+          onChange={e => setAmount(e.target.value)}
+          placeholder="Ej: 5000"
+          required
+        />
+      </div>
+      <button type="submit" className="btn btn-primary" disabled={loading}>
+        {loading ? 'Enviando...' : 'Solicitar depósito'}
+      </button>
+    </form>
+  );
+}
 
-  const typeLabel = (type) =>
-    ({
-      deposit: 'Depósito',
-      withdrawal: 'Retiro',
-      prize: 'Premio',
-      bet_win: 'Ganancia apuesta',
-      bet_lock: 'Apuesta reservada',
-      commission: 'Comisión',
-      refund: 'Reintegro',
-      bet_refund: 'Reintegro apuesta',
-    }[type] || type);
+// ── Withdraw tab ──────────────────────────────────────────────────────────────
+function WithdrawForm({ balance }) {
+  const [amount,  setAmount]  = useState('');
+  const [method,  setMethod]  = useState('transferencia');
+  const [details, setDetails] = useState('');
+  const [loading, setLoading] = useState(false);
 
-  const isIncome = (type) =>
-    ['deposit', 'prize', 'bet_win', 'refund', 'bet_refund'].includes(type);
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    const n = parseFloat(amount);
+    if (!n || n <= 0) return toast.error('Monto inválido');
+    if (n > (parseFloat(balance?.balance) || 0)) return toast.error('Saldo insuficiente');
+    if (!details.trim()) return toast.error('Ingresá los datos de retiro');
+    setLoading(true);
+    try {
+      await walletApi.withdrawRequest({ amount: n, method, details: details.trim() });
+      toast.success('Solicitud de retiro enviada. El admin la procesará.');
+      setAmount('');
+      setDetails('');
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Error al solicitar retiro');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <form className="wp-form" onSubmit={handleSubmit}>
+      <p className="wp-form-note">
+        Disponible: <strong>{parseFloat(balance?.balance || 0).toLocaleString('es-AR')} cr</strong>
+      </p>
+      <div className="form-group">
+        <label>Método</label>
+        <select className="form-input" value={method} onChange={e => setMethod(e.target.value)}>
+          <option value="transferencia">Transferencia bancaria</option>
+          <option value="mercadopago">MercadoPago</option>
+          <option value="otro">Otro</option>
+        </select>
+      </div>
+      <div className="form-group">
+        <label>CBU / Alias / Datos de cobro</label>
+        <textarea
+          className="form-input"
+          rows={3}
+          value={details}
+          onChange={e => setDetails(e.target.value)}
+          placeholder="CBU: 0000... / Alias: nombre.apellido"
+          required
+        />
+      </div>
+      <div className="form-group">
+        <label>Monto a retirar</label>
+        <input
+          type="number"
+          className="form-input"
+          min="100"
+          step="100"
+          value={amount}
+          onChange={e => setAmount(e.target.value)}
+          placeholder="Ej: 5000"
+          required
+        />
+      </div>
+      <button type="submit" className="btn btn-danger" disabled={loading}>
+        {loading ? 'Enviando...' : 'Solicitar retiro'}
+      </button>
+    </form>
+  );
+}
+
+// ── Main component ────────────────────────────────────────────────────────────
+export default function WalletPanel({ onClose }) {
+  const [tab,          setTab]          = useState('balance');
+  const [wallet,       setWallet]       = useState(null);
+  const [transactions, setTransactions] = useState([]);
+  const [txLoading,    setTxLoading]    = useState(false);
+
+  const loadWallet = useCallback(async () => {
+    try {
+      const r = await walletApi.getBalance();
+      setWallet(r.data);
+    } catch { /* ignore */ }
+  }, []);
+
+  const loadHistory = useCallback(async () => {
+    setTxLoading(true);
+    try {
+      const r = await walletApi.getHistory({ limit: 40 });
+      setTransactions(r.data.transactions || []);
+    } catch {
+      toast.error('Error al cargar historial');
+    } finally {
+      setTxLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { loadWallet(); }, [loadWallet]);
+  useEffect(() => {
+    if (tab === 'history') loadHistory();
+  }, [tab, loadHistory]);
 
   return (
     <motion.div
+      className="modal-overlay"
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      style={{
-        position: 'fixed',
-        inset: 0,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        background: 'rgba(0,0,0,0.75)',
-        zIndex: 200,
-        padding: 16,
-      }}
-      onClick={onClose}
+      onClick={(e) => e.target === e.currentTarget && onClose()}
     >
       <motion.div
-        initial={{ scale: 0.9, y: 20 }}
-        animate={{ scale: 1, y: 0 }}
-        exit={{ scale: 0.9 }}
-        style={{
-          background: 'var(--bg-card)',
-          border: '1px solid var(--border)',
-          borderRadius: 16,
-          padding: 28,
-          width: 420,
-          maxWidth: '100%',
-          maxHeight: '85vh',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 0,
-        }}
+        className="modal-panel wp-panel"
+        initial={{ scale: 0.92, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        exit={{ scale: 0.92, opacity: 0 }}
         onClick={(e) => e.stopPropagation()}
       >
-        <div
-          style={{
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            marginBottom: 20,
-          }}
-        >
-          <h2 style={{ margin: 0, fontSize: 20 }}>💰 Billetera</h2>
-
-          <button
-            onClick={onClose}
-            style={{
-              background: 'none',
-              border: 'none',
-              color: 'var(--text-muted)',
-              fontSize: 22,
-              cursor: 'pointer',
-              lineHeight: 1,
-            }}
-          >
-            ✕
-          </button>
+        <div className="modal-header">
+          <h2>💰 Mi billetera</h2>
+          <button className="btn-close" onClick={onClose}>✕</button>
         </div>
 
-        <div
-          style={{
-            background: 'linear-gradient(135deg, #0f4c2a, #1a6b3c)',
-            borderRadius: 12,
-            padding: '20px 24px',
-            marginBottom: 20,
-            textAlign: 'center',
-            border: '1px solid #2d8a52',
-          }}
-        >
-          <div
-            style={{
-              color: 'rgba(255,255,255,0.6)',
-              fontSize: 12,
-              textTransform: 'uppercase',
-              letterSpacing: 1,
-              marginBottom: 4,
-            }}
-          >
-            Saldo disponible
-          </div>
-
-          <div
-            style={{
-              color: '#4ade80',
-              fontSize: 36,
-              fontWeight: 800,
-              letterSpacing: -1,
-            }}
-          >
-            ${balance !== null ? balance.toFixed(2) : '—'}
-          </div>
-
-          {reserved > 0 && (
-            <div style={{ color: '#fb923c', fontSize: 12, marginTop: 4 }}>
-              En reserva: ${reserved.toFixed(2)}
-            </div>
-          )}
-        </div>
-
-        <div
-          style={{
-            display: 'flex',
-            gap: 6,
-            marginBottom: 16,
-            background: 'var(--bg-surface)',
-            borderRadius: 10,
-            padding: 4,
-          }}
-        >
-          {TABS.map((t) => (
+        <nav className="wp-tabs">
+          {TABS.map(t => (
             <button
-              key={t}
-              onClick={() => setActiveTab(t)}
-              style={{
-                flex: 1,
-                padding: '7px 0',
-                borderRadius: 7,
-                border: 'none',
-                cursor: 'pointer',
-                fontSize: 13,
-                fontWeight: 600,
-                transition: 'all 0.15s',
-                background: activeTab === t ? 'var(--accent-blue)' : 'transparent',
-                color: activeTab === t ? '#fff' : 'var(--text-muted)',
-              }}
+              key={t.id}
+              className={`wp-tab${tab === t.id ? ' active' : ''}`}
+              onClick={() => setTab(t.id)}
             >
-              {t}
+              {t.label}
             </button>
           ))}
-        </div>
+        </nav>
 
-        <div style={{ overflowY: 'auto', flex: 1, paddingRight: 4 }}>
-          {activeTab === 'Historia' && (
-            transactions.length === 0 ? (
-              <p
-                style={{
-                  color: 'var(--text-muted)',
-                  textAlign: 'center',
-                  padding: '2rem 0',
-                }}
-              >
-                Sin movimientos aún
-              </p>
-            ) : (
-              transactions.map((tx) => (
-                <div
-                  key={tx.id}
-                  style={{
-                    background: 'var(--bg-surface)',
-                    borderRadius: 10,
-                    padding: '10px 14px',
-                    marginBottom: 8,
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
-                    border: '1px solid var(--border)',
-                  }}
-                >
-                  <div>
-                    <div
-                      style={{
-                        color: 'var(--text-primary)',
-                        fontSize: 13,
-                        fontWeight: 600,
-                      }}
-                    >
-                      {typeLabel(tx.type)}
-                    </div>
-
-                    {tx.reference && (
-                      <div style={{ color: 'var(--text-muted)', fontSize: 11 }}>
-                        {tx.reference}
-                      </div>
-                    )}
-
-                    <div style={{ color: 'var(--text-muted)', fontSize: 11 }}>
-                      {new Date(tx.created_at).toLocaleString('es-AR')}
-                    </div>
-                  </div>
-
-                  <div style={{ textAlign: 'right' }}>
-                    <div
-                      style={{
-                        color: typeColor(tx.type),
-                        fontWeight: 700,
-                        fontSize: 16,
-                      }}
-                    >
-                      {isIncome(tx.type) ? '+' : '−'}$
-                      {Math.abs(parseFloat(tx.amount || 0)).toFixed(2)}
-                    </div>
-
-                    <div
-                      style={{
-                        fontSize: 10,
-                        color:
-                          tx.status === 'completed'
-                            ? '#4ade80'
-                            : tx.status === 'pending'
-                              ? '#fb923c'
-                              : '#9ca3af',
-                        textTransform: 'uppercase',
-                      }}
-                    >
-                      {tx.status}
-                    </div>
-                  </div>
-                </div>
-              ))
-            )
-          )}
-
-          {(activeTab === 'Depositar' || activeTab === 'Retirar') && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              <p
-                style={{
-                  color: 'var(--text-muted)',
-                  fontSize: 13,
-                  margin: 0,
-                  lineHeight: 1.5,
-                }}
-              >
-                {activeTab === 'Depositar'
-                  ? 'Ingresá el monto y tu número de comprobante. Un admin confirmará el acreditado vía Telegram.'
-                  : 'Ingresá el monto a retirar y tu CVU/alias. Los fondos quedan reservados hasta la confirmación.'}
-              </p>
-
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                <label style={{ color: 'var(--text-muted)', fontSize: 12 }}>
-                  Monto ($)
-                </label>
-
-                <input
-                  type="number"
-                  min="1"
-                  step="0.01"
-                  placeholder="0.00"
-                  value={amount}
-                  onChange={(e) => setAmount(e.target.value)}
-                  className="form-input"
-                />
-              </div>
-
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                <label style={{ color: 'var(--text-muted)', fontSize: 12 }}>
-                  {activeTab === 'Depositar'
-                    ? 'N° de comprobante / referencia'
-                    : 'CVU / Alias destino'}
-                </label>
-
-                <input
-                  type="text"
-                  placeholder={
-                    activeTab === 'Depositar'
-                      ? 'Ej: 0000012345678'
-                      : 'Ej: mi.alias.mp'
-                  }
-                  value={reference}
-                  onChange={(e) => setReference(e.target.value)}
-                  className="form-input"
-                />
-              </div>
-
-              <button
-                disabled={loading}
-                onClick={() =>
-                  handleRequest(activeTab === 'Depositar' ? 'deposit' : 'withdraw')
-                }
-                className={`btn ${
-                  activeTab === 'Depositar' ? 'btn-accept' : 'btn-danger'
-                }`}
-                style={{
-                  width: '100%',
-                  padding: '12px 0',
-                  fontSize: 15,
-                  marginTop: 4,
-                }}
-              >
-                {loading
-                  ? 'Enviando…'
-                  : activeTab === 'Depositar'
-                    ? '📥 Solicitar depósito'
-                    : '📤 Solicitar retiro'}
-              </button>
-            </div>
-          )}
+        <div className="wp-body">
+          <AnimatePresence mode="wait">
+            {tab === 'balance' && (
+              <motion.div key="balance" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+                <BalanceView wallet={wallet} />
+              </motion.div>
+            )}
+            {tab === 'history' && (
+              <motion.div key="history" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+                <HistoryView transactions={transactions} loading={txLoading} />
+              </motion.div>
+            )}
+            {tab === 'deposit' && (
+              <motion.div key="deposit" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+                <DepositForm />
+              </motion.div>
+            )}
+            {tab === 'withdraw' && (
+              <motion.div key="withdraw" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+                <WithdrawForm balance={wallet} />
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
       </motion.div>
     </motion.div>
