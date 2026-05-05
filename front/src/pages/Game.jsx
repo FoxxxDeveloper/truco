@@ -119,7 +119,7 @@ if (!gameState) {
         )}
 
         <div className={`turn-indicator ${isMyTurn ? 'my-turn' : ''}`}>
-          {isMyTurn ? '⚡ Tu turno' : `⏳ Turno de ${opponent?.username}`}
+          {isMyTurn ? '▶ Tu turno' : `⏸ Turno de ${opponent?.username}`}
         </div>
         <button
           className="btn btn-ghost btn-sm"
@@ -147,13 +147,13 @@ if (!gameState) {
               exit={{ scale: 0.85, opacity: 0 }}
               onClick={e => e.stopPropagation()}
             >
-              <div style={{ fontSize: '3rem', marginBottom: 12 }}>⚠️</div>
+              <div style={{ fontSize: '2.2rem', marginBottom: 12 }}>⚠</div>
               <h2 style={{ color: 'var(--gold)', marginBottom: 8, fontFamily: 'var(--font-display)' }}>¿Abandonar partida?</h2>
               <p style={{ color: 'var(--text-secondary)', marginBottom: 8 }}>
                 Si abandonás, tu rival gana automáticamente.
               </p>
               <p style={{ color: 'var(--red)', fontSize: '0.85rem', marginBottom: 24 }}>
-                ⚠️ Perderás puntos ELO y cualquier apuesta activa.
+                Perderás puntos ELO y cualquier apuesta activa.
               </p>
               <div style={{ display: 'flex', gap: 12, justifyContent: 'center' }}>
                 <button

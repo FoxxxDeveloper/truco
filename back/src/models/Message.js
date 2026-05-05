@@ -1,27 +1,45 @@
 const { query } = require('../config/database');
 
+/** Normalize a DB row to a consistent payload shape. */
+function normalizeRow(r) {
+  return {
+    id:         r.id,
+    from:       { id: r.sender_id },
+    to:         { id: r.receiver_id },
+    text:       r.content,
+    // backward-compat aliases
+    senderId:   r.sender_id,
+    content:    r.content,
+    createdAt:  r.created_at,
+    created_at: r.created_at,
+    readAt:     r.read_at,
+    read_at:    r.read_at,
+  };
+}
+
 const Message = {
   /**
    * Persist a private message between two users.
    */
   async create(senderId, receiverId, content) {
     if (!content || content.trim().length === 0) throw new Error('Empty message');
-    const sanitized = content.trim().substring(0, 1000); // max 1000 chars
+    const sanitized = content.trim().substring(0, 1000);
     const result = await query(
       'INSERT INTO private_messages (sender_id, receiver_id, content) VALUES (?, ?, ?)',
       [senderId, receiverId, sanitized]
     );
-    return {
+    return normalizeRow({
       id:          result.insertId,
       sender_id:   senderId,
       receiver_id: receiverId,
       content:     sanitized,
       created_at:  new Date().toISOString(),
-    };
+      read_at:     null,
+    });
   },
 
   /**
-   * Conversation between two users, newest-first.
+   * Conversation between two users, oldest-first (correct chat order).
    */
   async getConversation(userId1, userId2, { limit = 50, before = null } = {}) {
     limit = Math.min(Math.max(parseInt(limit) || 50, 1), 100);
@@ -35,9 +53,10 @@ const Message = {
       sql += ' AND id < ?';
       params.push(parseInt(before));
     }
-    sql += ' ORDER BY created_at DESC LIMIT ?';
+    sql += ' ORDER BY created_at ASC LIMIT ?';
     params.push(limit);
-    return query(sql, params);
+    const rows = await query(sql, params);
+    return rows.map(normalizeRow);
   },
 
   /** Mark all messages from sender to receiver as read */
@@ -55,6 +74,27 @@ const Message = {
       [userId]
     );
     return Number(rows[0]?.cnt ?? 0);
+  },
+
+  /**
+   * Per-sender unread counts for a user.
+   * Returns { unreadByUser: { "5": 2, "9": 1 }, totalUnread: 3 }
+   */
+  async unreadSummary(userId) {
+    const rows = await query(
+      `SELECT sender_id, COUNT(*) AS cnt
+       FROM private_messages
+       WHERE receiver_id = ? AND read_at IS NULL
+       GROUP BY sender_id`,
+      [userId]
+    );
+    const unreadByUser = {};
+    let totalUnread = 0;
+    for (const r of rows) {
+      unreadByUser[r.sender_id] = Number(r.cnt);
+      totalUnread += Number(r.cnt);
+    }
+    return { unreadByUser, totalUnread };
   },
 };
 

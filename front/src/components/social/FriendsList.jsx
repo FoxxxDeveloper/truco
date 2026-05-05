@@ -1,13 +1,10 @@
 /**
  * FriendsList — panel showing friends, pending requests, and send-request UI.
  *
- * Uses:
- *   GET  /api/social/friends
- *   GET  /api/social/friends/requests
- *   GET  /api/profile/:username
- *   POST /api/social/friends/:userId/request
- *   PUT  /api/social/friends/:userId/accept
- *   DEL  /api/social/friends/:userId
+ * Props:
+ *   onClose       () => void
+ *   onStartChat   (friend) => void
+ *   unreadCounts  { [userId]: number }  — unread messages per friend
  */
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { motion } from 'framer-motion';
@@ -15,10 +12,9 @@ import toast from 'react-hot-toast';
 import { toastErrorOnce } from '../../utils/toastOnce';
 import { useAuth } from '../../context/AuthContext';
 import { getSocket } from '../../services/socket';
+import { socialApi, profileApi } from '../../services/api';
 
-const API = import.meta.env.VITE_API_URL || 'http://localhost:3001';
-
-export default function FriendsList({ onClose, onStartChat }) {
+export default function FriendsList({ onClose, onStartChat, unreadCounts = {} }) {
   const { user } = useAuth();
 
   const [friends, setFriends] = useState([]);
@@ -32,56 +28,27 @@ export default function FriendsList({ onClose, onStartChat }) {
   const [presence, setPresence] = useState({});
   const presenceListenerRef = useRef(false);
 
-  const getHeaders = () => {
-    const token = localStorage.getItem('truco_token');
-
-    return {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    };
-  };
-
-  const parseResponse = async (res) => {
-    try {
-      return await res.json();
-    } catch {
-      return {};
-    }
-  };
-
   const load = useCallback(async () => {
     try {
       const [fRes, rRes] = await Promise.all([
-        fetch(`${API}/api/social/friends`, { headers: getHeaders() }),
-        fetch(`${API}/api/social/friends/requests`, { headers: getHeaders() }),
+        socialApi.getFriends(),
+        socialApi.getFriendRequests(),
       ]);
 
-      const friendsData = await parseResponse(fRes);
-      const requestsData = await parseResponse(rRes);
+      const loadedFriends = fRes.data.friends || [];
+      setFriends(loadedFriends);
+      setRequests(rRes.data.requests || []);
 
-      if (fRes.ok) {
-        const loadedFriends = friendsData.friends || [];
-        setFriends(loadedFriends);
-
-        // Query presence for all friends
-        const socket = getSocket();
-        if (socket?.connected && loadedFriends.length > 0) {
-          socket.emit('presence:get', { userIds: loadedFriends.map(f => f.id) });
-        }
-      }
-
-      if (rRes.ok) {
-        setRequests(requestsData.requests || []);
-      }
-
-      if (!fRes.ok || !rRes.ok) {
-        toastErrorOnce(friendsData.error || requestsData.error || 'Error al cargar amigos');
+      // Query presence for all friends
+      const socket = getSocket();
+      if (socket?.connected && loadedFriends.length > 0) {
+        socket.emit('presence:get', { userIds: loadedFriends.map(f => f.id) });
       }
     } catch (err) {
       console.error(err);
-      toastErrorOnce('Error de conexión al cargar amigos');
+      toastErrorOnce('Error al cargar amigos');
     }
-  }, [user?.id]);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Set up presence:update socket listener once
   useEffect(() => {
@@ -106,59 +73,30 @@ export default function FriendsList({ onClose, onStartChat }) {
 
   const searchUser = async () => {
     if (!search.trim()) return;
-
     setSearching(true);
     setSearchResult(null);
-
     try {
-      const res = await fetch(
-        `${API}/api/profile/${encodeURIComponent(search.trim())}`,
-        { headers: getHeaders() }
-      );
-
-      const data = await parseResponse(res);
-
-      if (res.ok) {
-        setSearchResult(data);
-      } else {
-        toast.error(data.error || 'Usuario no encontrado');
-      }
+      const res = await profileApi.getUser(search.trim());
+      setSearchResult(res.data);
     } catch (err) {
-      console.error(err);
-      toast.error('Error al buscar');
+      toast.error(err.response?.data?.error || 'Usuario no encontrado');
     } finally {
       setSearching(false);
     }
   };
 
   const sendRequest = async (userId) => {
-    if (!userId) {
-      toast.error('Usuario inválido');
-      return;
-    }
-
+    if (!userId) { toast.error('Usuario inválido'); return; }
     setLoadingAction(true);
-
     try {
-      const res = await fetch(`${API}/api/social/friends/${userId}/request`, {
-        method: 'POST',
-        headers: getHeaders(),
-      });
-
-      const data = await parseResponse(res);
-
-      if (res.ok) {
-        toast.success('Solicitud enviada');
-        setSearch('');
-        setSearchResult(null);
-        setTab('friends');
-        await load();
-      } else {
-        toast.error(data.error || 'Error al enviar solicitud');
-      }
+      await socialApi.sendFriendRequest(userId);
+      toast.success('Solicitud enviada');
+      setSearch('');
+      setSearchResult(null);
+      setTab('friends');
+      await load();
     } catch (err) {
-      console.error(err);
-      toast.error('Error de conexión');
+      toast.error(err.response?.data?.error || 'Error al enviar solicitud');
     } finally {
       setLoadingAction(false);
     }
@@ -166,24 +104,12 @@ export default function FriendsList({ onClose, onStartChat }) {
 
   const acceptRequest = async (userId) => {
     setLoadingAction(true);
-
     try {
-      const res = await fetch(`${API}/api/social/friends/${userId}/accept`, {
-        method: 'PUT',
-        headers: getHeaders(),
-      });
-
-      const data = await parseResponse(res);
-
-      if (res.ok) {
-        toast.success('¡Ahora son amigos!');
-        await load();
-      } else {
-        toast.error(data.error || 'Error al aceptar');
-      }
+      await socialApi.acceptFriend(userId);
+      toast.success('¡Ahora son amigos!');
+      await load();
     } catch (err) {
-      console.error(err);
-      toast.error('Error de conexión');
+      toast.error(err.response?.data?.error || 'Error al aceptar');
     } finally {
       setLoadingAction(false);
     }
@@ -191,24 +117,12 @@ export default function FriendsList({ onClose, onStartChat }) {
 
   const removeFriend = async (userId) => {
     setLoadingAction(true);
-
     try {
-      const res = await fetch(`${API}/api/social/friends/${userId}`, {
-        method: 'DELETE',
-        headers: getHeaders(),
-      });
-
-      const data = await parseResponse(res);
-
-      if (res.ok) {
-        toast.success('Amigo eliminado');
-        await load();
-      } else {
-        toast.error(data.error || 'Error al eliminar');
-      }
+      await socialApi.removeFriend(userId);
+      toast.success('Amigo eliminado');
+      await load();
     } catch (err) {
-      console.error(err);
-      toast.error('Error de conexión');
+      toast.error(err.response?.data?.error || 'Error al eliminar');
     } finally {
       setLoadingAction(false);
     }
@@ -378,7 +292,7 @@ export default function FriendsList({ onClose, onStartChat }) {
                     </div>
                   </div>
 
-                  <div style={{ display: 'flex', gap: 6 }}>
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                     {onStartChat && (
                       <button
                         onClick={() => onStartChat(f)}
@@ -391,9 +305,21 @@ export default function FriendsList({ onClose, onStartChat }) {
                           color: '#fff',
                           cursor: 'pointer',
                           fontSize: 12,
+                          position: 'relative',
                         }}
                       >
                         💬
+                        {unreadCounts[f.id] > 0 && (
+                          <span style={{
+                            position: 'absolute', top: -5, right: -5,
+                            background: '#ef4444', color: '#fff',
+                            borderRadius: '50%', width: 16, height: 16,
+                            fontSize: 9, fontWeight: 700,
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          }}>
+                            {unreadCounts[f.id] > 9 ? '9+' : unreadCounts[f.id]}
+                          </span>
+                        )}
                       </button>
                     )}
 

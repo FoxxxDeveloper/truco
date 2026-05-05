@@ -1,7 +1,8 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import toast from 'react-hot-toast';
+import { Upload } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { profileApi, rankingApi } from '../services/api';
 
@@ -52,16 +53,18 @@ function StatCard({ label, value, color = 'var(--text)' }) {
 export default function ProfilePage() {
   const { user, setUser } = useAuth();
   const navigate = useNavigate();
+  const fileInputRef = useRef(null);
 
   const [profile, setProfile] = useState(null);
   const [rank, setRank]       = useState(null);
   const [loading, setLoading] = useState(true);
 
   // Edit mode
-  const [editing, setEditing]       = useState(false);
-  const [editBio, setEditBio]       = useState('');
-  const [editAvatar, setEditAvatar] = useState('');
-  const [saving, setSaving]         = useState(false);
+  const [editing, setEditing]         = useState(false);
+  const [editBio, setEditBio]         = useState('');
+  const [editAvatar, setEditAvatar]   = useState('');
+  const [saving, setSaving]           = useState(false);
+  const [uploadingAvatar, setUploadingAvatar] = useState(false);
 
   useEffect(() => {
     Promise.all([profileApi.getMe(), rankingApi.getMe().catch(() => null)])
@@ -74,6 +77,26 @@ export default function ProfilePage() {
       .catch(() => toast.error('Error al cargar perfil'))
       .finally(() => setLoading(false));
   }, []);
+
+  const handleAvatarFileChange = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploadingAvatar(true);
+    try {
+      const res = await profileApi.uploadAvatar(file);
+      if (res.data?.avatarUrl) {
+        const url = `http://localhost:3001${res.data.avatarUrl}`;
+        setProfile(prev => ({ ...prev, avatar: url }));
+        setEditAvatar(url);
+        toast.success('Avatar actualizado');
+      }
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Error al subir imagen');
+    } finally {
+      setUploadingAvatar(false);
+      e.target.value = '';
+    }
+  };
 
   const handleSave = async () => {
     if (editBio.length > 500) { toast.error('La bio no puede superar 500 caracteres'); return; }
@@ -135,10 +158,29 @@ export default function ProfilePage() {
           {/* Avatar + edit button */}
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
             <Avatar src={editing ? editAvatar : profile.avatar} username={profile.username} size={100} />
-            {!editing && (
+            {!editing ? (
               <button className="btn btn-ghost btn-sm" onClick={() => setEditing(true)}>
                 ✏️ Editar perfil
               </button>
+            ) : (
+              <>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp,image/gif"
+                  style={{ display: 'none' }}
+                  onChange={handleAvatarFileChange}
+                />
+                <button
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={uploadingAvatar}
+                  style={{ display: 'flex', alignItems: 'center', gap: 5 }}
+                >
+                  <Upload size={13} />
+                  {uploadingAvatar ? 'Subiendo...' : 'Subir foto'}
+                </button>
+              </>
             )}
           </div>
 

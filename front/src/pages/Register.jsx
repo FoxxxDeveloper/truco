@@ -60,7 +60,8 @@ export default function Register() {
       <section className="auth-card animate-pop-in">
     
         <div className="auth-logo">
-          <h1> Truco</h1>
+          <h1>TrucoFX</h1>
+          <p>Truco Argentino Online</p>
           <p>Creá tu cuenta y empezá la partida</p>
         </div>
 

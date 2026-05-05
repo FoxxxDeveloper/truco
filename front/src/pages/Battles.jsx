@@ -8,7 +8,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
 import { useGame } from '../context/GameContext';
-import { battleApi, walletApi } from '../services/api';
+import { battleApi, walletApi, verificationApi } from '../services/api';
 import { getSocket } from '../services/socket';
 
 const TABS = [
@@ -321,6 +321,7 @@ export default function Battles() {
   const [balance,     setBalance]    = useState(null);
   const [loadingId,   setLoadingId]  = useState(null);
   const [fetching,    setFetching]   = useState(false);
+  const [verifyStatus, setVerifyStatus] = useState(null);
   const refreshRef = useRef(null);
 
   // Navigate to game when a battle starts
@@ -340,6 +341,12 @@ export default function Battles() {
       setBalance(parseFloat(r.data.balance || 0));
     } catch { /* non-critical */ }
   }, []);
+
+  useEffect(() => {
+    verificationApi.getStatus()
+      .then(res => setVerifyStatus(res.data?.identity_status || 'unverified'))
+      .catch(() => setVerifyStatus('unverified'));
+  }, [user]);
 
   const loadPublic = useCallback(async () => {
     setFetching(true);
@@ -475,6 +482,34 @@ export default function Battles() {
           </button>
         ))}
       </nav>
+
+      {/* Verification banner */}
+      {verifyStatus && verifyStatus !== 'verified' && (
+        <div style={{
+          background: verifyStatus === 'pending' ? 'rgba(245,158,11,0.1)' : 'rgba(239,68,68,0.1)',
+          border: `1px solid ${verifyStatus === 'pending' ? 'rgba(245,158,11,0.4)' : 'rgba(239,68,68,0.4)'}`,
+          borderRadius: 10, margin: '0 0 16px', padding: '12px 16px',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap',
+        }}>
+          <span style={{ color: verifyStatus === 'pending' ? '#f59e0b' : '#fca5a5', fontSize: 14 }}>
+            {verifyStatus === 'pending'
+              ? '⏳ Tu verificación de identidad está pendiente de revisión'
+              : verifyStatus === 'rejected'
+                ? '❌ Tu verificación fue rechazada. Corregí los datos para participar'
+                : '⚠️ Para crear o aceptar batallas necesitás verificar tu identidad'}
+          </span>
+          <button
+            onClick={() => navigate('/verification')}
+            style={{
+              background: verifyStatus === 'pending' ? '#f59e0b' : '#ef4444',
+              color: '#fff', border: 'none', borderRadius: 7,
+              padding: '7px 14px', fontWeight: 700, fontSize: 13, cursor: 'pointer', flexShrink: 0,
+            }}
+          >
+            {verifyStatus === 'pending' ? 'Ver estado' : 'Verificar identidad'}
+          </button>
+        </div>
+      )}
 
       <main className="battles-main">
         <AnimatePresence mode="wait">

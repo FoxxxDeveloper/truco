@@ -50,7 +50,7 @@ export default function Login() {
 
 
      <div className="auth-logo">
-  <h1>Truco</h1>
+  <h1>TrucoFX</h1>
   <p>Truco Argentino Online</p>
 </div>
 

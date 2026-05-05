@@ -2,10 +2,10 @@ import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { useAuth } from '../context/AuthContext';
-import { adminApi } from '../services/api';
+import { adminApi, verificationApi } from '../services/api';
 import toast from 'react-hot-toast';
 
-const TABS = ['Dashboard', 'Cajero', 'Usuarios', 'Transacciones', 'Partidas', 'Auditoría'];
+const TABS = ['Dashboard', 'Cajero', 'Usuarios', 'Transacciones', 'Partidas', 'Auditoría', 'Verificaciones'];
 
 // ─── Cashier Panel ─────────────────────────────────────────────────
 function CajeroPanel() {
@@ -145,6 +145,176 @@ function CajeroPanel() {
           </p>
         )}
       </div>
+    </div>
+  );
+}
+
+// ─── Verifications Panel ───────────────────────────────────────────────────
+function VerificationsPanel() {
+  const [list,     setList]     = useState([]);
+  const [loading,  setLoading]  = useState(true);
+  const [statusFilter, setStatusFilter] = useState('pending');
+  const [rejectTarget, setRejectTarget] = useState(null);
+  const [rejectReason, setRejectReason] = useState('');
+  const [working,  setWorking]  = useState(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const r = await adminApi.listVerifications({ status: statusFilter });
+      setList(r.data.verifications || []);
+    } catch { toast.error('Error cargando verificaciones'); }
+    finally { setLoading(false); }
+  }, [statusFilter]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const handleApprove = async (userId, username) => {
+    if (!window.confirm(`¿Aprobar verificación de ${username}?`)) return;
+    setWorking(userId);
+    try {
+      await adminApi.approveVerification(userId);
+      toast.success(`Verificación de ${username} aprobada`);
+      load();
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Error al aprobar');
+    } finally { setWorking(null); }
+  };
+
+  const handleRejectSubmit = async () => {
+    if (!rejectReason.trim()) { toast.error('El motivo es obligatorio'); return; }
+    setWorking(rejectTarget.user_id);
+    try {
+      await adminApi.rejectVerification(rejectTarget.user_id, { reason: rejectReason });
+      toast.success(`Verificación de ${rejectTarget.username} rechazada`);
+      setRejectTarget(null);
+      setRejectReason('');
+      load();
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Error al rechazar');
+    } finally { setWorking(null); }
+  };
+
+  const TD = ({ children, muted }) => (
+    <td style={{ padding: '10px 14px', color: muted ? 'var(--text-muted)' : undefined, fontSize: muted ? 12 : 14 }}>
+      {children}
+    </td>
+  );
+
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 10, marginBottom: 16, alignItems: 'center' }}>
+        <h3 style={{ margin: 0, color: '#fff' }}>Verificaciones de identidad</h3>
+        <select
+          value={statusFilter}
+          onChange={e => setStatusFilter(e.target.value)}
+          style={{ background: '#243447', border: '1px solid #374151', borderRadius: 7, color: '#fff', padding: '5px 10px', fontSize: 13 }}
+        >
+          {['pending','verified','rejected','all'].map(s => (
+            <option key={s} value={s}>{s}</option>
+          ))}
+        </select>
+        <button onClick={load} style={{ background: 'none', border: '1px solid #374151', borderRadius: 7, color: '#9ca3af', padding: '5px 12px', cursor: 'pointer', fontSize: 13 }}>
+          ↻
+        </button>
+      </div>
+
+      {loading && <p style={{ color: 'var(--text-muted)', padding: '20px 0' }}>Cargando…</p>}
+
+      {!loading && list.length === 0 && (
+        <p style={{ color: 'var(--text-muted)', padding: '20px 0' }}>No hay solicitudes con estado "{statusFilter}".</p>
+      )}
+
+      {!loading && list.length > 0 && (
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', background: 'var(--bg-card)', borderRadius: 12, overflow: 'hidden' }}>
+            <thead>
+              <tr style={{ background: 'var(--bg-surface)' }}>
+                {['Usuario', 'Nombre legal', 'Documento', 'Nacimiento', 'País', 'Estado', 'Enviado', 'Acciones'].map(h => (
+                  <th key={h} style={{ padding: '10px 14px', textAlign: 'left', fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', whiteSpace: 'nowrap' }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {list.map(v => (
+                <tr key={v.user_id} style={{ borderTop: '1px solid var(--border)' }}>
+                  <TD>{v.username}<br /><span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{v.email}</span></TD>
+                  <TD>{v.legal_first_name} {v.legal_last_name}</TD>
+                  <TD muted>{v.document_type?.toUpperCase()}: {v.document_number_masked}</TD>
+                  <TD muted>{v.date_of_birth ? new Date(v.date_of_birth).toLocaleDateString('es-AR') : '—'}</TD>
+                  <TD muted>{v.country}{v.province ? `, ${v.province}` : ''}</TD>
+                  <TD>
+                    <span style={{
+                      padding: '2px 8px', borderRadius: 10, fontSize: 11, fontWeight: 700,
+                      background: v.identity_status === 'verified' ? 'rgba(34,197,94,.2)' : v.identity_status === 'pending' ? 'rgba(245,158,11,.2)' : v.identity_status === 'rejected' ? 'rgba(239,68,68,.2)' : '#243447',
+                      color:      v.identity_status === 'verified' ? '#22c55e' : v.identity_status === 'pending' ? '#f59e0b' : v.identity_status === 'rejected' ? '#ef4444' : '#9ca3af',
+                    }}>
+                      {v.identity_status}
+                    </span>
+                    {v.rejection_reason && (
+                      <span title={v.rejection_reason} style={{ marginLeft: 6, fontSize: 11, color: '#f87171', cursor: 'help' }}>ⓘ</span>
+                    )}
+                  </TD>
+                  <TD muted>{new Date(v.created_at).toLocaleDateString('es-AR')}</TD>
+                  <td style={{ padding: '8px 14px', whiteSpace: 'nowrap' }}>
+                    {v.identity_status === 'pending' && (
+                      <>
+                        <button
+                          onClick={() => handleApprove(v.user_id, v.username)}
+                          disabled={working === v.user_id}
+                          style={{ background: '#22c55e', color: '#000', border: 'none', borderRadius: 6, padding: '5px 12px', fontWeight: 700, fontSize: 12, cursor: 'pointer', marginRight: 6 }}
+                        >
+                          Aprobar
+                        </button>
+                        <button
+                          onClick={() => { setRejectTarget(v); setRejectReason(''); }}
+                          disabled={working === v.user_id}
+                          style={{ background: '#ef4444', color: '#fff', border: 'none', borderRadius: 6, padding: '5px 12px', fontWeight: 700, fontSize: 12, cursor: 'pointer' }}
+                        >
+                          Rechazar
+                        </button>
+                      </>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Reject modal */}
+      {rejectTarget && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999 }}>
+          <div style={{ background: '#1e2a3a', border: '1px solid #374151', borderRadius: 14, padding: 28, width: '100%', maxWidth: 420 }}>
+            <h3 style={{ color: '#fff', marginTop: 0 }}>Rechazar verificación</h3>
+            <p style={{ color: '#9ca3af', fontSize: 13 }}>Usuario: <strong style={{ color: '#fff' }}>{rejectTarget.username}</strong></p>
+            <textarea
+              value={rejectReason}
+              onChange={e => setRejectReason(e.target.value)}
+              placeholder="Motivo del rechazo (obligatorio)"
+              maxLength={500}
+              rows={4}
+              style={{ width: '100%', background: '#243447', border: '1px solid #374151', borderRadius: 8, color: '#fff', padding: '10px 12px', fontSize: 13, resize: 'vertical', boxSizing: 'border-box' }}
+            />
+            <div style={{ display: 'flex', gap: 10, marginTop: 16 }}>
+              <button
+                onClick={handleRejectSubmit}
+                disabled={!rejectReason.trim() || working !== null}
+                style={{ flex: 1, background: '#ef4444', color: '#fff', border: 'none', borderRadius: 8, padding: '10px', fontWeight: 700, cursor: 'pointer' }}
+              >
+                Confirmar rechazo
+              </button>
+              <button
+                onClick={() => setRejectTarget(null)}
+                style={{ flex: 1, background: '#374151', color: '#fff', border: 'none', borderRadius: 8, padding: '10px', cursor: 'pointer' }}
+              >
+                Cancelar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -430,6 +600,11 @@ export default function Admin() {
               </tbody>
             </table>
           </div>
+        )}
+
+        {/* ─── Verificaciones ─── */}
+        {!loading && tab === 'Verificaciones' && (
+          <VerificationsPanel />
         )}
       </div>
     </div>

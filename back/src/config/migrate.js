@@ -208,6 +208,44 @@ CREATE TABLE IF NOT EXISTS admin_logs (
 ) ENGINE=InnoDB;
 `;
 
+// ─── General chat table ─────────────────────────────────────────────────────
+const GENERAL_CHAT_TABLE = `
+CREATE TABLE IF NOT EXISTS general_messages (
+  id         INT AUTO_INCREMENT PRIMARY KEY,
+  user_id    INT          NOT NULL,
+  content    VARCHAR(500) NOT NULL,
+  created_at DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_gm_created (created_at),
+  FOREIGN KEY (user_id) REFERENCES usuarios(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+`;
+
+// ─── Identity verification tables ───────────────────────────────────────────
+const VERIFICATION_TABLES = `
+CREATE TABLE IF NOT EXISTS user_verifications (
+  id                 INT AUTO_INCREMENT PRIMARY KEY,
+  user_id            INT NOT NULL,
+  identity_status    ENUM('unverified','pending','verified','rejected') NOT NULL DEFAULT 'unverified',
+  age_verified       TINYINT(1) NOT NULL DEFAULT 0,
+  date_of_birth      DATE DEFAULT NULL,
+  legal_first_name   VARCHAR(100) DEFAULT NULL,
+  legal_last_name    VARCHAR(100) DEFAULT NULL,
+  document_type      ENUM('dni','passport','cuit','other') DEFAULT NULL,
+  document_number    VARCHAR(50) DEFAULT NULL,
+  country            VARCHAR(50) DEFAULT NULL,
+  province           VARCHAR(50) DEFAULT NULL,
+  rejection_reason   TEXT DEFAULT NULL,
+  reviewed_by        INT DEFAULT NULL,
+  reviewed_at        DATETIME DEFAULT NULL,
+  created_at         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uk_uv_user (user_id),
+  INDEX idx_uv_status (identity_status),
+  FOREIGN KEY (user_id)     REFERENCES usuarios(id) ON DELETE CASCADE,
+  FOREIGN KEY (reviewed_by) REFERENCES usuarios(id) ON DELETE SET NULL
+) ENGINE=InnoDB;
+`;
+
 async function columnExists(conn, tableName, columnName) {
   const [rows] = await conn.query(
     `
@@ -325,6 +363,8 @@ async function migrate() {
     await runStatements(conn, WALLET_TABLES);
     await runStatements(conn, SOCIAL_TABLES);
     await runStatements(conn, ADMIN_TABLES);
+    await runStatements(conn, GENERAL_CHAT_TABLE);
+    await runStatements(conn, VERIFICATION_TABLES);
 
     await runAdditiveMigrations(conn);
 

@@ -12,6 +12,7 @@ import Admin from './pages/Admin';
 import ProfilePage from './pages/ProfilePage';
 import RulesPage from './pages/RulesPage';
 import Battles from './pages/Battles';
+import VerificationPage from './pages/VerificationPage';
 
 function App() {
   return (
@@ -83,6 +84,15 @@ function App() {
             />
 
             <Route path="/reglas" element={<RulesPage />} />
+
+            <Route
+              path="/verification"
+              element={
+                <ProtectedRoute>
+                  <VerificationPage />
+                </ProtectedRoute>
+              }
+            />
 
             <Route
               path="/batallas"

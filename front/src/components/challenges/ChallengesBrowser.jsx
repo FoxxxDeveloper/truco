@@ -137,15 +137,16 @@ export default function ChallengesBrowser({ onClose }) {
         animate={{ scale: 1, y: 0 }}
         exit={{ scale: 0.9 }}
         style={{
-          background: 'var(--bg-card)',
-          border: '1px solid var(--border)',
+          background: '#1e2a1a',
+          border: '1px solid rgba(200,148,58,.35)',
           borderRadius: 16,
           padding: 28,
-          width: 440,
+          width: 480,
           maxWidth: '100%',
           maxHeight: '85vh',
           display: 'flex',
           flexDirection: 'column',
+          overflow: 'hidden',
         }}
         onClick={(e) => e.stopPropagation()}
       >
@@ -157,7 +158,7 @@ export default function ChallengesBrowser({ onClose }) {
             marginBottom: 20,
           }}
         >
-          <h2 style={{ margin: 0, fontSize: 20 }}>⚔️ Partidas apostadas</h2>
+          <h2 style={{ margin: 0, fontSize: 20, color: '#ffc757' }}>⚔️ Batallas competitivas</h2>
 
           <button
             onClick={onClose}
@@ -194,7 +195,7 @@ export default function ChallengesBrowser({ onClose }) {
             display: 'flex',
             gap: 6,
             marginBottom: 16,
-            background: 'var(--bg-surface)',
+            background: 'rgba(0,0,0,.3)',
             borderRadius: 10,
             padding: 4,
           }}

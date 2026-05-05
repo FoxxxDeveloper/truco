@@ -1,17 +1,44 @@
 /**
  * Profile routes
  * GET  /api/profile/me              — own profile (full)
- * GET  /api/profile/:username       — public profile
- * PUT  /api/profile                 — update bio / avatar
+ * GET  /api/users/:id/public        — public profile by numeric ID
+ * GET  /api/profile/:username       — public profile by username
+ * PUT  /api/profile                 — update bio / avatar URL
+ * POST /api/profile/avatar          — upload avatar file (multipart)
  * GET  /api/games/active            — reconnectable games for current user
  * GET  /api/games/history           — game history (paginated)
  */
+const path           = require('path');
+const fs             = require('fs');
 const express        = require('express');
+const multer         = require('multer');
 const authMiddleware = require('../middleware/auth');
 const logger         = require('../config/logger');
 const { query }      = require('../config/database');
 
 const router = express.Router();
+
+// ── Multer config for avatar uploads ─────────────────────────────────────────
+const UPLOAD_DIR = path.join(__dirname, '../../uploads/avatars');
+// Ensure directory exists
+try { fs.mkdirSync(UPLOAD_DIR, { recursive: true }); } catch (_) {}
+
+const avatarStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, UPLOAD_DIR),
+  filename: (req, file, cb) => {
+    const ext  = path.extname(file.originalname).toLowerCase() || '.jpg';
+    const safe = ext.replace(/[^.a-z0-9]/gi, '');
+    cb(null, `avatar_${req.user.id}_${Date.now()}${safe}`);
+  },
+});
+const avatarUpload = multer({
+  storage: avatarStorage,
+  limits:  { fileSize: 2 * 1024 * 1024 }, // 2 MB
+  fileFilter: (_req, file, cb) => {
+    if (/^image\/(jpeg|png|webp|gif)$/.test(file.mimetype)) cb(null, true);
+    else cb(new Error('Solo se permiten imágenes JPG, PNG, WebP o GIF'));
+  },
+});
 
 // ── Own profile ───────────────────────────────────────────────────────────────
 router.get('/me', authMiddleware, async (req, res) => {
@@ -90,7 +117,6 @@ router.put('/', authMiddleware, async (req, res) => {
     if (updates.bio && updates.bio.length > 500) {
       return res.status(400).json({ error: 'Bio max 500 chars' });
     }
-    // avatar: only allow preset keys or null (full URL support can be added later)
     if (updates.avatar && typeof updates.avatar !== 'string') {
       return res.status(400).json({ error: 'Invalid avatar' });
     }
@@ -104,6 +130,28 @@ router.put('/', authMiddleware, async (req, res) => {
     logger.error('profile PUT: ' + err.message);
     return res.status(500).json({ error: 'Server error' });
   }
+});
+
+// ── Avatar file upload ────────────────────────────────────────────────────────
+router.post('/avatar', authMiddleware, (req, res) => {
+  avatarUpload.single('avatar')(req, res, async (err) => {
+    if (err) {
+      return res.status(400).json({ error: err.message || 'Error al subir imagen' });
+    }
+    if (!req.file) {
+      return res.status(400).json({ error: 'No se recibió ningún archivo' });
+    }
+    try {
+      const avatarUrl = `/uploads/avatars/${req.file.filename}`;
+      await query('UPDATE usuarios SET avatar = ? WHERE id = ?', [avatarUrl, req.user.id]);
+      return res.json({ ok: true, avatarUrl });
+    } catch (dbErr) {
+      // Remove uploaded file if DB update fails
+      fs.unlink(req.file.path, () => {});
+      logger.error('avatar upload db: ' + dbErr.message);
+      return res.status(500).json({ error: 'Server error' });
+    }
+  });
 });
 
 // ── Link Telegram account ─────────────────────────────────────────────────────

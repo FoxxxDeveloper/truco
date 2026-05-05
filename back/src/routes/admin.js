@@ -3,10 +3,11 @@
  * All mutations are recorded in admin_logs.
  */
 const express = require('express');
-const authMiddleware = require('../middleware/auth');
-const adminAuth      = require('../middleware/adminAuth');
-const { query }      = require('../config/database');
-const logger         = require('../config/logger');
+const authMiddleware      = require('../middleware/auth');
+const adminAuth           = require('../middleware/adminAuth');
+const { query }           = require('../config/database');
+const logger              = require('../config/logger');
+const VerificationService = require('../services/verificationService');
 
 const router = express.Router();
 router.use(authMiddleware, adminAuth);
@@ -270,6 +271,92 @@ router.get('/logs', async (req, res) => {
     );
     return res.json({ logs });
   } catch (err) {
+    return res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// ── GET /api/admin/verifications ─────────────────────────────────
+// List verification requests filtered by status (default: pending)
+router.get('/verifications', async (req, res) => {
+  try {
+    const { status = 'pending', limit = 50, offset = 0 } = req.query;
+    const allowed = ['unverified','pending','verified','rejected','all'];
+    const safeStatus = allowed.includes(status) ? status : 'pending';
+    const lim = Math.min(Number(limit), 200);
+    const off = Math.max(Number(offset), 0);
+
+    let sql = `
+      SELECT uv.user_id, uv.identity_status, uv.age_verified, uv.date_of_birth,
+             uv.legal_first_name, uv.legal_last_name,
+             uv.document_type,
+             CONCAT(REPEAT('•', GREATEST(0, LENGTH(uv.document_number) - 3)),
+                    RIGHT(uv.document_number, 3)) AS document_number_masked,
+             uv.country, uv.province, uv.rejection_reason,
+             uv.reviewed_by, uv.reviewed_at, uv.created_at, uv.updated_at,
+             u.username, u.email,
+             a.username AS reviewer_username
+      FROM user_verifications uv
+      JOIN usuarios u ON u.id = uv.user_id
+      LEFT JOIN usuarios a ON a.id = uv.reviewed_by
+    `;
+    const params = [];
+    if (safeStatus !== 'all') {
+      sql += ' WHERE uv.identity_status = ?';
+      params.push(safeStatus);
+    }
+    sql += ` ORDER BY uv.created_at DESC LIMIT ${lim} OFFSET ${off}`;
+
+    const rows = await query(sql, params);
+    return res.json({ verifications: rows });
+  } catch (err) {
+    logger.error('admin verifications list: ' + err.message);
+    return res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// ── POST /api/admin/verifications/:userId/approve ─────────────────
+router.post('/verifications/:userId/approve', async (req, res) => {
+  try {
+    const targetId = parseInt(req.params.userId);
+    if (isNaN(targetId)) return res.status(400).json({ error: 'Invalid userId' });
+
+    await VerificationService.approveVerification(req.user.id, targetId);
+
+    await auditAdmin(req.user.id, 'verify_approve', 'user_verification', targetId,
+      { identity_status: 'pending' }, { identity_status: 'verified', age_verified: true },
+      null, req.ip);
+
+    return res.json({ ok: true, message: 'Verificación aprobada' });
+  } catch (err) {
+    const userErrors = ['menor de edad', 'No hay solicitud', 'estado'];
+    if (userErrors.some(e => err.message.includes(e))) {
+      return res.status(400).json({ error: err.message });
+    }
+    logger.error('admin verify approve: ' + err.message);
+    return res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// ── POST /api/admin/verifications/:userId/reject ──────────────────
+router.post('/verifications/:userId/reject', async (req, res) => {
+  try {
+    const targetId = parseInt(req.params.userId);
+    if (isNaN(targetId)) return res.status(400).json({ error: 'Invalid userId' });
+
+    const { reason } = req.body;
+    await VerificationService.rejectVerification(req.user.id, targetId, reason);
+
+    await auditAdmin(req.user.id, 'verify_reject', 'user_verification', targetId,
+      { identity_status: 'pending' }, { identity_status: 'rejected', reason },
+      reason, req.ip);
+
+    return res.json({ ok: true, message: 'Verificación rechazada' });
+  } catch (err) {
+    const userErrors = ['obligatorio', 'No hay solicitud', 'estado'];
+    if (userErrors.some(e => err.message.includes(e))) {
+      return res.status(400).json({ error: err.message });
+    }
+    logger.error('admin verify reject: ' + err.message);
     return res.status(500).json({ error: 'Server error' });
   }
 });

@@ -20,6 +20,12 @@ const NotificationService = {
   isOnline(userId) { return (onlineUsers.get(userId)?.size ?? 0) > 0; },
 
   /**
+   * Returns the Set of socketIds for a user, or an empty Set if offline.
+   * Prefer this over accessing onlineUsers directly from other modules.
+   */
+  getSockets(userId) { return onlineUsers.get(Number(userId)) || new Set(); },
+
+  /**
    * Create a notification and push it to the user's sockets if online.
    * @param {object} opts
    * @param {number} opts.userId  — recipient

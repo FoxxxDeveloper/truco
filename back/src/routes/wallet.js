@@ -125,4 +125,23 @@ router.post('/withdraw/request', financialLimit, async (req, res) => {
   }
 });
 
+// POST /api/wallet/withdraw/:id/cancel — user cancels their pending withdrawal
+router.post('/withdraw/:id/cancel', financialLimit, async (req, res) => {
+  try {
+    const txId = parseInt(req.params.id, 10);
+    if (!txId) return res.status(400).json({ error: 'Invalid id' });
+    await WalletService.cancelWithdrawal(txId, req.user.id);
+    return res.json({ message: 'Withdrawal cancelled and funds returned' });
+  } catch (err) {
+    if (err.message === 'Pending withdrawal not found') {
+      return res.status(404).json({ error: 'Retiro pendiente no encontrado' });
+    }
+    if (err.message === 'Unauthorized') {
+      return res.status(403).json({ error: 'Sin autorización' });
+    }
+    logger.error('cancel withdrawal: ' + err.message);
+    return res.status(500).json({ error: 'Server error' });
+  }
+});
+
 module.exports = router;

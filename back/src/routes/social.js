@@ -5,6 +5,7 @@ const express             = require('express');
 const authMiddleware      = require('../middleware/auth');
 const Friend              = require('../models/Friend');
 const Message             = require('../models/Message');
+const GeneralMessage      = require('../models/GeneralMessage');
 const NotificationService = require('../services/notificationService');
 const logger              = require('../config/logger');
 const { query }           = require('../config/database');
@@ -139,18 +140,41 @@ router.put('/notifications/:id/read', async (req, res) => {
 
 // ── Private messages ───────────────────────────────────────────────────────────
 
+// IMPORTANT: static sub-paths MUST be defined before /:userId to avoid route shadowing.
+
+// GET /api/social/messages/unread-summary — per-sender unread counts
+router.get('/messages/unread-summary', async (req, res) => {
+  try {
+    const summary = await Message.unreadSummary(req.user.id);
+    return res.json(summary);
+  } catch (err) {
+    logger.error('unread summary: ' + err.message);
+    return res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// GET /api/social/messages/unread-count — total unread count
+router.get('/messages/unread-count', async (req, res) => {
+  try {
+    const count = await Message.unreadCount(req.user.id);
+    return res.json({ count });
+  } catch (err) {
+    logger.error('unread count: ' + err.message);
+    return res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // GET /api/social/messages/:userId — conversation history
 router.get('/messages/:userId', async (req, res) => {
   try {
     const otherId = parseInt(req.params.userId);
     if (isNaN(otherId)) return res.status(400).json({ error: 'Invalid userId' });
 
-    // Only friends can chat (optional security rule)
     const areFriends = await Friend.areFriends(req.user.id, otherId);
     if (!areFriends) return res.status(403).json({ error: 'Not friends' });
 
     const messages = await Message.getConversation(req.user.id, otherId, req.query);
-    // Mark messages from other user as read
+    // Auto-mark messages from other user as read when conversation is fetched
     await Message.markRead(otherId, req.user.id);
     return res.json({ messages });
   } catch (err) {
@@ -159,13 +183,29 @@ router.get('/messages/:userId', async (req, res) => {
   }
 });
 
-// GET /api/social/messages/unread-count
-router.get('/messages/unread-count', async (req, res) => {
+// POST /api/social/messages/:userId/read — explicit mark-read (called when chat is open)
+router.post('/messages/:userId/read', async (req, res) => {
   try {
-    const count = await Message.unreadCount(req.user.id);
-    return res.json({ count });
+    const otherId = parseInt(req.params.userId);
+    if (isNaN(otherId)) return res.status(400).json({ error: 'Invalid userId' });
+    await Message.markRead(otherId, req.user.id);
+    return res.json({ ok: true });
   } catch (err) {
-    logger.error('unread count: ' + err.message);
+    logger.error('mark messages read: ' + err.message);
+    return res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// ── General messages ───────────────────────────────────────────────────────────
+
+// GET /api/social/general-messages?limit=50
+router.get('/general-messages', async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit) || 50, 100);
+    const messages = await GeneralMessage.getRecent(limit);
+    return res.json({ messages });
+  } catch (err) {
+    logger.error('get general messages: ' + err.message);
     return res.status(500).json({ error: 'Server error' });
   }
 });

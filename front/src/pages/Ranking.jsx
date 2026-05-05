@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 import { rankingApi } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import toast from 'react-hot-toast';
-
 import { TrophyIcon } from '../components/Icons';
+import PublicProfileModal from '../components/profile/PublicProfileModal';
 
 const MEDAL_COLORS = ['#f6c453', '#b0b8c4', '#c47a3a'];
 const MEDAL_LABELS = ['1°', '2°', '3°'];
@@ -39,6 +39,7 @@ export default function Ranking() {
   const [myRank, setMyRank]   = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState(null);
+  const [viewUserId, setViewUserId] = useState(null);
   const { user } = useAuth();
   const navigate = useNavigate();
 

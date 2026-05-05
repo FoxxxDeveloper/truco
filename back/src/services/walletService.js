@@ -35,9 +35,16 @@ const WalletService = {
   async getBalance(userId) {
     const rows = await query('SELECT balance, reserved FROM wallet WHERE user_id = ?', [userId]);
     if (!rows.length) return null;
+    // Sum pending withdrawals separately so UI can show "pendiente de retiro"
+    const pendingRows = await query(
+      "SELECT COALESCE(SUM(amount),0) AS total FROM transactions WHERE user_id = ? AND type = 'withdrawal' AND status = 'pending'",
+      [userId]
+    );
+    const pendingWithdrawal = parseFloat(pendingRows[0]?.total || 0);
     return {
-      balance:   parseFloat(rows[0].balance),
-      reserved:  parseFloat(rows[0].reserved),
+      balance:            parseFloat(rows[0].balance),
+      reserved:           parseFloat(rows[0].reserved),
+      pendingWithdrawal,
     };
   },
 
@@ -308,12 +315,45 @@ const WalletService = {
       );
       await conn.execute(
         `INSERT INTO transactions (user_id, type, amount, status, reference)
-         VALUES (?, 'bet_lock', ?, 'cancelled', ?)`,
+         VALUES (?, 'bet_loss', ?, 'completed', ?)`,
         [loserId, betAmount, challengeId]
       );
 
       auditLog('settle_game', { winnerId, loserId, betAmount, prize, commission, challengeId });
       return { prize, commission };
+    });
+  },
+
+  /**
+   * Cancel a pending withdrawal (user-initiated or admin-rejected).
+   * Returns funds from reserved → balance.
+   */
+  async cancelWithdrawal(transactionId, userId) {
+    return withTransaction(async (conn) => {
+      const [rows] = await conn.execute(
+        "SELECT * FROM transactions WHERE id = ? AND type = 'withdrawal' AND status = 'pending' FOR UPDATE",
+        [transactionId]
+      );
+      if (!rows.length) throw new Error('Pending withdrawal not found');
+      const tx = rows[0];
+
+      // Only the owner can cancel (or admin passes userId = null to skip check)
+      if (userId !== null && tx.user_id !== userId) {
+        throw new Error('Unauthorized');
+      }
+
+      await conn.execute(
+        'UPDATE wallet SET reserved = reserved - ?, balance = balance + ? WHERE user_id = ?',
+        [parseFloat(tx.amount), parseFloat(tx.amount), tx.user_id]
+      );
+
+      await conn.execute(
+        "UPDATE transactions SET status = 'cancelled' WHERE id = ?",
+        [transactionId]
+      );
+
+      auditLog('withdrawal_cancelled', { userId: tx.user_id, transactionId });
+      return { userId: tx.user_id, amount: parseFloat(tx.amount) };
     });
   },
 

@@ -12,16 +12,18 @@ const { testConnection } = require('./config/database');
 const setupSocketIO  = require('./socket/socketManager');
 const { errorHandler } = require('./middleware/errorHandler');
 
-const authRoutes      = require('./routes/auth');
-const rankingRoutes   = require('./routes/ranking');
-const walletRoutes    = require('./routes/wallet');
-const challengeRoutes = require('./routes/challenge');
-const battlesRoutes   = require('./routes/battles');
-const profileRoutes   = require('./routes/profile');
-const socialRoutes    = require('./routes/social');
-const telegramRoutes  = require('./routes/telegram');
-const adminRoutes     = require('./routes/admin');
-const BattleService   = require('./services/battleService');
+const authRoutes         = require('./routes/auth');
+const rankingRoutes      = require('./routes/ranking');
+const walletRoutes       = require('./routes/wallet');
+const challengeRoutes    = require('./routes/challenge');
+const battlesRoutes      = require('./routes/battles');
+const profileRoutes      = require('./routes/profile');
+const socialRoutes       = require('./routes/social');
+const telegramRoutes     = require('./routes/telegram');
+const adminRoutes        = require('./routes/admin');
+const verificationRoutes = require('./routes/verification');
+const usersRoutes        = require('./routes/users');
+const BattleService      = require('./services/battleService');
 
 const app    = express();
 const server = http.createServer(app);
@@ -53,6 +55,9 @@ app.use(cors(corsOptions));
 // ── BODY PARSING ──────────────────────────────────────────────────
 app.use(express.json({ limit: '10kb' }));
 
+// ── STATIC FILES ──────────────────────────────────────────────────
+app.use('/uploads', express.static(require('path').join(__dirname, '../uploads')));
+
 // ── LOGGING ───────────────────────────────────────────────────────
 app.use(morgan('combined', {
   stream: { write: (msg) => logger.info(msg.trim()) },
@@ -67,15 +72,17 @@ app.use(rateLimit({
 }));
 
 // ── ROUTES ────────────────────────────────────────────────────────
-app.use('/api/auth',       authRoutes);
-app.use('/api/ranking',    rankingRoutes);
-app.use('/api/wallet',     walletRoutes);
-app.use('/api/challenges', challengeRoutes);
-app.use('/api/battles',    battlesRoutes);
-app.use('/api/profile',    profileRoutes);
-app.use('/api/social',     socialRoutes);
-app.use('/api/telegram',   telegramRoutes);
-app.use('/api/admin',      adminRoutes);
+app.use('/api/auth',         authRoutes);
+app.use('/api/ranking',      rankingRoutes);
+app.use('/api/wallet',       walletRoutes);
+app.use('/api/challenges',   challengeRoutes);
+app.use('/api/battles',      battlesRoutes);
+app.use('/api/profile',      profileRoutes);
+app.use('/api/social',       socialRoutes);
+app.use('/api/telegram',     telegramRoutes);
+app.use('/api/admin',        adminRoutes);
+app.use('/api/verification', verificationRoutes);
+app.use('/api/users',        usersRoutes);
 
 app.get('/api/health', (_req, res) => res.json({ status: 'ok', ts: Date.now() }));
 

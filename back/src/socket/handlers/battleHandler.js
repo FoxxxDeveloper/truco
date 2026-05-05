@@ -21,41 +21,88 @@ const { query }       = require('../../config/database');
 function registerBattleHandlers(io, socket, user) {
 
   /**
-   * battle:accept — el cliente ya llamó al REST endpoint que reservó los fondos.
-   * Este evento recibe el resultado (roomId, battleId, etc.) y dispara el juego.
+   * battle:startGame — triggered after the REST accept endpoint succeeds.
    *
-   * Payload: { battleId, roomId, creatorId, opponentId, amount, prize, gameConfig }
+   * The client sends ONLY { battleId }.
+   * ALL game data (roomId, creatorId, opponentId, amount, prize, gameConfig)
+   * is loaded from DB and never trusted from the client payload.
+   *
+   * Guards:
+   *   - battle must exist in DB
+   *   - status must be 'accepted' (not 'open', 'finished', 'cancelled', etc.)
+   *   - socket.data.user.id must be creator_id OR opponent_id from DB row
+   *   - idempotent: if gameSession already exists for that roomId, reconnect only
    */
   socket.on('battle:startGame', async (payload) => {
     try {
-      const { battleId, roomId, creatorId, opponentId, amount, prize, gameConfig } = payload || {};
+      const { battleId } = payload || {};
 
-      if (!battleId || !roomId || !creatorId || !opponentId) {
+      if (!battleId || typeof battleId !== 'string') {
         return socket.emit('game:error', { error: 'Datos de batalla inválidos' });
       }
 
-      // Only the accepting player (opponentId) OR the creator can trigger this
-      const isParticipant = user.id === creatorId || user.id === opponentId;
+      // ── Load battle from DB — do NOT trust any other client field ──────────
+      const rows = await query(
+        `SELECT id, room_id, creator_id, opponent_id, amount, prize_amount,
+                commission_rate, game_config, status
+         FROM challenges WHERE id = ?`,
+        [battleId]
+      );
+
+      if (!rows.length) {
+        return socket.emit('game:error', { error: 'Batalla no encontrada' });
+      }
+
+      const b = rows[0];
+
+      // ── Membership check against DB values ──────────────────────────────────
+      const isParticipant = user.id === b.creator_id || user.id === b.opponent_id;
       if (!isParticipant) {
+        logger.warn(`battle:startGame unauthorized: user=${user.id} battle=${battleId}`);
         return socket.emit('game:error', { error: 'No sos parte de esta batalla' });
       }
 
-      // Check if game already exists (idempotent)
+      // ── Status guard — must be 'accepted' or 'active' ──────────────────────
+      // 'accepted' = funds locked, roomId assigned, game not yet started
+      // 'active'   = game already running — handle as reconnect below
+      if (b.status !== 'accepted' && b.status !== 'active') {
+        return socket.emit('game:error', {
+          error: b.status === 'finished'  ? 'La batalla ya fue jugada'
+               : b.status === 'cancelled' ? 'La batalla fue cancelada'
+               : `Estado de batalla inválido: ${b.status}`,
+        });
+      }
+
+      const roomId    = b.room_id;
+      const creatorId = b.creator_id;
+      const opponentId = b.opponent_id;
+      const amount    = parseFloat(b.amount);
+      const prize     = parseFloat(b.prize_amount);
+      const gameConfig = typeof b.game_config === 'string'
+        ? JSON.parse(b.game_config)
+        : (b.game_config || {});
+
+      if (!roomId) {
+        return socket.emit('game:error', { error: 'Sala sin roomId asignado' });
+      }
+
+      // ── Idempotent: game already running (status was 'active') ───────────────
       const existingGame = await gameSession.getGame(roomId);
       if (existingGame) {
-        // Already started, just reconnect this socket
         socket.join(roomId);
+        const rivalId = user.id === creatorId ? opponentId : creatorId;
+        const [rivalRow] = await query('SELECT id, username FROM usuarios WHERE id = ?', [rivalId]);
         socket.emit('game:start', {
           roomId,
-          opponent: _buildOpponent(user.id, creatorId, opponentId, payload),
-          gameState: existingGame.getPlayerView(user.id),
+          opponent:    { id: rivalId, username: rivalRow?.username || 'Rival' },
+          gameState:   existingGame.getPlayerView(user.id),
           gameOptions: existingGame.config,
-          battle: { id: battleId, amount, prize },
+          battle:      { id: battleId, amount, prize },
         });
         return;
       }
 
-      // Only start once — whoever gets here first creates the session
+      // ── Start game — all data sourced from DB ────────────────────────────────
       await _startBattleMatch(io, {
         battleId, roomId, creatorId, opponentId, amount, prize, gameConfig,
       });
@@ -65,11 +112,6 @@ function registerBattleHandlers(io, socket, user) {
       socket.emit('game:error', { error: 'Error al iniciar la batalla' });
     }
   });
-}
-
-function _buildOpponent(myId, creatorId, opponentId, payload) {
-  const rivalId = myId === creatorId ? opponentId : creatorId;
-  return { id: rivalId, username: payload[`${rivalId}_username`] || 'Rival' };
 }
 
 /**

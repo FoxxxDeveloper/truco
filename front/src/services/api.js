@@ -41,17 +41,28 @@ export const rankingApi = {
 
 // ── Profile ───────────────────────────────────────────────────────
 export const profileApi = {
-  getMe:      ()          => api.get('/profile/me'),
-  getUser:    (username)  => api.get(`/profile/${encodeURIComponent(username)}`),
-  update:     (body)      => api.put('/profile', body),
+  getMe:        ()          => api.get('/profile/me'),
+  getUser:      (username)  => api.get(`/profile/${encodeURIComponent(username)}`),
+  update:       (body)      => api.put('/profile', body),
+  uploadAvatar: (file)      => {
+    const fd = new FormData();
+    fd.append('avatar', file);
+    return api.post('/profile/avatar', fd, { headers: { 'Content-Type': 'multipart/form-data' } });
+  },
+};
+
+// ── Users (public profiles by ID) ────────────────────────────────
+export const usersApi = {
+  getPublic: (id) => api.get(`/users/${id}/public`),
 };
 
 // ── Wallet ────────────────────────────────────────────────────────
 export const walletApi = {
-  getBalance:     ()           => api.get('/wallet'),
-  getHistory:     (p = {})     => api.get('/wallet/transactions', { params: p }),
-  depositRequest: (body)       => api.post('/wallet/deposit/request', body),
-  withdrawRequest:(body)       => api.post('/wallet/withdraw/request', body),
+  getBalance:       ()           => api.get('/wallet'),
+  getHistory:       (p = {})     => api.get('/wallet/transactions', { params: p }),
+  depositRequest:   (body)       => api.post('/wallet/deposit/request', body),
+  withdrawRequest:  (body)       => api.post('/wallet/withdraw/request', body),
+  cancelWithdrawal: (id)         => api.post(`/wallet/withdraw/${id}/cancel`),
 };
 
 // ── Challenges ────────────────────────────────────────────────────
@@ -83,8 +94,17 @@ export const socialApi = {
   getMessages: (userId) =>
     api.get(`/social/messages/${userId}`),
 
+  markMessagesRead: (userId) =>
+    api.post(`/social/messages/${userId}/read`),
+
+  getUnreadSummary: () =>
+    api.get('/social/messages/unread-summary'),
+
   getUnreadMessagesCount: () =>
     api.get('/social/messages/unread-count'),
+
+  getGeneralMessages: (limit = 50) =>
+    api.get(`/social/general-messages?limit=${limit}`),
 
   getNotifications: () =>
     api.get('/social/notifications'),
@@ -120,6 +140,15 @@ export const adminApi = {
   listGames:        (p = {})   => api.get('/admin/games', { params: p }),
   adjustBalance:    (userId, body) => api.post(`/admin/users/${userId}/adjust`, body),
   listLogs:         (p = {})   => api.get('/admin/logs', { params: p }),
+  listVerifications: (p = {})  => api.get('/admin/verifications', { params: p }),
+  approveVerification: (userId) => api.post(`/admin/verifications/${userId}/approve`),
+  rejectVerification:  (userId, body) => api.post(`/admin/verifications/${userId}/reject`, body),
+};
+
+// ── Verification ──────────────────────────────────────────────────
+export const verificationApi = {
+  getStatus: ()     => api.get('/verification/status'),
+  submit:    (body) => api.post('/verification', body),
 };
 
 export default api;
