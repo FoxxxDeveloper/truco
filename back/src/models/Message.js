@@ -53,10 +53,11 @@ const Message = {
       sql += ' AND id < ?';
       params.push(parseInt(before));
     }
-    sql += ' ORDER BY created_at ASC LIMIT ?';
+    sql += ' ORDER BY created_at DESC LIMIT ?';
     params.push(limit);
     const rows = await query(sql, params);
-    return rows.map(normalizeRow);
+    // Reverse so oldest message is first (correct chronological display)
+    return rows.reverse().map(normalizeRow);
   },
 
   /** Mark all messages from sender to receiver as read */

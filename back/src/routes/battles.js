@@ -67,9 +67,10 @@ router.post('/', battleLimit, async (req, res) => {
     return res.status(201).json(result);
   } catch (err) {
     const userErrors = [
-      'mínimo', 'entero', 'No podés', 'Ya tenés', 'Insufficient', 'Wallet not found'
+      'mínimo', 'entero', 'No podés', 'Ya tenés', 'Insufficient', 'Wallet not found',
+      'verificar', 'verificación', 'pendiente', 'rechazada', 'mayor de edad', 'soporte',
     ];
-    if (userErrors.some(e => err.message.includes(e))) {
+    if (userErrors.some(e => err.message.toLowerCase().includes(e.toLowerCase()))) {
       return res.status(400).json({ error: err.message });
     }
     logger.error('battles create: ' + err.message);
@@ -125,7 +126,10 @@ router.post('/join/:code', battleLimit, async (req, res) => {
     // Trigger game start via socket (emitted by socket handler)
     return res.json({ ...result, battleAccepted: true });
   } catch (err) {
-    const userErrors = ['no encontrada', 'inválido', 'expiró', 'propia', 'cancelada', 'Insufficient', 'Wallet not found', 'balance'];
+    const userErrors = [
+      'no encontrada', 'inválido', 'expiró', 'propia', 'cancelada', 'Insufficient', 'Wallet not found', 'balance',
+      'verificar', 'verificación', 'pendiente', 'rechazada', 'mayor de edad', 'soporte',
+    ];
     if (userErrors.some(e => err.message.toLowerCase().includes(e.toLowerCase()))) {
       return res.status(400).json({ error: err.message });
     }
@@ -158,7 +162,8 @@ router.post('/:id/accept', battleLimit, async (req, res) => {
   } catch (err) {
     const userErrors = [
       'aceptada', 'expiró', 'propia', 'cancelada', 'Insufficient', 'no encontrada',
-      'privada', 'estado', 'Sala ya', 'Wallet not found', 'balance'
+      'privada', 'estado', 'Sala ya', 'Wallet not found', 'balance',
+      'verificar', 'verificación', 'pendiente', 'rechazada', 'mayor de edad', 'soporte',
     ];
     if (userErrors.some(e => err.message.toLowerCase().includes(e.toLowerCase()))) {
       return res.status(400).json({ error: err.message });

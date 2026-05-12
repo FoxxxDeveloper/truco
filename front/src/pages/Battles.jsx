@@ -405,17 +405,9 @@ export default function Battles() {
       const data = res.data;
       toast.success('¡Batalla aceptada! Iniciando partida...');
 
-      // Trigger game start via socket
+      // Trigger game start via socket — server loads all data from DB
       if (socket) {
-        socket.emit('battle:startGame', {
-          battleId:   data.battleId,
-          roomId:     data.roomId,
-          creatorId:  data.creatorId,
-          opponentId: data.opponentId,
-          amount:     data.amount,
-          prize:      data.prize,
-          gameConfig: data.gameConfig,
-        });
+        socket.emit('battle:startGame', { battleId: data.battleId });
       }
     } catch (err) {
       toast.error(err.response?.data?.error || 'No se pudo aceptar la batalla');
@@ -447,15 +439,7 @@ export default function Battles() {
   const handleJoined = (data) => {
     toast.success('¡Uniéndote! Iniciando partida...');
     if (socket) {
-      socket.emit('battle:startGame', {
-        battleId:   data.battleId,
-        roomId:     data.roomId,
-        creatorId:  data.creatorId,
-        opponentId: data.opponentId,
-        amount:     data.amount,
-        prize:      data.prize,
-        gameConfig: data.gameConfig,
-      });
+      socket.emit('battle:startGame', { battleId: data.battleId });
     }
   };
 

@@ -320,7 +320,7 @@ const BattleService = {
       );
       await conn.execute(
         `INSERT INTO transactions (user_id, type, amount, status, reference)
-         VALUES (?, 'bet_lock', ?, 'cancelled', ?)`,
+         VALUES (?, 'bet_loss', ?, 'completed', ?)`,
         [loserId, betAmount, b.id]
       );
 
