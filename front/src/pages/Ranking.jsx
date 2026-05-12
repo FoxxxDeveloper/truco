@@ -128,10 +128,20 @@ export default function Ranking() {
                     <td>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                         <Avatar username={r.username} avatar={r.avatar} size={34} />
-                        <span style={{ fontWeight: isMe ? 800 : 500 }}>
+                        <button
+                          onClick={() => !isMe && setViewUserId(r.userId)}
+                          style={{
+                            background: 'none', border: 'none', cursor: isMe ? 'default' : 'pointer',
+                            fontWeight: isMe ? 800 : 500,
+                            color: 'var(--text)', fontSize: 'inherit',
+                            padding: 0,
+                          }}
+                          onMouseEnter={e => !isMe && (e.target.style.textDecoration = 'underline')}
+                          onMouseLeave={e => !isMe && (e.target.style.textDecoration = 'none')}
+                        >
                           {r.username}
                           {isMe && <span className="you-badge" style={{ marginLeft: 6 }}>vos</span>}
-                        </span>
+                        </button>
                       </div>
                     </td>
                     <td className="elo" style={{ fontWeight: 700, color: 'var(--gold)' }}>{r.elo}</td>
@@ -145,6 +155,16 @@ export default function Ranking() {
           </table>
         </div>
       )}
+
+      {/* Public Profile Modal */}
+      <AnimatePresence>
+        {viewUserId && (
+          <PublicProfileModal
+            userId={viewUserId}
+            onClose={() => setViewUserId(null)}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 }

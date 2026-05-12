@@ -85,7 +85,11 @@ export default function ProfilePage() {
     try {
       const res = await profileApi.uploadAvatar(file);
       if (res.data?.avatarUrl) {
-        const url = `http://localhost:3001${res.data.avatarUrl}`;
+        // The API returns a relative path like /uploads/avatars/avatar_1_12345.jpg
+        // For requests from the browser, this needs to be resolved relative to the API origin
+        const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001/api';
+        const apiOrigin = API_BASE.replace('/api', ''); // Remove /api suffix to get origin
+        const url = apiOrigin + res.data.avatarUrl;
         setProfile(prev => ({ ...prev, avatar: url }));
         setEditAvatar(url);
         toast.success('Avatar actualizado');

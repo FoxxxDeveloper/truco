@@ -8,6 +8,7 @@
 const { v4: uuidv4 } = require('uuid');
 const { withTransaction, query } = require('../config/database');
 const WalletService = require('./walletService');
+const VerificationService = require('./verificationService');
 const NotificationService = require('./notificationService');
 const logger = require('../config/logger');
 const { auditLog } = require('../config/logger');
@@ -61,6 +62,13 @@ const BattleService = {
     const n = parseFloat(amount);
     if (!isFinite(n) || !Number.isInteger(n) || n < MIN_BET) {
       throw new Error(`El monto mínimo es ${MIN_BET} créditos y debe ser un número entero`);
+    }
+
+    // ✅ VERIFICATION GATE: User must be verified adult to create battles
+    try {
+      await VerificationService.requireVerifiedAdult(creatorId);
+    } catch (err) {
+      throw new Error(err.message); // Re-throw with same message
     }
 
     // Anti-abuse validations
@@ -172,6 +180,13 @@ const BattleService = {
    * Crea la partida y devuelve roomId + info para iniciar el juego por socket.
    */
   async accept({ battleId, opponentId }) {
+    // ✅ VERIFICATION GATE: User must be verified adult to accept battles
+    try {
+      await VerificationService.requireVerifiedAdult(opponentId);
+    } catch (err) {
+      throw new Error(err.message); // Re-throw with same message
+    }
+
     return withTransaction(async (conn) => {
       // Lock row to prevent race condition
       const [rows] = await conn.execute(
