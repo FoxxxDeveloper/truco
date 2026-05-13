@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   User, Users, Wallet, Swords, BookOpen, Trophy,
-  LogOut, Star,
+  LogOut, Star, Award,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useGame } from '../context/GameContext';
@@ -101,6 +101,9 @@ export default function Lobby() {
           </button>
           <button className="icon-btn" title="Batallas competitivas" onClick={() => navigate('/batallas')}>
             <Swords size={18} />
+          </button>
+          <button className="icon-btn" title="Torneos" onClick={() => navigate('/torneos')}>
+            <Trophy size={18} />
           </button>
           <NotificationBell />
           <button className="btn btn-ghost btn-sm" onClick={logout} title="Cerrar sesion">
@@ -237,6 +240,10 @@ export default function Lobby() {
               <button className="sidebar-link-btn" onClick={() => setShowWallet(true)}>
                 <Wallet size={16} className="slink-icon" />
                 Mi billetera
+              </button>
+              <button className="sidebar-link-btn" onClick={() => navigate('/torneos')}>
+                <Award size={16} className="slink-icon" />
+                Torneos
               </button>
               <button className="sidebar-link-btn" onClick={() => navigate('/reglas')}>
                 <BookOpen size={16} className="slink-icon" />

@@ -361,4 +361,138 @@ router.post('/verifications/:userId/reject', async (req, res) => {
   }
 });
 
+// ═══════════════════════════════════════════════════════════════════
+// TOURNAMENT ADMIN ROUTES  —  /api/admin/tournaments/...
+// ═══════════════════════════════════════════════════════════════════
+const TournamentService = require('../services/tournamentService');
+const { USER_ERRORS }   = require('./tournaments');
+
+function handleTournamentAdminError(res, err, context) {
+  if (USER_ERRORS.some(msg => err.message.includes(msg))) {
+    return res.status(400).json({ error: err.message });
+  }
+  logger.error(`admin tournaments ${context}: ${err.message}`);
+  return res.status(500).json({ error: 'Error interno' });
+}
+
+// ── POST /api/admin/tournaments — crear torneo ────────────────────
+router.post('/tournaments', async (req, res) => {
+  try {
+    const result = await TournamentService.createTournament(req.user.id, req.body);
+    await auditAdmin(req.user.id, 'tournament_create', 'tournament', result.tournamentId,
+      null, { name: req.body.name }, null, req.ip);
+    return res.status(201).json(result);
+  } catch (err) {
+    return handleTournamentAdminError(res, err, 'create');
+  }
+});
+
+// ── PATCH /api/admin/tournaments/:id — editar torneo ─────────────
+router.patch('/tournaments/:id', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const result = await TournamentService.updateTournament(id, req.user.id, req.body);
+    await auditAdmin(req.user.id, 'tournament_update', 'tournament', id,
+      null, req.body, null, req.ip);
+    return res.json(result);
+  } catch (err) {
+    return handleTournamentAdminError(res, err, 'update');
+  }
+});
+
+// ── POST /api/admin/tournaments/:id/open ─────────────────────────
+router.post('/tournaments/:id/open', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const result = await TournamentService.setTournamentStatus(id, req.user.id, 'open');
+    await auditAdmin(req.user.id, 'tournament_open', 'tournament', id, null, null, null, req.ip);
+    return res.json(result);
+  } catch (err) {
+    return handleTournamentAdminError(res, err, 'open');
+  }
+});
+
+// ── POST /api/admin/tournaments/:id/start-checkin ────────────────
+router.post('/tournaments/:id/start-checkin', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const result = await TournamentService.setTournamentStatus(id, req.user.id, 'checkin');
+    await auditAdmin(req.user.id, 'tournament_checkin', 'tournament', id, null, null, null, req.ip);
+    return res.json(result);
+  } catch (err) {
+    return handleTournamentAdminError(res, err, 'start-checkin');
+  }
+});
+
+// ── POST /api/admin/tournaments/:id/generate-bracket ─────────────
+router.post('/tournaments/:id/generate-bracket', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const result = await TournamentService.generateBracket(id, req.user.id);
+    await auditAdmin(req.user.id, 'tournament_bracket', 'tournament', id, null, result, null, req.ip);
+    return res.json(result);
+  } catch (err) {
+    return handleTournamentAdminError(res, err, 'generate-bracket');
+  }
+});
+
+// ── POST /api/admin/tournaments/:id/start ────────────────────────
+router.post('/tournaments/:id/start', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const result = await TournamentService.startTournament(id, req.user.id);
+    await auditAdmin(req.user.id, 'tournament_start', 'tournament', id, null, null, null, req.ip);
+    return res.json(result);
+  } catch (err) {
+    return handleTournamentAdminError(res, err, 'start');
+  }
+});
+
+// ── POST /api/admin/tournaments/:id/cancel ───────────────────────
+router.post('/tournaments/:id/cancel', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const { reason } = req.body;
+    const result = await TournamentService.setTournamentStatus(id, req.user.id, 'cancelled');
+    await auditAdmin(req.user.id, 'tournament_cancel', 'tournament', id, null, null, reason || null, req.ip);
+    return res.json(result);
+  } catch (err) {
+    return handleTournamentAdminError(res, err, 'cancel');
+  }
+});
+
+// ── POST /api/admin/tournaments/:id/matches/:matchId/force-result ─
+router.post('/tournaments/:id/matches/:matchId/force-result', async (req, res) => {
+  try {
+    const tId     = Number(req.params.id);
+    const mId     = Number(req.params.matchId);
+    const { winnerId, reason = 'admin_decision' } = req.body;
+
+    if (!winnerId) return res.status(400).json({ error: 'winnerId es obligatorio' });
+
+    const result = await TournamentService.forceResult(
+      tId, mId, Number(winnerId), req.user.id, reason
+    );
+    await auditAdmin(req.user.id, 'tournament_force_result', 'tournament_match', mId,
+      null, { winnerId, reason }, reason, req.ip);
+    return res.json(result);
+  } catch (err) {
+    return handleTournamentAdminError(res, err, 'force-result');
+  }
+});
+
+// ── POST /api/admin/tournaments/:id/matches/:matchId/resolve-absence
+router.post('/tournaments/:id/matches/:matchId/resolve-absence', async (req, res) => {
+  try {
+    const tId = Number(req.params.id);
+    const mId = Number(req.params.matchId);
+    const result = await TournamentService.resolveAbsence(tId, mId, req.user.id);
+    await auditAdmin(req.user.id, 'tournament_resolve_absence', 'tournament_match', mId,
+      null, null, null, req.ip);
+    return res.json(result);
+  } catch (err) {
+    return handleTournamentAdminError(res, err, 'resolve-absence');
+  }
+});
+
 module.exports = router;

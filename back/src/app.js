@@ -23,6 +23,7 @@ const telegramRoutes     = require('./routes/telegram');
 const adminRoutes        = require('./routes/admin');
 const verificationRoutes = require('./routes/verification');
 const usersRoutes        = require('./routes/users');
+const tournamentRoutes   = require('./routes/tournaments');
 const BattleService      = require('./services/battleService');
 
 const app    = express();
@@ -83,6 +84,7 @@ app.use('/api/telegram',     telegramRoutes);
 app.use('/api/admin',        adminRoutes);
 app.use('/api/verification', verificationRoutes);
 app.use('/api/users',        usersRoutes);
+app.use('/api/tournaments',  tournamentRoutes);
 
 app.get('/api/health', (_req, res) => res.json({ status: 'ok', ts: Date.now() }));
 

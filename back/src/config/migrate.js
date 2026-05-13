@@ -288,6 +288,105 @@ CREATE TABLE IF NOT EXISTS admin_logs (
 `;
 
 // ─────────────────────────────────────────────────────────────
+// TOURNAMENTS
+// ─────────────────────────────────────────────────────────────
+
+const TOURNAMENT_TABLES = `
+CREATE TABLE IF NOT EXISTS tournaments (
+  id                      INT AUTO_INCREMENT PRIMARY KEY,
+  name                    VARCHAR(120) NOT NULL,
+  description             TEXT DEFAULT NULL,
+  prize_text              VARCHAR(120) DEFAULT NULL,
+  max_players             INT NOT NULL DEFAULT 64,
+  status                  ENUM('draft','open','checkin','started','finished','cancelled') NOT NULL DEFAULT 'draft',
+  format                  ENUM('single_elimination','qualifier','finals') NOT NULL DEFAULT 'single_elimination',
+  phase                   ENUM('qualifier_a','qualifier_b','finals','general') NOT NULL DEFAULT 'general',
+  puntos_maximos          INT NOT NULL DEFAULT 15,
+  flor_habilitada         TINYINT(1) NOT NULL DEFAULT 0,
+  turn_seconds            INT NOT NULL DEFAULT 30,
+  reconnect_seconds       INT NOT NULL DEFAULT 60,
+  starts_at               DATETIME DEFAULT NULL,
+  checkin_starts_at       DATETIME DEFAULT NULL,
+  registration_closes_at  DATETIME DEFAULT NULL,
+  winner_id               INT DEFAULT NULL,
+  created_by              INT NOT NULL,
+  created_at              DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at              DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_trn_status (status),
+  INDEX idx_trn_phase  (phase),
+  FOREIGN KEY (winner_id)  REFERENCES usuarios(id) ON DELETE SET NULL,
+  FOREIGN KEY (created_by) REFERENCES usuarios(id)
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS tournament_registrations (
+  id              INT AUTO_INCREMENT PRIMARY KEY,
+  tournament_id   INT NOT NULL,
+  user_id         INT NOT NULL,
+  status          ENUM('registered','checked_in','substitute','cancelled','no_show','eliminated','qualified','winner') NOT NULL DEFAULT 'registered',
+  position_number INT DEFAULT NULL,
+  seed            INT DEFAULT NULL,
+  checked_in_at   DATETIME DEFAULT NULL,
+  created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uk_trn_reg      (tournament_id, user_id),
+  INDEX idx_treg_status      (tournament_id, status),
+  INDEX idx_treg_user        (user_id),
+  FOREIGN KEY (tournament_id) REFERENCES tournaments(id) ON DELETE CASCADE,
+  FOREIGN KEY (user_id)       REFERENCES usuarios(id)    ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS tournament_matches (
+  id               INT AUTO_INCREMENT PRIMARY KEY,
+  tournament_id    INT NOT NULL,
+  round_number     INT NOT NULL,
+  match_number     INT NOT NULL,
+  bracket_position INT DEFAULT NULL,
+  player1_id       INT DEFAULT NULL,
+  player2_id       INT DEFAULT NULL,
+  winner_id        INT DEFAULT NULL,
+  loser_id         INT DEFAULT NULL,
+  room_id          VARCHAR(36) DEFAULT NULL,
+  partida_id       INT DEFAULT NULL,
+  status           ENUM('pending','ready','waiting_ready','active','finished','walkover','cancelled') NOT NULL DEFAULT 'pending',
+  player1_ready    TINYINT(1) NOT NULL DEFAULT 0,
+  player2_ready    TINYINT(1) NOT NULL DEFAULT 0,
+  ready_deadline   DATETIME DEFAULT NULL,
+  player1_score    INT NOT NULL DEFAULT 0,
+  player2_score    INT NOT NULL DEFAULT 0,
+  next_match_id    INT DEFAULT NULL,
+  next_slot        ENUM('player1','player2') DEFAULT NULL,
+  scheduled_at     DATETIME DEFAULT NULL,
+  started_at       DATETIME DEFAULT NULL,
+  finished_at      DATETIME DEFAULT NULL,
+  created_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_tmatch_trn    (tournament_id, round_number),
+  INDEX idx_tmatch_room   (room_id),
+  INDEX idx_tmatch_status (status),
+  FOREIGN KEY (tournament_id) REFERENCES tournaments(id)         ON DELETE CASCADE,
+  FOREIGN KEY (player1_id)    REFERENCES usuarios(id)            ON DELETE SET NULL,
+  FOREIGN KEY (player2_id)    REFERENCES usuarios(id)            ON DELETE SET NULL,
+  FOREIGN KEY (winner_id)     REFERENCES usuarios(id)            ON DELETE SET NULL,
+  FOREIGN KEY (loser_id)      REFERENCES usuarios(id)            ON DELETE SET NULL,
+  FOREIGN KEY (next_match_id) REFERENCES tournament_matches(id)  ON DELETE SET NULL
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS tournament_events (
+  id            INT AUTO_INCREMENT PRIMARY KEY,
+  tournament_id INT NOT NULL,
+  admin_id      INT DEFAULT NULL,
+  user_id       INT DEFAULT NULL,
+  type          VARCHAR(80) NOT NULL,
+  metadata      JSON DEFAULT NULL,
+  created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_tevt_tournament (tournament_id),
+  INDEX idx_tevt_type       (type),
+  FOREIGN KEY (tournament_id) REFERENCES tournaments(id) ON DELETE CASCADE,
+  FOREIGN KEY (admin_id)      REFERENCES usuarios(id)    ON DELETE SET NULL,
+  FOREIGN KEY (user_id)       REFERENCES usuarios(id)    ON DELETE SET NULL
+) ENGINE=InnoDB;
+`;
+
+// ─────────────────────────────────────────────────────────────
 // HELPERS
 // ─────────────────────────────────────────────────────────────
 
@@ -578,6 +677,7 @@ async function migrate() {
     await runStatements(conn, SOCIAL_TABLES);
     await runStatements(conn, VERIFICATION_TABLES);
     await runStatements(conn, ADMIN_TABLES);
+    await runStatements(conn, TOURNAMENT_TABLES);
 
     await runAdditiveMigrations(conn);
 

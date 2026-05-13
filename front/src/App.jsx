@@ -13,6 +13,9 @@ import ProfilePage from './pages/ProfilePage';
 import RulesPage from './pages/RulesPage';
 import Battles from './pages/Battles';
 import VerificationPage from './pages/VerificationPage';
+import TournamentsPage from './pages/TournamentsPage';
+import TournamentDetail from './pages/TournamentDetail';
+import TournamentBracket from './pages/TournamentBracket';
 
 function App() {
   return (
@@ -99,6 +102,31 @@ function App() {
               element={
                 <ProtectedRoute>
                   <Battles />
+                </ProtectedRoute>
+              }
+            />
+
+            <Route
+              path="/torneos"
+              element={
+                <ProtectedRoute>
+                  <TournamentsPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/torneos/:id"
+              element={
+                <ProtectedRoute>
+                  <TournamentDetail />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/torneos/:id/bracket"
+              element={
+                <ProtectedRoute>
+                  <TournamentBracket />
                 </ProtectedRoute>
               }
             />

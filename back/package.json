@@ -9,7 +9,7 @@
     "pm2:start": "pm2 start ecosystem.config.js",
     "pm2:stop": "pm2 stop truco-backend",
     "pm2:reload": "pm2 reload truco-backend",
-    "db:migrate": "node src/config/migrate.js"
+    "seed:tournament-test": "node src/scripts/seedTournamentTest.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

@@ -74,7 +74,6 @@ export const challengeApi = {
 };
 
 // ── Social ────────────────────────────────────────────────────────
-// ── Social ────────────────────────────────────────────────────────
 export const socialApi = {
   getFriends: () =>
     api.get('/social/friends'),
@@ -127,6 +126,32 @@ export const battleApi = {
   accept:      (id)         => api.post(`/battles/${id}/accept`),
   cancel:      (id)         => api.delete(`/battles/${id}`),
   joinPrivate: (code)       => api.post(`/battles/join/${encodeURIComponent(code)}`),
+};
+
+// ── Tournaments ───────────────────────────────────────────────────
+export const tournamentApi = {
+  getAll:     ()                      => api.get('/tournaments'),
+  getById:    (id)                    => api.get(`/tournaments/${id}`),
+  getBracket: (id)                    => api.get(`/tournaments/${id}/bracket`),
+  register:   (id)                    => api.post(`/tournaments/${id}/register`),
+  unregister: (id)                    => api.delete(`/tournaments/${id}/register`),
+  checkin:    (id)                    => api.post(`/tournaments/${id}/checkin`),
+  ready:      (tournamentId, matchId) => api.post(`/tournaments/${tournamentId}/matches/${matchId}/ready`),
+};
+
+// ── Admin tournaments (JWT admin) ─────────────────────────────────
+export const adminTournamentApi = {
+  create:         (body)       => api.post('/admin/tournaments', body),
+  update:         (id, body)   => api.patch(`/admin/tournaments/${id}`, body),
+  open:           (id)         => api.post(`/admin/tournaments/${id}/open`),
+  startCheckin:   (id)         => api.post(`/admin/tournaments/${id}/start-checkin`),
+  generateBracket:(id)         => api.post(`/admin/tournaments/${id}/generate-bracket`),
+  start:          (id)         => api.post(`/admin/tournaments/${id}/start`),
+  cancel:         (id, body)   => api.post(`/admin/tournaments/${id}/cancel`, body || {}),
+  forceResult:    (id, matchId, body) =>
+    api.post(`/admin/tournaments/${id}/matches/${matchId}/force-result`, body),
+  resolveAbsence: (id, matchId) =>
+    api.post(`/admin/tournaments/${id}/matches/${matchId}/resolve-absence`),
 };
 
 // ── Admin ─────────────────────────────────────────────────────────

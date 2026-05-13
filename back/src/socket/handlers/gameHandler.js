@@ -4,6 +4,7 @@ const Game              = require('../../models/Game');
 const Ranking           = require('../../models/Ranking');
 const matchmaking       = require('../../services/matchmaking');
 const BattleService     = require('../../services/battleService');
+const TournamentService = require('../../services/tournamentService');
 const NotificationService = require('../../services/notificationService');
 const logger            = require('../../config/logger');
 const { securityLog }   = require('../../config/logger');
@@ -659,6 +660,41 @@ async function _finishGame(io, roomId, game, winnerId, extraPayload = {}) {
         metadata: { roomId, result: 'loss', eloDelta: eloDelta?.[loserId] },
       }),
     ]).catch(() => {});
+
+    // ── TOURNAMENT: avanzar bracket si la partida era de torneo ──────────────
+    // Modo 'torneo' no actualiza ELO (isRanked === false), ni mueve wallet.
+    // finishMatchFromGame devuelve null si el roomId no pertenece a ningún torneo.
+    try {
+      const tResult = await TournamentService.finishMatchFromGame(roomId, winnerId, scores);
+      if (tResult) {
+        const tRoom = `tournament:${tResult.tournamentId}`;
+
+        io.to(tRoom).emit('tournament:matchFinished', {
+          tournamentId: tResult.tournamentId,
+          matchId:      tResult.matchId,
+          winnerId:     tResult.winnerId,
+          loserId:      tResult.loserId,
+        });
+        io.to(tRoom).emit('tournament:updated', { tournamentId: tResult.tournamentId });
+
+        if (tResult.champion) {
+          io.to(tRoom).emit('tournament:champion', {
+            tournamentId: tResult.tournamentId,
+            winnerId:     tResult.winnerId,
+          });
+          logger.info(`Tournament ${tResult.tournamentId}: champion = ${tResult.winnerId}`);
+        } else if (tResult.qualified) {
+          io.to(tRoom).emit('tournament:qualified', {
+            tournamentId: tResult.tournamentId,
+            winnerId:     tResult.winnerId,
+          });
+          logger.info(`Tournament ${tResult.tournamentId}: player ${tResult.winnerId} qualified`);
+        }
+      }
+    } catch (tErr) {
+      // No lanzar — no debe romper la finalización de la partida
+      logger.error(`Tournament post-game hook (room=${roomId}): ${tErr.message}`);
+    }
 
   } catch (err) {
     logger.error('Error finishing game: ' + err.message);

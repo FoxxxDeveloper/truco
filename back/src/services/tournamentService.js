@@ -1,0 +1,1178 @@
+/**
+ * TournamentService — Lógica de torneos gratuitos de TrucoFX.
+ *
+ * Formato soportado:
+ *   - Clasificatorio A/B  (phase: qualifier_a / qualifier_b)  → 4 clasificados
+ *   - Finales             (phase: finals)                     → 1 campeón
+ *   - Eliminación directa (phase: general / format: single_elimination)
+ *
+ * Reglas generales:
+ *   - Sin movimiento de wallet (torneo gratuito).
+ *   - Titulares: primeros max_players en registrarse (status registered/checked_in).
+ *   - Suplentes: los que llegan después (status substitute).
+ *   - Check-in obligatorio; suplentes con check-in cubren ausencias de titulares en el bracket.
+ *   - Bracket generado con shuffle aleatorio; byes automáticos si jugadores < potencia de 2.
+ */
+'use strict';
+
+const { query, withTransaction } = require('../config/database');
+const logger = require('../config/logger');
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CONSTANTS
+// ─────────────────────────────────────────────────────────────────────────────
+
+const ACTIVE_REG_STATUSES = ['registered', 'checked_in', 'substitute'];
+const QUALIFY_COUNT       = 4;   // cuántos avanzan por fase clasificatoria
+const READY_MINUTES       = 5;   // minutos para presionar Listo antes de walkover
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HELPERS INTERNOS
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Fisher-Yates shuffle */
+function shuffle(arr) {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+/** Menor potencia de 2 mayor o igual a n (mínimo 2) */
+function nextPowerOfTwo(n) {
+  if (n <= 2) return 2;
+  let p = 2;
+  while (p < n) p <<= 1;
+  return p;
+}
+
+/** log2 entero (para potencias exactas de 2) */
+function intLog2(n) {
+  return Math.round(Math.log2(n));
+}
+
+/** Agrupa un array de matches por round_number */
+function groupMatchesByRound(matches) {
+  const rounds = {};
+  for (const m of matches) {
+    const rn = m.round_number;
+    if (!rounds[rn]) rounds[rn] = [];
+    rounds[rn].push(m);
+  }
+  return rounds;
+}
+
+/** Normaliza una fila de tournament_matches (con JOINs) a payload público */
+function normalizeMatch(r) {
+  return {
+    id:               r.id,
+    tournament_id:    r.tournament_id,
+    round_number:     r.round_number,
+    match_number:     r.match_number,
+    bracket_position: r.bracket_position,
+    status:           r.status,
+    player1:          r.player1_id
+      ? { id: r.player1_id, username: r.p1_username || null, avatar: r.p1_avatar || null }
+      : null,
+    player2:          r.player2_id
+      ? { id: r.player2_id, username: r.p2_username || null, avatar: r.p2_avatar || null }
+      : null,
+    winner:           r.winner_id
+      ? { id: r.winner_id, username: r.w_username || null, avatar: r.w_avatar || null }
+      : null,
+    player1_ready:    !!r.player1_ready,
+    player2_ready:    !!r.player2_ready,
+    ready_deadline:   r.ready_deadline,
+    player1_score:    r.player1_score,
+    player2_score:    r.player2_score,
+    next_match_id:    r.next_match_id,
+    next_slot:        r.next_slot,
+    room_id:          r.room_id || null,
+    scheduled_at:     r.scheduled_at,
+    started_at:       r.started_at,
+    finished_at:      r.finished_at,
+  };
+}
+
+/**
+ * Persiste un evento en tournament_events.
+ * Recibe conn si se está dentro de una transacción, null si no.
+ */
+async function createEvent(connOrNull, tournamentId, type, metadata = null, userId = null, adminId = null) {
+  const sql = `INSERT INTO tournament_events (tournament_id, type, metadata, user_id, admin_id)
+               VALUES (?, ?, ?, ?, ?)`;
+  const p = [
+    tournamentId,
+    type,
+    metadata ? JSON.stringify(metadata) : null,
+    userId  || null,
+    adminId || null,
+  ];
+  if (connOrNull) await connOrNull.execute(sql, p);
+  else            await query(sql, p);
+}
+
+/** Lanza error si el torneo no existe; devuelve la fila */
+async function assertTournamentExists(tournamentId) {
+  const rows = await query('SELECT * FROM tournaments WHERE id = ?', [tournamentId]);
+  if (!rows.length) throw new Error('Torneo no encontrado');
+  return rows[0];
+}
+
+/** Cuenta titulares activos (registered + checked_in, SIN suplentes). Requiere conn. */
+async function getActiveTitularCount(conn, tournamentId) {
+  const [rows] = await conn.execute(
+    `SELECT COUNT(*) AS cnt FROM tournament_registrations
+     WHERE tournament_id = ? AND status IN ('registered','checked_in')`,
+    [tournamentId]
+  );
+  return Number(rows[0].cnt);
+}
+
+/** Cuenta suplentes activos. Requiere conn. */
+async function getSubstituteCount(conn, tournamentId) {
+  const [rows] = await conn.execute(
+    `SELECT COUNT(*) AS cnt FROM tournament_registrations
+     WHERE tournament_id = ? AND status = 'substitute'`,
+    [tournamentId]
+  );
+  return Number(rows[0].cnt);
+}
+
+/**
+ * Núcleo del avance de ganador — se ejecuta DENTRO de una transacción existente.
+ * Llena el slot del siguiente cruce o marca el resultado final (qualified / champion).
+ */
+async function _advanceWinnerConn(conn, matchId, winnerId) {
+  const [rows] = await conn.execute(
+    `SELECT tm.next_match_id, tm.next_slot, tm.tournament_id,
+            t.phase
+     FROM tournament_matches tm
+     JOIN tournaments t ON t.id = tm.tournament_id
+     WHERE tm.id = ?`,
+    [matchId]
+  );
+  if (!rows.length) return;
+
+  const { next_match_id, next_slot, tournament_id: tId, phase } = rows[0];
+  const isQualifier = phase === 'qualifier_a' || phase === 'qualifier_b';
+
+  if (!next_match_id) {
+    // ── Final del bracket ────────────────────────────────────────────────────
+    if (isQualifier) {
+      await conn.execute(
+        `UPDATE tournament_registrations SET status = 'qualified'
+         WHERE tournament_id = ? AND user_id = ?`,
+        [tId, winnerId]
+      );
+      await createEvent(conn, tId, 'player_qualified', { matchId, winnerId }, winnerId);
+
+      // Si ya hay QUALIFY_COUNT clasificados, marcar torneo como terminado
+      const [qRows] = await conn.execute(
+        `SELECT COUNT(*) AS cnt FROM tournament_registrations
+         WHERE tournament_id = ? AND status = 'qualified'`,
+        [tId]
+      );
+      if (Number(qRows[0].cnt) >= QUALIFY_COUNT) {
+        await conn.execute(
+          "UPDATE tournaments SET status = 'finished' WHERE id = ?",
+          [tId]
+        );
+        await createEvent(conn, tId, 'qualifier_finished', { qualifiedCount: QUALIFY_COUNT });
+      }
+    } else {
+      // finals / general → campeón
+      await conn.execute(
+        `UPDATE tournaments SET status = 'finished', winner_id = ? WHERE id = ?`,
+        [winnerId, tId]
+      );
+      await conn.execute(
+        `UPDATE tournament_registrations SET status = 'winner'
+         WHERE tournament_id = ? AND user_id = ?`,
+        [tId, winnerId]
+      );
+      await createEvent(conn, tId, 'champion', { matchId, winnerId }, winnerId);
+    }
+  } else {
+    // ── Avanzar al siguiente cruce ───────────────────────────────────────────
+    const col = next_slot === 'player1' ? 'player1_id' : 'player2_id';
+    await conn.execute(
+      `UPDATE tournament_matches SET ${col} = ? WHERE id = ?`,
+      [winnerId, next_match_id]
+    );
+
+    // Si el siguiente cruce ya tiene ambos jugadores, activarlo
+    const [nextRows] = await conn.execute(
+      'SELECT player1_id, player2_id FROM tournament_matches WHERE id = ?',
+      [next_match_id]
+    );
+    if (nextRows.length && nextRows[0].player1_id && nextRows[0].player2_id) {
+      await conn.execute(
+        "UPDATE tournament_matches SET status = 'ready' WHERE id = ?",
+        [next_match_id]
+      );
+    }
+
+    await createEvent(conn, tId, 'winner_advanced',
+      { fromMatchId: matchId, toMatchId: next_match_id, slot: next_slot, winnerId },
+      winnerId
+    );
+  }
+}
+
+/**
+ * Procesa walkovers/byes iterativamente dentro de una transacción.
+ * Maneja byes encadenados (ej: n=5 jugadores → byes en R1 y R2).
+ *
+ * Pases:
+ *   1. Cancela cruces con ambos jugadores nulos.
+ *   2. Finaliza cruces con un jugador real y un null → walkover para el real.
+ * Repite hasta que no haya cambios (máx. 20 iteraciones como guard).
+ */
+async function _processAllByes(conn, tournamentId) {
+  let changed    = true;
+  let iterations = 0;
+
+  while (changed && iterations < 20) {
+    iterations++;
+    changed = false;
+
+    // Cancelar cruces sin ningún jugador (ambos null)
+    const [bothNull] = await conn.execute(
+      `SELECT id FROM tournament_matches
+       WHERE tournament_id = ? AND status NOT IN ('finished','walkover','cancelled')
+         AND player1_id IS NULL AND player2_id IS NULL`,
+      [tournamentId]
+    );
+    for (const m of bothNull) {
+      await conn.execute(
+        "UPDATE tournament_matches SET status = 'cancelled' WHERE id = ?",
+        [m.id]
+      );
+      changed = true;
+    }
+
+    // Walkover: un jugador real, el otro null
+    const [singles] = await conn.execute(
+      `SELECT id, player1_id, player2_id FROM tournament_matches
+       WHERE tournament_id = ? AND status NOT IN ('finished','walkover','cancelled')
+         AND (
+           (player1_id IS NOT NULL AND player2_id IS NULL) OR
+           (player1_id IS NULL     AND player2_id IS NOT NULL)
+         )`,
+      [tournamentId]
+    );
+    for (const m of singles) {
+      const winner = m.player1_id !== null ? m.player1_id : m.player2_id;
+      await conn.execute(
+        `UPDATE tournament_matches
+         SET status = 'finished', winner_id = ?, loser_id = NULL, finished_at = NOW()
+         WHERE id = ?`,
+        [winner, m.id]
+      );
+      await _advanceWinnerConn(conn, m.id, winner);
+      changed = true;
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// API PÚBLICA
+// ─────────────────────────────────────────────────────────────────────────────
+
+const TournamentService = {
+
+  // ── 1. listTournaments ────────────────────────────────────────────────────
+  /**
+   * Lista todos los torneos con conteos y, si se pasa userId, el estado del
+   * usuario en cada torneo (myStatus).
+   */
+  async listTournaments(userId = null) {
+    const rows = await query(
+      `SELECT
+         t.id, t.name, t.description, t.prize_text,
+         t.max_players, t.status, t.format, t.phase,
+         t.puntos_maximos, t.flor_habilitada,
+         t.starts_at, t.checkin_starts_at, t.registration_closes_at,
+         t.winner_id, t.created_at,
+         SUM(CASE WHEN tr.status IN ('registered','checked_in') THEN 1 ELSE 0 END) AS titular_count,
+         SUM(CASE WHEN tr.status = 'substitute'                  THEN 1 ELSE 0 END) AS substitute_count
+       FROM tournaments t
+       LEFT JOIN tournament_registrations tr ON tr.tournament_id = t.id
+       GROUP BY t.id
+       ORDER BY
+         FIELD(t.status,'checkin','started','open','draft','finished','cancelled'),
+         t.starts_at ASC`,
+      []
+    );
+
+    if (!userId || !rows.length) return rows;
+
+    const ids          = rows.map(r => r.id);
+    const placeholders = ids.map(() => '?').join(',');
+    const myRegs       = await query(
+      `SELECT tournament_id, status FROM tournament_registrations
+       WHERE user_id = ? AND tournament_id IN (${placeholders})`,
+      [userId, ...ids]
+    );
+    const myMap = Object.fromEntries(myRegs.map(r => [r.tournament_id, r.status]));
+    for (const t of rows) t.myStatus = myMap[t.id] || null;
+
+    return rows;
+  },
+
+  // ── 2. getTournament ──────────────────────────────────────────────────────
+  /**
+   * Detalle completo: datos del torneo, conteos, myRegistration,
+   * listas de titulares/suplentes y bracket si ya existe.
+   * No expone email, wallet ni datos de identidad.
+   */
+  async getTournament(tournamentId, userId = null) {
+    const tRows = await query(
+      `SELECT
+         t.id, t.name, t.description, t.prize_text,
+         t.max_players, t.status, t.format, t.phase,
+         t.puntos_maximos, t.flor_habilitada,
+         t.turn_seconds, t.reconnect_seconds,
+         t.starts_at, t.checkin_starts_at, t.registration_closes_at,
+         t.winner_id, t.created_at, t.updated_at,
+         u.username AS winner_username, u.avatar AS winner_avatar,
+         SUM(CASE WHEN tr.status IN ('registered','checked_in') THEN 1 ELSE 0 END) AS titular_count,
+         SUM(CASE WHEN tr.status = 'substitute'                  THEN 1 ELSE 0 END) AS substitute_count
+       FROM tournaments t
+       LEFT JOIN usuarios u               ON u.id = t.winner_id
+       LEFT JOIN tournament_registrations tr ON tr.tournament_id = t.id
+       WHERE t.id = ?
+       GROUP BY t.id`,
+      [tournamentId]
+    );
+    if (!tRows.length) throw new Error('Torneo no encontrado');
+    const tournament = tRows[0];
+
+    // Mi inscripción
+    tournament.myRegistration = null;
+    if (userId) {
+      const myRows = await query(
+        `SELECT status, position_number, seed, checked_in_at, created_at
+         FROM tournament_registrations WHERE tournament_id = ? AND user_id = ?`,
+        [tournamentId, userId]
+      );
+      tournament.myRegistration = myRows[0] || null;
+    }
+
+    // Titulares + estados post-bracket (eliminated, qualified, winner)
+    tournament.titulars = await query(
+      `SELECT tr.user_id AS id, u.username, u.avatar,
+              tr.status, tr.position_number, tr.seed, tr.checked_in_at,
+              r.elo
+       FROM tournament_registrations tr
+       JOIN   usuarios u ON u.id = tr.user_id
+       LEFT JOIN ranking r ON r.user_id = tr.user_id
+       WHERE tr.tournament_id = ?
+         AND tr.status IN ('registered','checked_in','eliminated','qualified','winner')
+       ORDER BY tr.position_number ASC`,
+      [tournamentId]
+    );
+
+    // Suplentes
+    tournament.substitutes = await query(
+      `SELECT tr.user_id AS id, u.username, u.avatar,
+              tr.status, tr.position_number, tr.checked_in_at,
+              r.elo
+       FROM tournament_registrations tr
+       JOIN   usuarios u ON u.id = tr.user_id
+       LEFT JOIN ranking r ON r.user_id = tr.user_id
+       WHERE tr.tournament_id = ? AND tr.status = 'substitute'
+       ORDER BY tr.position_number ASC`,
+      [tournamentId]
+    );
+
+    // Bracket básico si existe
+    const matchRows = await query(
+      `SELECT tm.*,
+              p1.username AS p1_username, p1.avatar AS p1_avatar,
+              p2.username AS p2_username, p2.avatar AS p2_avatar,
+              w.username  AS w_username,  w.avatar  AS w_avatar
+       FROM tournament_matches tm
+       LEFT JOIN usuarios p1 ON p1.id = tm.player1_id
+       LEFT JOIN usuarios p2 ON p2.id = tm.player2_id
+       LEFT JOIN usuarios w  ON w.id  = tm.winner_id
+       WHERE tm.tournament_id = ?
+       ORDER BY tm.round_number ASC, tm.match_number ASC`,
+      [tournamentId]
+    );
+    tournament.bracket = matchRows.length
+      ? groupMatchesByRound(matchRows.map(normalizeMatch))
+      : null;
+
+    return tournament;
+  },
+
+  // ── 3. register ───────────────────────────────────────────────────────────
+  /**
+   * Inscribe un usuario en el torneo.
+   * Usa transacción + FOR UPDATE para evitar race conditions en el último cupo.
+   */
+  async register(tournamentId, userId) {
+    return withTransaction(async (conn) => {
+      const [tRows] = await conn.execute(
+        'SELECT id, status, max_players FROM tournaments WHERE id = ? FOR UPDATE',
+        [tournamentId]
+      );
+      if (!tRows.length) throw new Error('Torneo no encontrado');
+      const t = tRows[0];
+      if (t.status !== 'open') throw new Error('El torneo no está abierto para inscripción');
+
+      // Verificar registro existente
+      const [existing] = await conn.execute(
+        'SELECT id, status FROM tournament_registrations WHERE tournament_id = ? AND user_id = ?',
+        [tournamentId, userId]
+      );
+      if (existing.length && ACTIVE_REG_STATUSES.includes(existing[0].status)) {
+        throw new Error('Ya estás inscripto en este torneo');
+      }
+
+      const titularCount = await getActiveTitularCount(conn, tournamentId);
+      const isTitular    = titularCount < t.max_players;
+      const newStatus    = isTitular ? 'registered' : 'substitute';
+
+      if (isTitular) {
+        const [posRows] = await conn.execute(
+          `SELECT COALESCE(MAX(position_number), 0) AS maxPos
+           FROM tournament_registrations
+           WHERE tournament_id = ? AND status IN ('registered','checked_in')`,
+          [tournamentId]
+        );
+        const pos = Number(posRows[0].maxPos) + 1;
+
+        if (existing.length) {
+          await conn.execute(
+            `UPDATE tournament_registrations
+             SET status = 'registered', position_number = ?, seed = NULL, checked_in_at = NULL
+             WHERE tournament_id = ? AND user_id = ?`,
+            [pos, tournamentId, userId]
+          );
+        } else {
+          await conn.execute(
+            `INSERT INTO tournament_registrations (tournament_id, user_id, status, position_number)
+             VALUES (?, ?, 'registered', ?)`,
+            [tournamentId, userId, pos]
+          );
+        }
+      } else {
+        const subCount = await getSubstituteCount(conn, tournamentId);
+        const subPos   = subCount + 1;
+
+        if (existing.length) {
+          await conn.execute(
+            `UPDATE tournament_registrations
+             SET status = 'substitute', position_number = ?, checked_in_at = NULL
+             WHERE tournament_id = ? AND user_id = ?`,
+            [subPos, tournamentId, userId]
+          );
+        } else {
+          await conn.execute(
+            `INSERT INTO tournament_registrations (tournament_id, user_id, status, position_number)
+             VALUES (?, ?, 'substitute', ?)`,
+            [tournamentId, userId, subPos]
+          );
+        }
+      }
+
+      await createEvent(conn, tournamentId,
+        isTitular ? 'registered' : 'substitute_registered',
+        null, userId
+      );
+      return { ok: true, status: newStatus };
+    });
+  },
+
+  // ── 4. unregister ─────────────────────────────────────────────────────────
+  /** Cancela la inscripción. No borra la fila — cambia status a 'cancelled'. */
+  async unregister(tournamentId, userId) {
+    const t = await assertTournamentExists(tournamentId);
+    if (!['open', 'checkin'].includes(t.status)) {
+      throw new Error('No podés retirarte de un torneo que ya comenzó');
+    }
+
+    const rows = await query(
+      `SELECT id, status FROM tournament_registrations
+       WHERE tournament_id = ? AND user_id = ?`,
+      [tournamentId, userId]
+    );
+    if (!rows.length || !ACTIVE_REG_STATUSES.includes(rows[0].status)) {
+      throw new Error('No estás inscripto en este torneo');
+    }
+
+    await query(
+      `UPDATE tournament_registrations SET status = 'cancelled'
+       WHERE tournament_id = ? AND user_id = ?`,
+      [tournamentId, userId]
+    );
+    await createEvent(null, tournamentId, 'unregistered', null, userId);
+    return { ok: true };
+  },
+
+  // ── 5. checkin ────────────────────────────────────────────────────────────
+  /**
+   * Registra el check-in de un jugador.
+   * - registered  → checked_in
+   * - substitute  → substitute + checked_in_at (mantiene status)
+   * - Idempotente si ya hizo check-in.
+   */
+  async checkin(tournamentId, userId) {
+    const t = await assertTournamentExists(tournamentId);
+    if (t.status !== 'checkin') throw new Error('El check-in no está abierto');
+
+    const rows = await query(
+      `SELECT id, status, checked_in_at FROM tournament_registrations
+       WHERE tournament_id = ? AND user_id = ?`,
+      [tournamentId, userId]
+    );
+    if (!rows.length) throw new Error('No estás inscripto en este torneo');
+    const reg = rows[0];
+
+    // Idempotente
+    if (reg.status === 'checked_in') return { ok: true, alreadyDone: true };
+    if (reg.status === 'substitute' && reg.checked_in_at) return { ok: true, alreadyDone: true };
+
+    if (!['registered', 'substitute'].includes(reg.status)) {
+      throw new Error('No podés hacer check-in con tu estado actual');
+    }
+
+    // registered → checked_in; substitute se queda como substitute pero registra timestamp
+    const newStatus = reg.status === 'registered' ? 'checked_in' : 'substitute';
+    await query(
+      `UPDATE tournament_registrations
+       SET status = ?, checked_in_at = NOW()
+       WHERE tournament_id = ? AND user_id = ?`,
+      [newStatus, tournamentId, userId]
+    );
+    await createEvent(null, tournamentId, 'checked_in', null, userId);
+    return { ok: true };
+  },
+
+  // ── 6. getBracket ─────────────────────────────────────────────────────────
+  /**
+   * Devuelve bracket agrupado por ronda con jugadores, estado y readiness.
+   */
+  async getBracket(tournamentId) {
+    const t = await assertTournamentExists(tournamentId);
+
+    const matchRows = await query(
+      `SELECT tm.*,
+              p1.username AS p1_username, p1.avatar AS p1_avatar,
+              p2.username AS p2_username, p2.avatar AS p2_avatar,
+              w.username  AS w_username,  w.avatar  AS w_avatar
+       FROM tournament_matches tm
+       LEFT JOIN usuarios p1 ON p1.id = tm.player1_id
+       LEFT JOIN usuarios p2 ON p2.id = tm.player2_id
+       LEFT JOIN usuarios w  ON w.id  = tm.winner_id
+       WHERE tm.tournament_id = ?
+       ORDER BY tm.round_number ASC, tm.match_number ASC`,
+      [tournamentId]
+    );
+
+    return {
+      tournament: {
+        id:               t.id,
+        name:             t.name,
+        status:           t.status,
+        phase:            t.phase,
+        puntos_maximos:   t.puntos_maximos,
+        flor_habilitada:  !!t.flor_habilitada,
+        turn_seconds:     t.turn_seconds,
+        reconnect_seconds: t.reconnect_seconds,
+      },
+      rounds: groupMatchesByRound(matchRows.map(normalizeMatch)),
+    };
+  },
+
+  // ── 7. generateBracket ────────────────────────────────────────────────────
+  /**
+   * Genera el bracket del torneo.
+   *
+   * Algoritmo en 3 pasadas dentro de una transacción:
+   *   1. Insertar todos los cruces (R1 a Rn) con jugadores solo en R1.
+   *   2. Enlazar next_match_id / next_slot entre rondas.
+   *   3. Procesar byes iterativamente (_processAllByes).
+   *
+   * Rondas por fase:
+   *   - qualifier_a/b (64 jugadores):  4 rondas → 4 clasificados
+   *   - finals        (8 jugadores):   3 rondas → 1 campeón
+   *   - general:      log2(bracketSize) rondas → 1 campeón
+   */
+  async generateBracket(tournamentId, adminId) {
+    const t = await assertTournamentExists(tournamentId);
+    if (!['checkin', 'open', 'draft'].includes(t.status)) {
+      throw new Error('El torneo no está en un estado válido para generar el bracket');
+    }
+
+    const existingCount = await query(
+      'SELECT COUNT(*) AS cnt FROM tournament_matches WHERE tournament_id = ?',
+      [tournamentId]
+    );
+    if (Number(existingCount[0].cnt) > 0) throw new Error('El bracket ya fue generado');
+
+    // Jugadores: titulares con check-in primero, luego suplentes con check-in
+    const titulars = await query(
+      `SELECT user_id FROM tournament_registrations
+       WHERE tournament_id = ? AND status = 'checked_in'
+       ORDER BY position_number ASC`,
+      [tournamentId]
+    );
+    const subs = await query(
+      `SELECT user_id FROM tournament_registrations
+       WHERE tournament_id = ? AND status = 'substitute' AND checked_in_at IS NOT NULL
+       ORDER BY position_number ASC`,
+      [tournamentId]
+    );
+
+    let players = [
+      ...titulars.map(r => r.user_id),
+      ...subs.map(r => r.user_id),
+    ];
+
+    if (players.length < 2) {
+      throw new Error('No hay jugadores suficientes para generar el bracket');
+    }
+
+    const phase       = t.phase;
+    const isQualifier = phase === 'qualifier_a' || phase === 'qualifier_b';
+
+    // Caso degenerado: clasificatorio con <= QUALIFY_COUNT jugadores → clasifican directamente
+    if (isQualifier && players.length <= QUALIFY_COUNT) {
+      const ph = players.map(() => '?').join(',');
+      await query(
+        `UPDATE tournament_registrations SET status = 'qualified'
+         WHERE tournament_id = ? AND user_id IN (${ph})`,
+        [tournamentId, ...players]
+      );
+      await query("UPDATE tournaments SET status = 'finished' WHERE id = ?", [tournamentId]);
+      await createEvent(null, tournamentId, 'bracket_generated',
+        { method: 'direct_qualify', playerCount: players.length }, null, adminId);
+      return { ok: true, method: 'direct_qualify', qualifiedCount: players.length };
+    }
+
+    // Shuffle y padding
+    players = shuffle(players);
+    const bracketSize = nextPowerOfTwo(players.length);
+
+    // Determinar rondas totales
+    let totalRounds;
+    if (isQualifier) {
+      totalRounds = bracketSize <= QUALIFY_COUNT
+        ? 1
+        : intLog2(bracketSize / QUALIFY_COUNT);
+    } else {
+      // finals / general / single_elimination → hasta 1 campeón
+      totalRounds = intLog2(bracketSize);
+    }
+
+    while (players.length < bracketSize) players.push(null);
+
+    return withTransaction(async (conn) => {
+      // ── Pasada 1: insertar cruces ──────────────────────────────────────────
+      // idMap[round][matchNum] = insertId
+      const idMap = {};
+
+      for (let round = 1; round <= totalRounds; round++) {
+        const matchCount = bracketSize / Math.pow(2, round);
+        idMap[round] = {};
+
+        for (let matchNum = 1; matchNum <= matchCount; matchNum++) {
+          let p1 = null, p2 = null;
+          if (round === 1) {
+            p1 = players[(matchNum - 1) * 2]     ?? null;
+            p2 = players[(matchNum - 1) * 2 + 1] ?? null;
+          }
+
+          // En R1, si ambos jugadores reales → ready; si uno null → pending (bye se resolverá)
+          let status = 'pending';
+          if (round === 1 && p1 !== null && p2 !== null) status = 'ready';
+
+          const [res] = await conn.execute(
+            `INSERT INTO tournament_matches
+               (tournament_id, round_number, match_number, bracket_position,
+                player1_id, player2_id, status)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            [tournamentId, round, matchNum, matchNum, p1, p2, status]
+          );
+          idMap[round][matchNum] = res.insertId;
+        }
+      }
+
+      // ── Pasada 2: enlazar next_match_id / next_slot ────────────────────────
+      // Patrón: match m de round r → Math.ceil(m/2) de round r+1
+      //         m impar  → slot player1; m par → slot player2
+      for (let round = 1; round < totalRounds; round++) {
+        const matchCount = bracketSize / Math.pow(2, round);
+        for (let matchNum = 1; matchNum <= matchCount; matchNum++) {
+          const nextMatchNum = Math.ceil(matchNum / 2);
+          const nextSlot     = matchNum % 2 === 1 ? 'player1' : 'player2';
+          const nextId       = idMap[round + 1]?.[nextMatchNum];
+          if (!nextId) continue;
+          await conn.execute(
+            `UPDATE tournament_matches SET next_match_id = ?, next_slot = ? WHERE id = ?`,
+            [nextId, nextSlot, idMap[round][matchNum]]
+          );
+        }
+      }
+
+      // ── Pasada 3: resolver byes y walkovers iterativamente ─────────────────
+      await _processAllByes(conn, tournamentId);
+
+      // Actualizar estado del torneo a 'started' (salvo que ya terminó por classify directo)
+      const [tCheck] = await conn.execute(
+        'SELECT status FROM tournaments WHERE id = ?',
+        [tournamentId]
+      );
+      if (tCheck.length && tCheck[0].status !== 'finished') {
+        await conn.execute(
+          "UPDATE tournaments SET status = 'started' WHERE id = ?",
+          [tournamentId]
+        );
+      }
+
+      const totalMatches = Object.values(idMap).reduce(
+        (sum, round) => sum + Object.keys(round).length, 0
+      );
+      await createEvent(conn, tournamentId, 'bracket_generated',
+        {
+          totalRounds, bracketSize,
+          playerCount: titulars.length + subs.length,
+          totalMatches,
+        },
+        null, adminId
+      );
+
+      logger.info(
+        `Bracket generado: tournament=${tournamentId} rondas=${totalRounds} ` +
+        `size=${bracketSize} matches=${totalMatches}`
+      );
+      return { ok: true, totalRounds, bracketSize, totalMatches };
+    });
+  },
+
+  // ── 8. setPlayerReady ─────────────────────────────────────────────────────
+  /**
+   * Marca a un jugador como listo en un cruce.
+   * - Primer listo: status → waiting_ready, ready_deadline se fija.
+   * - Ambos listos: devuelve bothReady: true (la Etapa 4 creará la partida).
+   * - Idempotente si ya estaba listo.
+   */
+  async setPlayerReady(tournamentId, matchId, userId) {
+    return withTransaction(async (conn) => {
+      const [rows] = await conn.execute(
+        `SELECT * FROM tournament_matches
+         WHERE id = ? AND tournament_id = ? FOR UPDATE`,
+        [matchId, tournamentId]
+      );
+      if (!rows.length) throw new Error('El cruce no existe en este torneo');
+      const m = rows[0];
+
+      if (!['ready', 'waiting_ready'].includes(m.status)) {
+        throw new Error('El cruce no está listo');
+      }
+
+      const isP1 = Number(m.player1_id) === Number(userId);
+      const isP2 = Number(m.player2_id) === Number(userId);
+      if (!isP1 && !isP2) throw new Error('No sos jugador de este cruce');
+
+      // Idempotente
+      if ((isP1 && m.player1_ready) || (isP2 && m.player2_ready)) {
+        return {
+          ok:          true,
+          alreadyReady: true,
+          bothReady:   !!(m.player1_ready && m.player2_ready),
+        };
+      }
+
+      const newP1 = isP1 ? 1 : (m.player1_ready ? 1 : 0);
+      const newP2 = isP2 ? 1 : (m.player2_ready ? 1 : 0);
+      const bothReady = newP1 === 1 && newP2 === 1;
+
+      await conn.execute(
+        `UPDATE tournament_matches
+         SET player1_ready = ?, player2_ready = ?,
+             status        = ?,
+             ready_deadline = COALESCE(ready_deadline, DATE_ADD(NOW(), INTERVAL ? MINUTE))
+         WHERE id = ?`,
+        [newP1, newP2, bothReady ? 'ready' : 'waiting_ready', READY_MINUTES, matchId]
+      );
+
+      await createEvent(conn, tournamentId, 'player_ready',
+        { matchId, slot: isP1 ? 'player1' : 'player2', bothReady },
+        userId
+      );
+      return { ok: true, bothReady, matchId };
+    });
+  },
+
+  // ── 9. forceResult ────────────────────────────────────────────────────────
+  /**
+   * Admin fuerza el resultado de un cruce.
+   * Actualiza match y llama a advanceWinner en una operación separada.
+   */
+  async forceResult(tournamentId, matchId, winnerId, adminId, reason = 'admin_decision') {
+    await withTransaction(async (conn) => {
+      const [rows] = await conn.execute(
+        `SELECT * FROM tournament_matches
+         WHERE id = ? AND tournament_id = ? FOR UPDATE`,
+        [matchId, tournamentId]
+      );
+      if (!rows.length) throw new Error('El cruce no existe en este torneo');
+      const m = rows[0];
+
+      if (['finished', 'walkover'].includes(m.status)) {
+        throw new Error('Este cruce ya fue finalizado');
+      }
+      if (m.winner_id) throw new Error('Este cruce ya tiene un ganador');
+
+      const validPlayers = [Number(m.player1_id), Number(m.player2_id)].filter(Boolean);
+      if (!validPlayers.includes(Number(winnerId))) throw new Error('Ganador inválido');
+
+      const loserId     = Number(m.player1_id) === Number(winnerId) ? m.player2_id : m.player1_id;
+      const matchStatus = reason === 'no_show' ? 'walkover' : 'finished';
+
+      await conn.execute(
+        `UPDATE tournament_matches
+         SET winner_id = ?, loser_id = ?, status = ?, finished_at = NOW()
+         WHERE id = ?`,
+        [winnerId, loserId, matchStatus, matchId]
+      );
+      await createEvent(conn, tournamentId, 'admin_force_result',
+        { matchId, winnerId, loserId, reason }, null, adminId
+      );
+    });
+
+    // Avanzar ganador en operación separada (si falla, admin puede reintentar)
+    await this.advanceWinner(matchId, winnerId).catch(err => {
+      logger.error(`advanceWinner fallido tras forceResult (match=${matchId}): ${err.message}`);
+    });
+
+    return { ok: true };
+  },
+
+  // ── 10. advanceWinner ─────────────────────────────────────────────────────
+  /**
+   * Avanza al ganador al siguiente cruce, o lo marca como classified/champion
+   * si era el último cruce del bracket.
+   */
+  async advanceWinner(matchId, winnerId) {
+    return withTransaction(async (conn) => {
+      await _advanceWinnerConn(conn, matchId, winnerId);
+      return { ok: true };
+    });
+  },
+
+  // ── 12. createTournament ─────────────────────────────────────────────────
+  /**
+   * Admin crea un torneo nuevo en estado 'draft'.
+   * Valida campos requeridos y rangos permitidos.
+   */
+  async createTournament(adminId, body) {
+    const {
+      name,
+      description          = null,
+      prize_text           = null,
+      max_players          = 64,
+      format               = 'single_elimination',
+      phase                = 'general',
+      puntos_maximos       = 15,
+      flor_habilitada      = 0,
+      turn_seconds         = 30,
+      reconnect_seconds    = 60,
+      starts_at            = null,
+      checkin_starts_at    = null,
+      registration_closes_at = null,
+    } = body || {};
+
+    if (!name?.trim()) throw new Error('Nombre obligatorio');
+
+    const nPlayers = parseInt(max_players, 10);
+    if (!isFinite(nPlayers) || nPlayers < 2 || nPlayers > 128) {
+      throw new Error('max_players debe estar entre 2 y 128');
+    }
+    if (![15, 30].includes(Number(puntos_maximos))) {
+      throw new Error('puntos_maximos debe ser 15 o 30');
+    }
+    const ts = parseInt(turn_seconds, 10);
+    if (!isFinite(ts) || ts < 10 || ts > 120) {
+      throw new Error('turn_seconds debe estar entre 10 y 120');
+    }
+    const rs = parseInt(reconnect_seconds, 10);
+    if (!isFinite(rs) || rs < 30 || rs > 300) {
+      throw new Error('reconnect_seconds debe estar entre 30 y 300');
+    }
+
+    const validFormats = ['single_elimination', 'qualifier', 'finals'];
+    const validPhases  = ['qualifier_a', 'qualifier_b', 'finals', 'general'];
+    if (!validFormats.includes(format)) throw new Error('Formato inválido');
+    if (!validPhases.includes(phase))   throw new Error('Fase inválida');
+
+    const result = await query(
+      `INSERT INTO tournaments
+         (name, description, prize_text, max_players, format, phase,
+          puntos_maximos, flor_habilitada, turn_seconds, reconnect_seconds,
+          starts_at, checkin_starts_at, registration_closes_at,
+          status, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?)`,
+      [
+        name.trim().substring(0, 120),
+        description?.trim() || null,
+        prize_text?.trim().substring(0, 120) || null,
+        nPlayers,
+        format,
+        phase,
+        Number(puntos_maximos),
+        flor_habilitada ? 1 : 0,
+        ts,
+        rs,
+        starts_at            || null,
+        checkin_starts_at    || null,
+        registration_closes_at || null,
+        adminId,
+      ]
+    );
+
+    const tournamentId = result.insertId;
+    await createEvent(null, tournamentId, 'tournament_created', { adminId }, null, adminId);
+    logger.info(`Torneo creado: id=${tournamentId} name="${name}" by admin=${adminId}`);
+    return { ok: true, tournamentId };
+  },
+
+  // ── 13. updateTournament ─────────────────────────────────────────────────
+  /**
+   * Admin actualiza campos de un torneo en estado draft u open.
+   */
+  async updateTournament(tournamentId, adminId, body) {
+    const t = await assertTournamentExists(tournamentId);
+    if (!['draft', 'open'].includes(t.status)) {
+      throw new Error('No se puede modificar un torneo iniciado');
+    }
+
+    const ALLOWED = [
+      'name', 'description', 'prize_text', 'max_players', 'format', 'phase',
+      'puntos_maximos', 'flor_habilitada', 'turn_seconds', 'reconnect_seconds',
+      'starts_at', 'checkin_starts_at', 'registration_closes_at',
+    ];
+    const updates = {};
+    for (const field of ALLOWED) {
+      if (body[field] !== undefined) updates[field] = body[field];
+    }
+    if (Object.keys(updates).length === 0) throw new Error('Nada que actualizar');
+
+    // Validaciones parciales
+    if (updates.name !== undefined && !updates.name?.trim()) {
+      throw new Error('Nombre obligatorio');
+    }
+    if (updates.max_players !== undefined) {
+      const n = parseInt(updates.max_players, 10);
+      if (!isFinite(n) || n < 2 || n > 128) throw new Error('max_players debe estar entre 2 y 128');
+      updates.max_players = n;
+    }
+    if (updates.puntos_maximos !== undefined && ![15, 30].includes(Number(updates.puntos_maximos))) {
+      throw new Error('puntos_maximos debe ser 15 o 30');
+    }
+    if (updates.turn_seconds !== undefined) {
+      const v = parseInt(updates.turn_seconds, 10);
+      if (!isFinite(v) || v < 10 || v > 120) throw new Error('turn_seconds debe estar entre 10 y 120');
+      updates.turn_seconds = v;
+    }
+    if (updates.reconnect_seconds !== undefined) {
+      const v = parseInt(updates.reconnect_seconds, 10);
+      if (!isFinite(v) || v < 30 || v > 300) throw new Error('reconnect_seconds debe estar entre 30 y 300');
+      updates.reconnect_seconds = v;
+    }
+
+    const setClauses = Object.keys(updates).map(k => `\`${k}\` = ?`).join(', ');
+    await query(
+      `UPDATE tournaments SET ${setClauses} WHERE id = ?`,
+      [...Object.values(updates), tournamentId]
+    );
+    await createEvent(null, tournamentId, 'tournament_updated',
+      { fields: Object.keys(updates) }, null, adminId);
+    return { ok: true };
+  },
+
+  // ── 14. setTournamentStatus ───────────────────────────────────────────────
+  /**
+   * Admin cambia el estado del torneo siguiendo transiciones válidas.
+   * Válido para: open, checkin, started, finished, cancelled.
+   */
+  async setTournamentStatus(tournamentId, adminId, newStatus) {
+    const VALID = ['open', 'checkin', 'started', 'cancelled', 'finished'];
+    if (!VALID.includes(newStatus)) throw new Error('Estado inválido');
+
+    const t = await assertTournamentExists(tournamentId);
+
+    const TRANSITIONS = {
+      open:      ['draft'],
+      checkin:   ['open', 'draft'],
+      started:   ['checkin', 'open'],
+      cancelled: ['draft', 'open', 'checkin', 'started'],
+      finished:  ['started'],
+    };
+    if (!TRANSITIONS[newStatus]?.includes(t.status)) {
+      throw new Error(`No se puede pasar de '${t.status}' a '${newStatus}'`);
+    }
+
+    await query('UPDATE tournaments SET status = ? WHERE id = ?', [newStatus, tournamentId]);
+
+    const EVENT_MAP = {
+      open:      'tournament_opened',
+      checkin:   'checkin_started',
+      started:   'tournament_started',
+      cancelled: 'tournament_cancelled',
+      finished:  'tournament_finished',
+    };
+    await createEvent(null, tournamentId, EVENT_MAP[newStatus], { adminId }, null, adminId);
+    return { ok: true };
+  },
+
+  // ── 15. startTournament ───────────────────────────────────────────────────
+  /**
+   * Admin inicia el torneo. Requiere que el bracket ya esté generado.
+   */
+  async startTournament(tournamentId, adminId) {
+    const matchCount = await query(
+      'SELECT COUNT(*) AS cnt FROM tournament_matches WHERE tournament_id = ?',
+      [tournamentId]
+    );
+    if (Number(matchCount[0].cnt) === 0) {
+      throw new Error('El torneo no tiene bracket generado. Generá el bracket antes de iniciar');
+    }
+    return this.setTournamentStatus(tournamentId, adminId, 'started');
+  },
+
+  // ── 11. resolveAbsence ────────────────────────────────────────────────────
+  /**
+   * Resuelve la ausencia de un jugador usando el estado de readiness.
+   * - p1 listo, p2 no → walkover para p1.
+   * - p2 listo, p1 no → walkover para p2.
+   * - Ninguno listo → error (requiere decisión manual).
+   */
+  async resolveAbsence(tournamentId, matchId, adminId) {
+    const rows = await query(
+      `SELECT * FROM tournament_matches WHERE id = ? AND tournament_id = ?`,
+      [matchId, tournamentId]
+    );
+    if (!rows.length) throw new Error('El cruce no existe en este torneo');
+    const m = rows[0];
+
+    if (!['ready', 'waiting_ready'].includes(m.status)) {
+      throw new Error('El cruce no está en estado listo');
+    }
+
+    const p1Ready = !!m.player1_ready;
+    const p2Ready = !!m.player2_ready;
+
+    let winnerId;
+    if      (p1Ready && !p2Ready) winnerId = m.player1_id;
+    else if (p2Ready && !p1Ready) winnerId = m.player2_id;
+    else throw new Error('Ningún jugador está listo, se requiere decisión manual');
+
+    return this.forceResult(tournamentId, matchId, winnerId, adminId, 'no_show');
+  },
+
+  // ── 16. getMatchForStart ──────────────────────────────────────────────────
+  /**
+   * Devuelve el match completo + datos del torneo necesarios para crear la gameSession.
+   * Usado por startTournamentMatch en tournamentHandler.
+   */
+  async getMatchForStart(matchId) {
+    const rows = await query(
+      `SELECT tm.*,
+              t.name            AS tournament_name,
+              t.puntos_maximos,
+              t.flor_habilitada,
+              t.turn_seconds,
+              t.reconnect_seconds,
+              t.phase,
+              t.status          AS tournament_status
+       FROM   tournament_matches tm
+       JOIN   tournaments t ON t.id = tm.tournament_id
+       WHERE  tm.id = ?`,
+      [matchId]
+    );
+    if (!rows.length) throw new Error('Cruce no encontrado');
+    return rows[0];
+  },
+
+  // ── 17. markMatchActive ───────────────────────────────────────────────────
+  /**
+   * Marca el cruce como active y guarda el roomId de la partida.
+   * Llamado justo antes de emitir game:start en tournamentHandler.
+   */
+  async markMatchActive(matchId, roomId) {
+    await query(
+      `UPDATE tournament_matches
+       SET    status = 'active', room_id = ?, started_at = NOW()
+       WHERE  id = ?`,
+      [roomId, matchId]
+    );
+  },
+
+  // ── 18. finishMatchFromGame ───────────────────────────────────────────────
+  /**
+   * Llamado desde _finishGame de gameHandler cuando termina una partida.
+   * Busca si el roomId corresponde a un tournament_match.
+   * Si sí: actualiza scores/winner/status y avanza el bracket en la misma TX.
+   * Devuelve null si no es un cruce de torneo (no-op para partidas normales).
+   */
+  async finishMatchFromGame(roomId, winnerId, scores = {}) {
+    const rows = await query(
+      `SELECT tm.id, tm.tournament_id, tm.player1_id, tm.player2_id
+       FROM   tournament_matches tm
+       WHERE  tm.room_id = ?`,
+      [roomId]
+    );
+    if (!rows.length) return null;   // no es cruce de torneo — no-op
+
+    const m      = rows[0];
+    const loserId = Number(m.player1_id) === Number(winnerId)
+      ? m.player2_id
+      : m.player1_id;
+    const p1Score = scores[m.player1_id] ?? null;
+    const p2Score = scores[m.player2_id] ?? null;
+
+    await withTransaction(async (conn) => {
+      await conn.execute(
+        `UPDATE tournament_matches
+         SET    winner_id     = ?,
+                loser_id      = ?,
+                status        = 'finished',
+                finished_at   = NOW(),
+                player1_score = COALESCE(?, player1_score),
+                player2_score = COALESCE(?, player2_score)
+         WHERE  id = ?`,
+        [winnerId, loserId, p1Score, p2Score, m.id]
+      );
+      await createEvent(conn, m.tournament_id, 'match_finished',
+        { matchId: m.id, winnerId, loserId, roomId }, winnerId);
+      await _advanceWinnerConn(conn, m.id, winnerId);
+    });
+
+    // Determinar si este jugador se convirtió en clasificado o campeón
+    const regRows = await query(
+      `SELECT status FROM tournament_registrations
+       WHERE  tournament_id = ? AND user_id = ?`,
+      [m.tournament_id, winnerId]
+    );
+    const regStatus = regRows[0]?.status;
+
+    return {
+      tournamentId: m.tournament_id,
+      matchId:      m.id,
+      winnerId,
+      loserId,
+      qualified:    regStatus === 'qualified',
+      champion:     regStatus === 'winner',
+    };
+  },
+};
+
+module.exports = TournamentService;

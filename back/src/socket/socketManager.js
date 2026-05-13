@@ -2,11 +2,12 @@ const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const matchmaking = require('../services/matchmaking');
 const NotificationService = require('../services/notificationService');
-const { registerMatchmakingHandlers } = require('./handlers/matchmakingHandler');
+const { registerMatchmakingHandlers }   = require('./handlers/matchmakingHandler');
 const { registerGameHandlers, userRooms } = require('./handlers/gameHandler');
-const { registerChatHandlers }        = require('./handlers/chatHandler');
-const { registerSocialHandlers }      = require('./handlers/socialHandler');
-const { registerBattleHandlers }      = require('./handlers/battleHandler');
+const { registerChatHandlers }          = require('./handlers/chatHandler');
+const { registerSocialHandlers }        = require('./handlers/socialHandler');
+const { registerBattleHandlers }        = require('./handlers/battleHandler');
+const { registerTournamentHandlers }    = require('./handlers/tournamentHandler');
 const logger = require('../config/logger');
 
 /**
@@ -68,6 +69,7 @@ function setupSocketIO(io) {
     registerChatHandlers(io, socket, user);
     registerSocialHandlers(io, socket, user);
     registerBattleHandlers(io, socket, user);
+    registerTournamentHandlers(io, socket, user);
 
     // Presence query from clients
     socket.on('presence:get', ({ userIds }) => {

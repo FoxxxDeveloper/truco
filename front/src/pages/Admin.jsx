@@ -4,8 +4,9 @@ import { motion } from 'framer-motion';
 import { useAuth } from '../context/AuthContext';
 import { adminApi, verificationApi } from '../services/api';
 import toast from 'react-hot-toast';
+import TournamentAdminPanel from '../components/admin/TournamentAdminPanel';
 
-const TABS = ['Dashboard', 'Cajero', 'Usuarios', 'Transacciones', 'Partidas', 'Auditoría', 'Verificaciones'];
+const TABS = ['Dashboard', 'Cajero', 'Usuarios', 'Transacciones', 'Partidas', 'Auditoría', 'Verificaciones', 'Torneos'];
 
 // ─── Cashier Panel ─────────────────────────────────────────────────
 function CajeroPanel() {
@@ -331,7 +332,10 @@ export default function Admin() {
   }, [user, navigate]);
 
   const loadTab = useCallback(async (t) => {
-    if (t === 'Cajero') { setLoading(false); return; } // cashier is self-contained
+    if (t === 'Cajero' || t === 'Torneos' || t === 'Verificaciones') {
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     try {
       if (t === 'Dashboard') {
@@ -412,7 +416,9 @@ export default function Admin() {
       </div>
 
       <div style={{ padding: '1.5rem 2rem', maxWidth: 1200, margin: '0 auto' }}>
-        {loading && tab !== 'Cajero' && <div className="spinner-center"><div className="spinner" /></div>}
+        {loading && tab !== 'Cajero' && tab !== 'Torneos' && tab !== 'Verificaciones' && (
+          <div className="spinner-center"><div className="spinner" /></div>
+        )}
 
         {/* ─── Dashboard ─── */}
         {!loading && tab === 'Dashboard' && (
@@ -603,8 +609,13 @@ export default function Admin() {
         )}
 
         {/* ─── Verificaciones ─── */}
-        {!loading && tab === 'Verificaciones' && (
+        {tab === 'Verificaciones' && (
           <VerificationsPanel />
+        )}
+
+        {/* ─── Torneos ─── */}
+        {tab === 'Torneos' && (
+          <TournamentAdminPanel />
         )}
       </div>
     </div>
