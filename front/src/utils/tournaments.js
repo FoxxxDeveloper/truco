@@ -30,6 +30,7 @@ export function registrationStatusLabel(s) {
     eliminated: 'Eliminado',
     qualified: 'Clasificado',
     winner: 'Campeón',
+    no_show: 'No presente (check-in)',
   };
   return map[s] || s || '—';
 }

@@ -357,6 +357,129 @@ const WalletService = {
     });
   },
 
+  /**
+   * Debit playable balance for a tournament entry fee (inside an open transaction).
+   * Does not use `reserved` — funds are spent immediately (completed tx).
+   * Idempotent when `idempotency_key` matches an existing row.
+   *
+   * @returns {{ transactionId: number, alreadyProcessed?: boolean }}
+   */
+  async debitTournamentEntry(conn, userId, amount, reference, idempotencyKey) {
+    amount = assertPositive(amount, 'tournament entry amount');
+    if (!idempotencyKey || String(idempotencyKey).length < 8) {
+      throw new Error('idempotencyKey required for tournament entry');
+    }
+
+    await conn.execute(
+      'INSERT IGNORE INTO wallet (user_id, balance, reserved) VALUES (?, 0.00, 0.00)',
+      [userId]
+    );
+
+    const [rows] = await conn.execute(
+      'SELECT balance FROM wallet WHERE user_id = ? FOR UPDATE',
+      [userId]
+    );
+    if (!rows.length) throw new Error('Wallet not found for user ' + userId);
+
+    const [dup] = await conn.execute(
+      'SELECT id FROM transactions WHERE idempotency_key = ?',
+      [idempotencyKey]
+    );
+    if (dup.length) return { transactionId: dup[0].id, alreadyProcessed: true };
+
+    const balance = parseFloat(rows[0].balance);
+    if (balance < amount) {
+      throw new Error('Saldo insuficiente para inscribirte a este torneo.');
+    }
+
+    await conn.execute(
+      'UPDATE wallet SET balance = balance - ? WHERE user_id = ?',
+      [amount, userId]
+    );
+
+    try {
+      const [tx] = await conn.execute(
+        `INSERT INTO transactions (user_id, type, amount, status, reference, idempotency_key)
+         VALUES (?, 'tournament_entry', ?, 'completed', ?, ?)`,
+        [userId, amount, reference, idempotencyKey]
+      );
+      auditLog('tournament_entry', { userId, amount, reference, idempotencyKey, transactionId: tx.insertId });
+      return { transactionId: tx.insertId };
+    } catch (e) {
+      if (e.code === 'ER_DUP_ENTRY' || e.errno === 1062) {
+        await conn.execute(
+          'UPDATE wallet SET balance = balance + ? WHERE user_id = ?',
+          [amount, userId]
+        );
+        const [again] = await conn.execute(
+          'SELECT id FROM transactions WHERE idempotency_key = ?',
+          [idempotencyKey]
+        );
+        if (again.length) {
+          return { transactionId: again[0].id, alreadyProcessed: true };
+        }
+      }
+      throw e;
+    }
+  },
+
+  /**
+   * Refund tournament entry (inside an open transaction). Idempotent via idempotency_key.
+   */
+  async creditTournamentRefund(conn, userId, amount, reference, idempotencyKey) {
+    amount = assertPositive(amount, 'tournament refund amount');
+    if (!idempotencyKey || String(idempotencyKey).length < 8) {
+      throw new Error('idempotencyKey required for tournament refund');
+    }
+
+    await conn.execute(
+      'INSERT IGNORE INTO wallet (user_id, balance, reserved) VALUES (?, 0.00, 0.00)',
+      [userId]
+    );
+
+    const [rows] = await conn.execute(
+      'SELECT id FROM wallet WHERE user_id = ? FOR UPDATE',
+      [userId]
+    );
+    if (!rows.length) throw new Error('Wallet not found for user ' + userId);
+
+    const [dup] = await conn.execute(
+      'SELECT id FROM transactions WHERE idempotency_key = ?',
+      [idempotencyKey]
+    );
+    if (dup.length) return { transactionId: dup[0].id, alreadyProcessed: true };
+
+    await conn.execute(
+      'UPDATE wallet SET balance = balance + ? WHERE user_id = ?',
+      [amount, userId]
+    );
+
+    try {
+      const [tx] = await conn.execute(
+        `INSERT INTO transactions (user_id, type, amount, status, reference, idempotency_key)
+         VALUES (?, 'tournament_refund', ?, 'completed', ?, ?)`,
+        [userId, amount, reference, idempotencyKey]
+      );
+      auditLog('tournament_refund', { userId, amount, reference, idempotencyKey, transactionId: tx.insertId });
+      return { transactionId: tx.insertId };
+    } catch (e) {
+      if (e.code === 'ER_DUP_ENTRY' || e.errno === 1062) {
+        await conn.execute(
+          'UPDATE wallet SET balance = balance - ? WHERE user_id = ?',
+          [amount, userId]
+        );
+        const [again] = await conn.execute(
+          'SELECT id FROM transactions WHERE idempotency_key = ?',
+          [idempotencyKey]
+        );
+        if (again.length) {
+          return { transactionId: again[0].id, alreadyProcessed: true };
+        }
+      }
+      throw e;
+    }
+  },
+
   /** Transaction history for a user (paginated). */
   async getHistory(userId, { limit = 20, offset = 0 } = {}) {
     // Interpolate as safe integer literals — mysql2 prepared-statement placeholders

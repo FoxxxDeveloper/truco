@@ -1,123 +1,81 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import toast from 'react-hot-toast';
-import { Upload } from 'lucide-react';
-import { useAuth } from '../context/AuthContext';
 import { profileApi, rankingApi } from '../services/api';
+import AppHeader from '../components/layout/AppHeader';
+import TrucoAvatar from '../components/avatar/TrucoAvatar';
+import { useAuth } from '../context/AuthContext';
+import { generateAvatarOptions, isTrucoAvatar } from '../utils/avatar';
 
-// ── Avatar component ──────────────────────────────────────────────
-function Avatar({ src, username, size = 100 }) {
-  const [imgError, setImgError] = useState(false);
-  if (src && !imgError) {
-    return (
-      <img
-        src={src}
-        alt={username}
-        onError={() => setImgError(true)}
-        style={{
-          width: size, height: size, borderRadius: '50%', objectFit: 'cover',
-          border: '3px solid var(--border-gold)', display: 'block',
-        }}
-      />
-    );
-  }
-  const initials = (username || '?').slice(0, 2).toUpperCase();
-  const hue = [...(username || '')].reduce((acc, c) => acc + c.charCodeAt(0), 0) % 360;
+function StatCard({ label, value, mod = '' }) {
   return (
-    <div style={{
-      width: size, height: size, borderRadius: '50%', display: 'flex', alignItems: 'center',
-      justifyContent: 'center', fontWeight: 900, fontSize: size * 0.36,
-      background: `hsl(${hue},48%,32%)`, color: '#fff',
-      border: '3px solid var(--border-gold)', flexShrink: 0,
-      fontFamily: 'var(--font-display)',
-    }}>
-      {initials}
-    </div>
-  );
-}
-
-// ── Stat card ─────────────────────────────────────────────────────
-function StatCard({ label, value, color = 'var(--text)' }) {
-  return (
-    <div style={{
-      background: 'var(--bg-surface)', border: '1px solid var(--border)',
-      borderRadius: 12, padding: '16px 20px', textAlign: 'center',
-    }}>
-      <div style={{ color: 'var(--text-muted)', fontSize: 11, textTransform: 'uppercase', letterSpacing: 1, marginBottom: 6 }}>{label}</div>
-      <div style={{ color, fontSize: 26, fontWeight: 900, fontFamily: 'var(--font-display)' }}>{value}</div>
+    <div className={`fx-card profile-stat-card ${mod}`.trim()}>
+      <span className="profile-stat-label">{label}</span>
+      <span className="profile-stat-value">{value}</span>
     </div>
   );
 }
 
 export default function ProfilePage() {
-  const { user, setUser } = useAuth();
   const navigate = useNavigate();
-  const fileInputRef = useRef(null);
+  const { updateUser } = useAuth();
 
   const [profile, setProfile] = useState(null);
-  const [rank, setRank]       = useState(null);
+  const [rank, setRank] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  // Edit mode
-  const [editing, setEditing]         = useState(false);
-  const [editBio, setEditBio]         = useState('');
-  const [editAvatar, setEditAvatar]   = useState('');
-  const [saving, setSaving]           = useState(false);
-  const [uploadingAvatar, setUploadingAvatar] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [editBio, setEditBio] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [savingAvatar, setSavingAvatar] = useState(false);
+
+  const [avatarOptions, setAvatarOptions] = useState([]);
+  const [selectedCandidate, setSelectedCandidate] = useState(null);
 
   useEffect(() => {
     Promise.all([profileApi.getMe(), rankingApi.getMe().catch(() => null)])
       .then(([pRes, rRes]) => {
         setProfile(pRes.data);
         setEditBio(pRes.data.bio || '');
-        setEditAvatar(pRes.data.avatar || '');
         if (rRes) setRank(rRes.data);
       })
       .catch(() => toast.error('Error al cargar perfil'))
       .finally(() => setLoading(false));
   }, []);
 
-  const handleAvatarFileChange = async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setUploadingAvatar(true);
-    try {
-      const res = await profileApi.uploadAvatar(file);
-      if (res.data?.avatarUrl) {
-        // The API returns a relative path like /uploads/avatars/avatar_1_12345.jpg
-        // For requests from the browser, this needs to be resolved relative to the API origin
-        const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001/api';
-        const apiOrigin = API_BASE.replace('/api', ''); // Remove /api suffix to get origin
-        const url = apiOrigin + res.data.avatarUrl;
-        setProfile(prev => ({ ...prev, avatar: url }));
-        setEditAvatar(url);
-        toast.success('Avatar actualizado');
-      }
-    } catch (err) {
-      toast.error(err.response?.data?.error || 'Error al subir imagen');
-    } finally {
-      setUploadingAvatar(false);
-      e.target.value = '';
+  useEffect(() => {
+    if (!editing || !profile?.username) return;
+    const opts = generateAvatarOptions(profile.username, 8, Date.now());
+    setAvatarOptions(opts);
+    if (isTrucoAvatar(profile.avatar)) {
+      setSelectedCandidate(profile.avatar);
+    } else {
+      setSelectedCandidate(opts[0] ?? null);
     }
+  }, [editing, profile?.username]);
+
+  const regenerateAvatarOptions = () => {
+    if (!profile?.username) return;
+    const opts = generateAvatarOptions(profile.username, 8, Date.now());
+    setAvatarOptions(opts);
+    setSelectedCandidate(opts[0] ?? null);
   };
 
-  const handleSave = async () => {
-    if (editBio.length > 500) { toast.error('La bio no puede superar 500 caracteres'); return; }
-    if (editAvatar && !/^https?:\/\/.+\..+/.test(editAvatar)) {
-      toast.error('Ingresá una URL válida para el avatar (https://...)');
+  const handleSaveBio = async () => {
+    if (editBio.length > 500) {
+      toast.error('La bio no puede superar 500 caracteres');
       return;
     }
     setSaving(true);
     try {
-      const body = {};
-      if (editBio !== (profile.bio || ''))         body.bio    = editBio.trim();
-      if (editAvatar !== (profile.avatar || ''))   body.avatar = editAvatar.trim();
-      if (Object.keys(body).length === 0) { setEditing(false); return; }
-
-      const res = await profileApi.update(body);
+      if (editBio.trim() === (profile.bio || '').trim()) {
+        setEditing(false);
+        return;
+      }
+      const res = await profileApi.update({ bio: editBio.trim() });
       if (res.data.ok) {
-        setProfile(prev => ({ ...prev, ...body }));
+        setProfile((prev) => ({ ...prev, bio: editBio.trim() }));
         toast.success('Perfil actualizado');
         setEditing(false);
       }
@@ -128,170 +86,209 @@ export default function ProfilePage() {
     }
   };
 
-  if (loading) {
-    return <div className="loading-screen"><div className="spinner" /></div>;
-  }
+  const handleSaveAvatar = async () => {
+    if (!selectedCandidate || !isTrucoAvatar(selectedCandidate)) {
+      toast.error('Elegí un avatar de la grilla');
+      return;
+    }
+    setSavingAvatar(true);
+    try {
+      const res = await profileApi.setAvatarChoice({ avatar: selectedCandidate });
+      const next = res.data?.avatar ?? selectedCandidate;
+      setProfile((prev) => ({ ...prev, avatar: next }));
+      updateUser({ avatar: next });
+      toast.success('Avatar guardado');
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'No se pudo guardar el avatar');
+    } finally {
+      setSavingAvatar(false);
+    }
+  };
 
-  if (!profile) {
+  if (loading) {
     return (
-      <div style={{ textAlign: 'center', padding: '4rem', color: 'var(--text-muted)' }}>
-        No se pudo cargar el perfil.
-        <br /><button className="btn btn-ghost" style={{ marginTop: 16 }} onClick={() => navigate('/lobby')}>← Volver</button>
+      <div className="loading-screen profile-page profile-page--et5 page-shell">
+        <AppHeader />
+        <div className="spinner" />
       </div>
     );
   }
 
-  const total   = (profile.wins || 0) + (profile.losses || 0);
+  if (!profile) {
+    return (
+      <div className="profile-page profile-page--et5 page-shell profile-empty">
+        <AppHeader />
+        <p>No se pudo cargar el perfil.</p>
+        <button type="button" className="btn btn-secondary" onClick={() => navigate('/lobby')}>
+          Volver al lobby
+        </button>
+      </div>
+    );
+  }
+
+  const total = (profile.wins || 0) + (profile.losses || 0);
   const winrate = total > 0 ? Math.round((profile.wins / total) * 100) : 0;
 
   return (
-    <div style={{ minHeight: '100vh', background: 'var(--bg-dark)', padding: '0 0 60px' }}>
-      {/* Header */}
-      <header style={{ display: 'flex', alignItems: 'center', gap: 16, padding: '1rem 2rem', background: 'var(--bg-card)', borderBottom: '1px solid var(--border)' }}>
-        <button className="btn btn-ghost btn-sm" onClick={() => navigate('/lobby')}>← Volver</button>
-        <h1 style={{ margin: 0, fontSize: 18 }}>👤 Mi Perfil</h1>
+    <div className="profile-page profile-page--et5 page-shell">
+      <AppHeader />
+      <header className="profile-page-header profile-page-header--et5 profile-page-header--compact">
+        <button type="button" className="btn btn-ghost btn-sm" onClick={() => navigate('/lobby')}>
+          ← Volver al lobby
+        </button>
       </header>
 
-      <div style={{ maxWidth: 720, margin: '0 auto', padding: '2rem 1.5rem' }}>
-
-        {/* Hero card */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}
-          style={{ background: 'var(--bg-card)', border: '1px solid var(--border-gold)', borderRadius: 20, padding: '2rem', marginBottom: 24, display: 'flex', gap: 28, alignItems: 'flex-start', flexWrap: 'wrap' }}
-        >
-          {/* Avatar + edit button */}
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
-            <Avatar src={editing ? editAvatar : profile.avatar} username={profile.username} size={100} />
+      <motion.section
+        className="fx-card profile-hero profile-hero--et5"
+        initial={{ opacity: 0, y: 16 }}
+        animate={{ opacity: 1, y: 0 }}
+      >
+        <div className="profile-hero-main">
+          <div className="profile-avatar-column">
+            <div className="profile-avatar-wrap profile-avatar-wrap--et5">
+              <TrucoAvatar avatar={profile.avatar} username={profile.username} size={112} className="profile-avatar-lg" />
+            </div>
             {!editing ? (
-              <button className="btn btn-ghost btn-sm" onClick={() => setEditing(true)}>
-                ✏️ Editar perfil
+              <button type="button" className="btn btn-gold btn-sm profile-edit-trigger" onClick={() => setEditing(true)}>
+                Editar perfil
               </button>
-            ) : (
-              <>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="image/jpeg,image/png,image/webp,image/gif"
-                  style={{ display: 'none' }}
-                  onChange={handleAvatarFileChange}
-                />
-                <button
-                  className="btn btn-ghost btn-sm"
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={uploadingAvatar}
-                  style={{ display: 'flex', alignItems: 'center', gap: 5 }}
-                >
-                  <Upload size={13} />
-                  {uploadingAvatar ? 'Subiendo...' : 'Subir foto'}
-                </button>
-              </>
-            )}
+            ) : null}
           </div>
 
-          {/* Info / edit form */}
-          <div style={{ flex: 1, minWidth: 240 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8, flexWrap: 'wrap' }}>
-              <h2 style={{ margin: 0, fontSize: 24, fontFamily: 'var(--font-display)', color: 'var(--gold)' }}>
-                {profile.username}
-              </h2>
-              {rank && (
-                <span style={{ background: 'rgba(246,196,83,0.15)', border: '1px solid var(--border-gold)', borderRadius: 999, padding: '3px 12px', fontSize: 13, color: 'var(--gold)', fontWeight: 700 }}>
-                  ELO {rank.elo}
-                </span>
-              )}
-              {rank?.rank && (
-                <span style={{ color: 'var(--text-muted)', fontSize: 13 }}>
-                  Puesto #{rank.rank}
-                </span>
-              )}
+          <div className="profile-hero-info">
+            <div className="profile-name-row">
+              <h1 className="profile-username">{profile.username}</h1>
+              {rank && <span className="fx-badge fx-badge--gold">ELO {rank.elo}</span>}
+              {rank?.rank != null && <span className="fx-badge fx-badge--muted">Puesto #{rank.rank}</span>}
             </div>
 
             {!editing ? (
-              <p style={{ color: 'var(--text-muted)', fontSize: 14, lineHeight: 1.7, margin: 0 }}>
-                {profile.bio || <em style={{ opacity: 0.5 }}>Sin bio todavía. ¡Editá tu perfil!</em>}
+              <p className="profile-bio">
+                {profile.bio || (
+                  <span className="profile-bio-empty">Sin bio todavía. Editá tu perfil para contar algo sobre vos.</span>
+                )}
               </p>
             ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-                {/* Avatar URL */}
-                <div>
-                  <label style={{ color: 'var(--text-muted)', fontSize: 12, display: 'block', marginBottom: 5 }}>
-                    URL de foto de perfil (https://…)
-                  </label>
-                  <input
-                    type="url"
-                    className="form-input"
-                    style={{ width: '100%' }}
-                    placeholder="https://i.pravatar.cc/150?u=juanmanuel"
-                    value={editAvatar}
-                    onChange={e => setEditAvatar(e.target.value)}
-                  />
-                  <p style={{ fontSize: 11, color: 'var(--text-muted)', margin: '4px 0 0' }}>
-                    Podés usar servicios como Gravatar, DiceBear, o cualquier imagen pública.
-                  </p>
+              <div className="profile-edit-fields">
+                <div className="profile-photo-block fx-card profile-photo-card profile-trucofx-avatar-card">
+                  <h3 className="section-header profile-photo-title">Avatar TrucoFX</h3>
+                  <p className="profile-photo-lead">Elegí un avatar inspirado en el Truco Argentino.</p>
+                  <p className="profile-field-hint">Podés generar otro hasta encontrar uno que te guste.</p>
+                  <p className="profile-field-hint">Por seguridad, no usamos fotos ni links externos.</p>
+
+                  <div className="profile-trucofx-actions">
+                    <button type="button" className="btn btn-secondary btn-sm" onClick={regenerateAvatarOptions}>
+                      Generar otro
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-gold btn-sm"
+                      onClick={handleSaveAvatar}
+                      disabled={savingAvatar || !selectedCandidate}
+                    >
+                      {savingAvatar ? 'Guardando…' : 'Guardar avatar'}
+                    </button>
+                  </div>
+
+                  <p className="profile-sublabel">Opciones</p>
+                  <div className="profile-preset-grid">
+                    {avatarOptions.map((opt) => {
+                      const active = selectedCandidate === opt;
+                      return (
+                        <button
+                          key={opt}
+                          type="button"
+                          className={`profile-preset-btn${active ? ' profile-preset-btn--active' : ''}`.trim()}
+                          onClick={() => setSelectedCandidate(opt)}
+                          title={opt}
+                        >
+                          <span className="profile-preset-icon profile-preset-icon--truco">
+                            <TrucoAvatar avatar={opt} username={profile.username} size={48} />
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
                 </div>
 
-                {/* Bio */}
-                <div>
-                  <label style={{ color: 'var(--text-muted)', fontSize: 12, display: 'block', marginBottom: 5 }}>
-                    Bio <span style={{ opacity: 0.5 }}>({editBio.length}/500)</span>
+                <div className="form-group">
+                  <label className="form-label" htmlFor="profile-bio">
+                    Bio ({editBio.length}/500)
                   </label>
                   <textarea
+                    id="profile-bio"
                     className="form-input"
-                    style={{ width: '100%', minHeight: 80, resize: 'vertical', fontFamily: 'inherit' }}
-                    placeholder="Contá algo sobre vos…"
+                    rows={4}
                     maxLength={500}
+                    placeholder="Contá algo sobre vos…"
                     value={editBio}
-                    onChange={e => setEditBio(e.target.value)}
+                    onChange={(e) => setEditBio(e.target.value)}
                   />
                 </div>
 
-                {/* Action buttons */}
-                <div style={{ display: 'flex', gap: 10 }}>
-                  <button className="btn btn-accept" onClick={handleSave} disabled={saving}>
-                    {saving ? 'Guardando…' : '✓ Guardar'}
+                <div className="profile-edit-actions">
+                  <button type="button" className="btn btn-primary" onClick={handleSaveBio} disabled={saving}>
+                    {saving ? 'Guardando…' : 'Guardar cambios'}
                   </button>
-                  <button className="btn btn-ghost" onClick={() => { setEditing(false); setEditBio(profile.bio || ''); setEditAvatar(profile.avatar || ''); }}>
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={() => {
+                      setEditing(false);
+                      setEditBio(profile.bio || '');
+                    }}
+                  >
                     Cancelar
                   </button>
                 </div>
               </div>
             )}
           </div>
-        </motion.div>
+        </div>
+      </motion.section>
 
-        {/* Stats grid */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}
-          style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: 12, marginBottom: 24 }}
-        >
-          <StatCard label="ELO" value={rank?.elo ?? profile.elo ?? 1000} color="var(--gold)" />
-          <StatCard label="Victorias" value={profile.wins || 0} color="var(--green)" />
-          <StatCard label="Derrotas" value={profile.losses || 0} color="var(--red)" />
-          <StatCard label="Win Rate" value={`${winrate}%`} color={winrate >= 50 ? 'var(--green)' : 'var(--text-muted)'} />
-          <StatCard label="Créditos" value={`${(profile.balance || 0).toFixed(0)} CRD`} color="var(--gold)" />
-          {rank?.rank && <StatCard label="Ranking" value={`#${rank.rank}`} color="var(--text)" />}
-        </motion.div>
+      <motion.div
+        className="profile-stats-grid"
+        initial={{ opacity: 0, y: 12 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.06 }}
+      >
+        <StatCard label="ELO" value={rank?.elo ?? profile.elo ?? 1000} mod="profile-stat--elo" />
+        <StatCard label="Victorias" value={profile.wins || 0} mod="profile-stat--wins" />
+        <StatCard label="Derrotas" value={profile.losses || 0} mod="profile-stat--losses" />
+        <StatCard label="Win rate" value={`${winrate}%`} mod={winrate >= 50 ? 'profile-stat--wr-good' : ''} />
+        <StatCard label="Créditos" value={`${(profile.balance || 0).toFixed(0)} cr`} mod="profile-stat--credits" />
+        {rank?.rank != null && <StatCard label="Ranking global" value={`#${rank.rank}`} />}
+      </motion.div>
 
-        {/* Account info */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}
-          style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 16, padding: '1.5rem' }}
-        >
-          <h3 style={{ margin: '0 0 16px', fontSize: 15, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 1 }}>Cuenta</h3>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            {[
-              ['Email', profile.email],
-              ['Miembro desde', new Date(profile.created_at || Date.now()).toLocaleDateString('es-AR', { year: 'numeric', month: 'long', day: 'numeric' })],
-              ['Telegram', profile.telegram_linked ? '✅ Vinculado' : '❌ No vinculado'],
-            ].map(([label, val]) => (
-              <div key={label} style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid var(--border)', paddingBottom: 10 }}>
-                <span style={{ color: 'var(--text-muted)', fontSize: 14 }}>{label}</span>
-                <span style={{ color: 'var(--text)', fontSize: 14, fontWeight: 500 }}>{val}</span>
-              </div>
-            ))}
+      <motion.section
+        className="fx-card profile-account-card"
+        initial={{ opacity: 0, y: 12 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.1 }}
+      >
+        <h2 className="section-header">Cuenta</h2>
+        <dl className="profile-account-dl">
+          <div className="profile-account-row">
+            <dt>Email</dt>
+            <dd>{profile.email}</dd>
           </div>
-        </motion.div>
-      </div>
+          <div className="profile-account-row">
+            <dt>Miembro desde</dt>
+            <dd>
+              {new Date(profile.created_at || Date.now()).toLocaleDateString('es-AR', {
+                year: 'numeric',
+                month: 'long',
+                day: 'numeric',
+              })}
+            </dd>
+          </div>
+          <div className="profile-account-row">
+            <dt>Telegram</dt>
+            <dd>{profile.telegram_linked ? 'Vinculado' : 'No vinculado'}</dd>
+          </div>
+        </dl>
+      </motion.section>
     </div>
   );
 }

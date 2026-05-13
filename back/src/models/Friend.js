@@ -86,6 +86,39 @@ const Friend = {
     );
     return rows[0] || null;
   },
+
+  /**
+   * Friendship from viewer's perspective toward target.
+   * @returns {'self'|'friends'|'none'|'request_sent'|'request_received'|'blocked'}
+   */
+  async getFriendshipStatus(viewerId, targetId) {
+    const v = Number(viewerId);
+    const t = Number(targetId);
+    if (!v || !t) return 'none';
+    if (v === t) return 'self';
+    const rel = await Friend.getRelationship(v, t);
+    if (!rel) return 'none';
+    if (rel.status === 'accepted') return 'friends';
+    if (rel.status === 'blocked') return 'blocked';
+    if (rel.status === 'pending') {
+      return Number(rel.requested_by) === v ? 'request_sent' : 'request_received';
+    }
+    return 'none';
+  },
+
+  /** Outgoing pending requests (I am the sender). */
+  async getPendingSent(userId) {
+    return query(
+      `SELECT u.id, u.username, u.avatar, r.elo, f.created_at
+       FROM friends f
+       JOIN usuarios u ON u.id = IF(f.requested_by = f.user_id, f.friend_id, f.user_id)
+       LEFT JOIN ranking r ON r.user_id = u.id
+       WHERE f.status = 'pending'
+         AND f.requested_by = ?
+         AND (f.user_id = ? OR f.friend_id = ?)`,
+      [userId, userId, userId]
+    );
+  },
 };
 
 module.exports = Friend;

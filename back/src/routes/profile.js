@@ -3,8 +3,9 @@
  * GET  /api/profile/me              — own profile (full)
  * GET  /api/users/:id/public        — public profile by numeric ID
  * GET  /api/profile/:username       — public profile by username
- * PUT  /api/profile                 — update bio / avatar URL
- * POST /api/profile/avatar          — upload avatar file (multipart)
+ * PUT  /api/profile                 — update bio (avatar → PUT /avatar-choice)
+ * PUT  /api/profile/avatar-choice   — avatar TrucoFX generado (trucofx:…)
+ * POST /api/profile/avatar          — upload avatar file (legacy; UI no lo usa)
  * GET  /api/games/active            — reconnectable games for current user
  * GET  /api/games/history           — game history (paginated)
  */
@@ -13,8 +14,19 @@ const fs             = require('fs');
 const express        = require('express');
 const multer         = require('multer');
 const authMiddleware = require('../middleware/auth');
+const optionalAuth = require('../middleware/optionalAuth');
 const logger         = require('../config/logger');
 const { query }      = require('../config/database');
+const Friend         = require('../models/Friend');
+
+/** Solo avatares generados TrucoFX (nuevos). Legacy en DB sigue siendo leído en front. */
+const TRUCOFX_AVATAR_RE =
+  /^trucofx:(mate|espada|basto|copa|oro|zorro|naipe|sol|bandera|truco):[a-zA-Z0-9_-]{1,40}:([1-9]|1[0-2])$/;
+
+function isValidTrucoFxAvatar(avatar) {
+  if (avatar == null || typeof avatar !== 'string') return false;
+  return TRUCOFX_AVATAR_RE.test(avatar.trim());
+}
 
 const router = express.Router();
 
@@ -73,8 +85,27 @@ router.get('/me', authMiddleware, async (req, res) => {
   }
 });
 
-// ── Public profile by username ────────────────────────────────────────────────
-router.get('/:username', async (req, res) => {
+// ── Avatar TrucoFX (solo string trucofx:…) ─────────────────────────────────────
+router.put('/avatar-choice', authMiddleware, async (req, res) => {
+  try {
+    const { avatar } = req.body;
+    if (avatar == null || typeof avatar !== 'string') {
+      return res.status(400).json({ error: 'Avatar inválido' });
+    }
+    const trimmed = avatar.trim();
+    if (!isValidTrucoFxAvatar(trimmed)) {
+      return res.status(400).json({ error: 'Avatar inválido' });
+    }
+    await query('UPDATE usuarios SET avatar = ? WHERE id = ?', [trimmed, req.user.id]);
+    return res.json({ ok: true, avatar: trimmed });
+  } catch (err) {
+    logger.error('profile avatar-choice: ' + err.message);
+    return res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// ── Public profile by username (optional auth → friendshipStatus) ─────────────
+router.get('/:username', optionalAuth, async (req, res) => {
   try {
     const rows = await query(
       `SELECT u.id, u.username, u.avatar, u.bio, u.created_at,
@@ -94,17 +125,23 @@ router.get('/:username', async (req, res) => {
     user.losses  = Number(user.losses ?? 0);
     user.draws   = Number(user.draws ?? 0);
 
-    return res.json(user);
+    let friendshipStatus = null;
+    if (req.user) {
+      friendshipStatus =
+        user.id === req.user.id ? 'self' : await Friend.getFriendshipStatus(req.user.id, user.id);
+    }
+
+    return res.json({ ...user, friendshipStatus });
   } catch (err) {
     logger.error('profile :username: ' + err.message);
     return res.status(500).json({ error: 'Server error' });
   }
 });
 
-// ── Update own profile ────────────────────────────────────────────────────────
+// ── Update own profile (solo bio; avatar → PUT /avatar-choice) ───────────────
 router.put('/', authMiddleware, async (req, res) => {
   try {
-    const allowed = ['bio', 'avatar'];
+    const allowed = ['bio'];
     const updates = {};
     for (const key of allowed) {
       if (req.body[key] !== undefined) updates[key] = req.body[key];
@@ -116,9 +153,6 @@ router.put('/', authMiddleware, async (req, res) => {
     // bio max length
     if (updates.bio && updates.bio.length > 500) {
       return res.status(400).json({ error: 'Bio max 500 chars' });
-    }
-    if (updates.avatar && typeof updates.avatar !== 'string') {
-      return res.status(400).json({ error: 'Invalid avatar' });
     }
 
     const setClauses = Object.keys(updates).map(k => `${k} = ?`).join(', ');

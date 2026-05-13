@@ -105,6 +105,16 @@ const NotificationService = {
     );
     return Number(rows[0]?.cnt ?? 0);
   },
+
+  /** Push a socket event to every connected socket of a user (no DB row). */
+  emitToUser(userId, event, payload) {
+    if (!_io) return;
+    const sockets = onlineUsers.get(Number(userId));
+    if (!sockets) return;
+    for (const sid of sockets) {
+      _io.to(sid).emit(event, payload);
+    }
+  },
 };
 
 module.exports = NotificationService;

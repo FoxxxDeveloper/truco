@@ -2,6 +2,8 @@ import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
+import BrandNavLockup from '../components/brand/BrandNavLockup';
+import wordmarkBwUrl from '../assets/panoramicobw.png';
 
 export default function Login() {
   const navigate = useNavigate();
@@ -45,64 +47,71 @@ export default function Login() {
   };
 
   return (
-    <main className="auth-page">
-      <section className="auth-card animate-pop-in">
+    <main className="auth-page auth-page--et6">
+      <img src={wordmarkBwUrl} className="fx-watermark-logo auth-watermark" alt="" aria-hidden />
+      <div className="page-shell auth-page-inner">
+        <div className="auth-layout">
+          <section className="fx-card auth-card auth-card--et6 animate-pop-in">
+            <div className="auth-card-head">
+              <BrandNavLockup size="auth" className="auth-brand-lockup" />
+              <p className="auth-lead">Entrá a TrucoFX y jugá al Truco Argentino online.</p>
+            </div>
 
+            <form className="auth-form" onSubmit={handleSubmit}>
+              <div className="auth-title">
+                <h2>Iniciar sesión</h2>
+              </div>
 
-     <div className="auth-logo">
-  <h1>TrucoFX</h1>
-  <p>Truco Argentino Online</p>
-</div>
+              <div className="form-group">
+                <label className="form-label" htmlFor="email">
+                  Email
+                </label>
 
-        <form className="auth-form" onSubmit={handleSubmit}>
-          <div className="auth-title">
-            <h2>Iniciar sesión</h2>
-            <p>Entrá para jugar, competir y desafiar rivales.</p>
-          </div>
+                <input
+                  id="email"
+                  className="form-input"
+                  type="email"
+                  name="email"
+                  placeholder="tu@email.com"
+                  value={form.email}
+                  onChange={handleChange}
+                  autoComplete="email"
+                />
+              </div>
 
-          <div className="form-group">
-            <label className="form-label" htmlFor="email">
-              Email
-            </label>
+              <div className="form-group">
+                <label className="form-label" htmlFor="password">
+                  Contraseña
+                </label>
 
-            <input
-              id="email"
-              className="form-input"
-              type="email"
-              name="email"
-              placeholder="tu@email.com"
-              value={form.email}
-              onChange={handleChange}
-              autoComplete="email"
-            />
-          </div>
+                <input
+                  id="password"
+                  className="form-input"
+                  type="password"
+                  name="password"
+                  placeholder="••••••••"
+                  value={form.password}
+                  onChange={handleChange}
+                  autoComplete="current-password"
+                />
+              </div>
 
-          <div className="form-group">
-            <label className="form-label" htmlFor="password">
-              Contraseña
-            </label>
+              <p className="auth-form-hint">Los errores se muestran arriba como avisos.</p>
 
-            <input
-              id="password"
-              className="form-input"
-              type="password"
-              name="password"
-              placeholder="••••••••"
-              value={form.password}
-              onChange={handleChange}
-              autoComplete="current-password"
-            />
-          </div>
+              <button type="submit" className="btn btn-primary btn-block" disabled={loading}>
+                {loading ? 'Entrando…' : 'Ingresar'}
+              </button>
+            </form>
 
-          <button className="btn btn-primary btn-block" disabled={loading}>
-            {loading ? 'Entrando...' : 'Entrar'}
-          </button>
-        </form>
-
-        <div className="auth-footer">
-          ¿No tenés cuenta? <Link to="/register">Registrate</Link>
+            <div className="auth-footer">
+              ¿No tenés cuenta?{' '}
+              <Link to="/register" className="auth-footer-link">
+                Registrate
+              </Link>
+            </div>
+          </section>
         </div>
-      </section>
+      </div>
     </main>
   );
 }

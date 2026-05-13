@@ -66,6 +66,15 @@ const USER_ERRORS = [
   'bracket generado',
   'Ningún jugador está listo',
   'direct_qualify',
+  'Necesitás verificar tu identidad',
+  'Tu verificación está pendiente',
+  'Tu verificación fue rechazada',
+  'Tu edad no ha sido verificada',
+  'Solo pueden inscribirse a torneos',
+  'Saldo insuficiente',
+  'Torneo pago:',
+  'El torneo aún no inició oficialmente',
+  'No podés cancelar listo',
 ];
 
 function handleRouteError(res, err, context) {
@@ -98,6 +107,17 @@ router.get('/:id', async (req, res) => {
   } catch (err) {
     if (err.message === 'Torneo no encontrado') return res.status(404).json({ error: err.message });
     return handleRouteError(res, err, 'get');
+  }
+});
+
+// ── GET /api/tournaments/:id/standings ───────────────────────────────────────
+router.get('/:id/standings', async (req, res) => {
+  try {
+    const standings = await TournamentService.getStandings(Number(req.params.id));
+    return res.json({ standings });
+  } catch (err) {
+    if (err.message === 'Torneo no encontrado') return res.status(404).json({ error: err.message });
+    return handleRouteError(res, err, 'standings');
   }
 });
 
@@ -164,6 +184,20 @@ router.post('/:id/matches/:matchId/ready', tournamentActionLimit, async (req, re
     return res.json({ ok: true, result });
   } catch (err) {
     return handleRouteError(res, err, 'ready');
+  }
+});
+
+// ── POST /api/tournaments/:id/matches/:matchId/unready ───────────────────────
+router.post('/:id/matches/:matchId/unready', tournamentActionLimit, async (req, res) => {
+  try {
+    const result = await TournamentService.unsetPlayerReady(
+      Number(req.params.id),
+      Number(req.params.matchId),
+      req.user.id
+    );
+    return res.json({ ok: true, result });
+  } catch (err) {
+    return handleRouteError(res, err, 'unready');
   }
 });
 

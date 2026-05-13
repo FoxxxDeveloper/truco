@@ -170,7 +170,7 @@ const canEnvidoAsTrucoResponse =
     (!canEnvidoAsTrucoResponse || showTrucoResponse);
 
   return (
-    <div className="action-buttons">
+    <div className="action-buttons game-actions-panel">
       {/* Caso especial: me cantaron Truco y puedo cantar Envido antes de responder */}
       <AnimatePresence>
         {shouldShowEnvidoBeforeTruco && (

@@ -1,61 +1,49 @@
 /**
  * PrivateChat — real-time DM with a friend over Socket.IO.
- *
- * Socket events:
- *   send:   private:message  { toUserId, text }
- *   recv:   private:message:received { from: { id, username }, text, createdAt, ... }
- *           private:message:sent     { ... }
- *           private:typing:received  { fromUserId, isTyping }
- *
- * REST:
- *   GET  /api/social/messages/:userId         — load history
- *   POST /api/social/messages/:userId/read    — mark as read
  */
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { motion } from 'framer-motion';
+import { X, Send } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { getSocket } from '../../services/socket';
 import { socialApi } from '../../services/api';
 
 export default function PrivateChat({ friend, onClose, onMarkRead }) {
-  const { user }  = useAuth();
-  const socket           = getSocket();
+  const { user } = useAuth();
+  const socket = getSocket();
   const [messages, setMessages] = useState([]);
-  const [input, setInput]       = useState('');
+  const [input, setInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
-  const typingTimer             = useRef(null);
-  const bottomRef               = useRef(null);
+  const typingTimer = useRef(null);
+  const bottomRef = useRef(null);
 
-  // Load history + mark as read on open
   useEffect(() => {
     if (!friend?.id) return;
-    socialApi.getMessages(friend.id)
-      .then(res => {
+    socialApi
+      .getMessages(friend.id)
+      .then((res) => {
         if (res.data?.messages) setMessages(res.data.messages);
-        // getMessages auto-marks as read server-side; notify parent to clear badge
         onMarkRead?.(friend.id);
       })
       .catch(() => {});
   }, [friend.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Socket listeners
   useEffect(() => {
     if (!socket) return;
 
     const onReceived = (msg) => {
       if (msg.from?.id === friend.id || msg.senderId === friend.id) {
-        setMessages(prev => {
-          if (prev.some(m => m.id === msg.id)) return prev;
+        setMessages((prev) => {
+          if (prev.some((m) => m.id === msg.id)) return prev;
           return [...prev, msg];
         });
-        // Mark as read immediately since chat is open
         socialApi.markMessagesRead(friend.id).catch(() => {});
         onMarkRead?.(friend.id);
       }
     };
     const onSent = (msg) => {
-      setMessages(prev => {
-        if (prev.some(m => m.id === msg.id)) return prev;
+      setMessages((prev) => {
+        if (prev.some((m) => m.id === msg.id)) return prev;
         return [...prev, msg];
       });
     };
@@ -78,8 +66,9 @@ export default function PrivateChat({ friend, onClose, onMarkRead }) {
     };
   }, [socket, friend.id, onMarkRead]);
 
-  // Auto scroll
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
 
   const sendMessage = useCallback(() => {
     if (!input.trim() || !socket) return;
@@ -98,39 +87,30 @@ export default function PrivateChat({ friend, onClose, onMarkRead }) {
 
   return (
     <motion.div
-      initial={{ opacity: 0, x: 100 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 100 }}
-      style={{
-        position: 'fixed', bottom: 20, right: 20, width: 320, height: 460,
-        background: '#1e2a3a', borderRadius: 16, display: 'flex', flexDirection: 'column',
-        boxShadow: '0 8px 32px rgba(0,0,0,0.6)', zIndex: 150, overflow: 'hidden',
-      }}
+      className="chat-shell chat-shell--floating chat-shell--private"
+      initial={{ opacity: 0, x: 24 }}
+      animate={{ opacity: 1, x: 0 }}
+      exit={{ opacity: 0, x: 24 }}
     >
-      {/* Header */}
-      <div style={{
-        padding: '12px 16px', background: '#243447', display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-        borderBottom: '1px solid #374151',
-      }}>
+      <header className="chat-floating-private-header">
         <div>
-          <div style={{ color: '#fff', fontWeight: 700 }}>{friend.username}</div>
-          {isTyping && <div style={{ color: '#9ca3af', fontSize: 11 }}>escribiendo…</div>}
+          <div className="chat-floating-private-name">{friend.username}</div>
+          {isTyping && <div className="chat-subheader-typing">escribiendo…</div>}
         </div>
-        <button onClick={onClose} style={{ background: 'none', border: 'none', color: '#ccc', fontSize: 18, cursor: 'pointer' }}>✕</button>
-      </div>
+        <button type="button" className="btn btn-ghost btn-sm chat-floating-private-close" onClick={onClose} aria-label="Cerrar">
+          <X size={18} aria-hidden />
+        </button>
+      </header>
 
-      {/* Messages */}
-      <div style={{ flex: 1, overflowY: 'auto', padding: 12, display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <div className="chat-message-list chat-message-list--private-float">
         {messages.map((msg, i) => {
-          // Normalized format from API/socket: msg.from.id or msg.senderId
           const mine = msg.from?.id === user?.id || msg.senderId === user?.id;
           const text = msg.text || msg.content || '';
           return (
-            <div key={msg.id || i} style={{ display: 'flex', justifyContent: mine ? 'flex-end' : 'flex-start' }}>
-              <div style={{
-                maxWidth: '75%', padding: '7px 12px', borderRadius: mine ? '14px 14px 4px 14px' : '14px 14px 14px 4px',
-                background: mine ? '#1d4ed8' : '#374151', color: '#fff', fontSize: 13, wordBreak: 'break-word',
-              }}>
+            <div key={msg.id || i} className={`chat-message-row chat-message-row--private-float${mine ? ' chat-message-row--mine' : ''}`.trim()}>
+              <div className={`chat-message-bubble${mine ? ' chat-message-bubble--mine' : ' chat-message-bubble--other'}`.trim()}>
                 {text}
-                <div style={{ color: mine ? '#93c5fd' : '#9ca3af', fontSize: 10, marginTop: 3, textAlign: 'right' }}>
+                <div className={`chat-message-time${mine ? ' chat-message-time--mine' : ''}`.trim()}>
                   {new Date(msg.createdAt || msg.created_at).toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' })}
                 </div>
               </div>
@@ -140,21 +120,17 @@ export default function PrivateChat({ friend, onClose, onMarkRead }) {
         <div ref={bottomRef} />
       </div>
 
-      {/* Input */}
-      <div style={{ padding: '10px 12px', borderTop: '1px solid #374151', display: 'flex', gap: 8 }}>
+      <div className="chat-input-bar chat-input-bar--floating">
         <input
-          value={input} onChange={e => handleTyping(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && !e.shiftKey && sendMessage()}
+          className="chat-input"
+          value={input}
+          onChange={(e) => handleTyping(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && sendMessage()}
           placeholder="Escribí un mensaje…"
-          style={{
-            flex: 1, padding: '8px 12px', borderRadius: 20, border: '1px solid #374151',
-            background: '#243447', color: '#fff', fontSize: 13,
-          }}
         />
-        <button onClick={sendMessage} style={{
-          background: '#1d4ed8', border: 'none', borderRadius: 20, padding: '8px 14px',
-          color: '#fff', cursor: 'pointer', fontWeight: 700,
-        }}>➤</button>
+        <button type="button" className="btn btn-primary chat-send-btn" onClick={sendMessage} aria-label="Enviar">
+          <Send size={16} aria-hidden />
+        </button>
       </div>
     </motion.div>
   );

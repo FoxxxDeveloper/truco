@@ -105,7 +105,10 @@ CREATE TABLE IF NOT EXISTS transactions (
                      'bet_refund',
                      'commission',
                      'refund',
-                     'prize'
+                     'prize',
+                     'tournament_entry',
+                     'tournament_refund',
+                     'tournament_prize'
                    ) NOT NULL,
   amount           DECIMAL(15,2)  NOT NULL,
   status           ENUM('pending','completed','cancelled','failed','rejected') NOT NULL DEFAULT 'pending',
@@ -305,6 +308,14 @@ CREATE TABLE IF NOT EXISTS tournaments (
   flor_habilitada         TINYINT(1) NOT NULL DEFAULT 0,
   turn_seconds            INT NOT NULL DEFAULT 30,
   reconnect_seconds       INT NOT NULL DEFAULT 60,
+  entry_fee               DECIMAL(15,2) NOT NULL DEFAULT 0.00,
+  prize_amount            DECIMAL(15,2) DEFAULT NULL,
+  is_paid                 TINYINT(1) NOT NULL DEFAULT 0,
+  auto_checkin_enabled    TINYINT(1) NOT NULL DEFAULT 1,
+  auto_start_enabled      TINYINT(1) NOT NULL DEFAULT 1,
+  checkin_closed_at       DATETIME DEFAULT NULL,
+  bracket_generated_at    DATETIME DEFAULT NULL,
+  ready_timeout_minutes   INT NOT NULL DEFAULT 5,
   starts_at               DATETIME DEFAULT NULL,
   checkin_starts_at       DATETIME DEFAULT NULL,
   registration_closes_at  DATETIME DEFAULT NULL,
@@ -322,10 +333,15 @@ CREATE TABLE IF NOT EXISTS tournament_registrations (
   id              INT AUTO_INCREMENT PRIMARY KEY,
   tournament_id   INT NOT NULL,
   user_id         INT NOT NULL,
-  status          ENUM('registered','checked_in','substitute','cancelled','no_show','eliminated','qualified','winner') NOT NULL DEFAULT 'registered',
+  status          ENUM('registered','checked_in','substitute','cancelled','no_show','eliminated','qualified','winner','disqualified') NOT NULL DEFAULT 'registered',
   position_number INT DEFAULT NULL,
   seed            INT DEFAULT NULL,
   checked_in_at   DATETIME DEFAULT NULL,
+  paid_amount     DECIMAL(15,2) NOT NULL DEFAULT 0.00,
+  payment_tx_id   INT DEFAULT NULL,
+  refunded_at     DATETIME DEFAULT NULL,
+  final_position  INT DEFAULT NULL,
+  eliminated_round INT DEFAULT NULL,
   created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE KEY uk_trn_reg      (tournament_id, user_id),
   INDEX idx_treg_status      (tournament_id, status),
@@ -349,6 +365,9 @@ CREATE TABLE IF NOT EXISTS tournament_matches (
   status           ENUM('pending','ready','waiting_ready','active','finished','walkover','cancelled') NOT NULL DEFAULT 'pending',
   player1_ready    TINYINT(1) NOT NULL DEFAULT 0,
   player2_ready    TINYINT(1) NOT NULL DEFAULT 0,
+  player1_ready_at DATETIME DEFAULT NULL,
+  player2_ready_at DATETIME DEFAULT NULL,
+  ready_cancelled_by INT DEFAULT NULL,
   ready_deadline   DATETIME DEFAULT NULL,
   player1_score    INT NOT NULL DEFAULT 0,
   player2_score    INT NOT NULL DEFAULT 0,
@@ -527,7 +546,10 @@ async function runAdditiveMigrations(conn) {
       'bet_refund',
       'commission',
       'refund',
-      'prize'
+      'prize',
+      'tournament_entry',
+      'tournament_refund',
+      'tournament_prize'
     ) NOT NULL
     `
   );
@@ -646,6 +668,66 @@ async function runAdditiveMigrations(conn) {
       'ALTER TABLE `user_verifications` ADD INDEX idx_uv_status (identity_status)'
     );
   }
+
+  // ─── tournaments (extended) ─────────────────────────────
+  if (await tableExists(conn, 'tournaments')) {
+    await addColumnIfMissing(conn, 'tournaments', 'entry_fee', 'entry_fee DECIMAL(15,2) NOT NULL DEFAULT 0.00');
+    await addColumnIfMissing(conn, 'tournaments', 'prize_amount', 'prize_amount DECIMAL(15,2) DEFAULT NULL');
+    await addColumnIfMissing(conn, 'tournaments', 'is_paid', 'is_paid TINYINT(1) NOT NULL DEFAULT 0');
+    await addColumnIfMissing(conn, 'tournaments', 'auto_checkin_enabled', 'auto_checkin_enabled TINYINT(1) NOT NULL DEFAULT 1');
+    await addColumnIfMissing(conn, 'tournaments', 'auto_start_enabled', 'auto_start_enabled TINYINT(1) NOT NULL DEFAULT 1');
+    await addColumnIfMissing(conn, 'tournaments', 'checkin_closed_at', 'checkin_closed_at DATETIME DEFAULT NULL');
+    await addColumnIfMissing(conn, 'tournaments', 'bracket_generated_at', 'bracket_generated_at DATETIME DEFAULT NULL');
+    await addColumnIfMissing(conn, 'tournaments', 'ready_timeout_minutes', 'ready_timeout_minutes INT NOT NULL DEFAULT 5');
+  }
+
+  if (await tableExists(conn, 'tournament_registrations')) {
+    await addColumnIfMissing(conn, 'tournament_registrations', 'paid_amount', 'paid_amount DECIMAL(15,2) NOT NULL DEFAULT 0.00');
+    await addColumnIfMissing(conn, 'tournament_registrations', 'payment_tx_id', 'payment_tx_id INT DEFAULT NULL');
+    await addColumnIfMissing(conn, 'tournament_registrations', 'refunded_at', 'refunded_at DATETIME DEFAULT NULL');
+    await addColumnIfMissing(conn, 'tournament_registrations', 'final_position', 'final_position INT DEFAULT NULL');
+    await addColumnIfMissing(conn, 'tournament_registrations', 'eliminated_round', 'eliminated_round INT DEFAULT NULL');
+    await safeAlter(
+      conn,
+      'tournament_registrations.status + disqualified',
+      `
+      ALTER TABLE tournament_registrations
+      MODIFY COLUMN status ENUM(
+        'registered','checked_in','substitute','cancelled','no_show',
+        'eliminated','qualified','winner','disqualified'
+      ) NOT NULL DEFAULT 'registered'
+      `
+    );
+  }
+
+  if (await tableExists(conn, 'tournament_matches')) {
+    await addColumnIfMissing(conn, 'tournament_matches', 'player1_ready_at', 'player1_ready_at DATETIME DEFAULT NULL');
+    await addColumnIfMissing(conn, 'tournament_matches', 'player2_ready_at', 'player2_ready_at DATETIME DEFAULT NULL');
+    await addColumnIfMissing(conn, 'tournament_matches', 'ready_cancelled_by', 'ready_cancelled_by INT DEFAULT NULL');
+  }
+
+  // Optional: tournament_standings (for future use / reporting)
+  await runStatements(conn, `
+CREATE TABLE IF NOT EXISTS tournament_standings (
+  id             INT AUTO_INCREMENT PRIMARY KEY,
+  tournament_id  INT NOT NULL,
+  user_id         INT NOT NULL,
+  position        INT DEFAULT NULL,
+  result          ENUM(
+    'champion','runner_up','semifinalist','quarterfinalist','qualified',
+    'eliminated','no_show','disqualified'
+  ) NOT NULL,
+  round_number    INT DEFAULT NULL,
+  wins            INT NOT NULL DEFAULT 0,
+  losses          INT NOT NULL DEFAULT 0,
+  notes           VARCHAR(255) DEFAULT NULL,
+  created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY tournament_user (tournament_id, user_id),
+  INDEX idx_ts_tournament (tournament_id),
+  FOREIGN KEY (tournament_id) REFERENCES tournaments(id) ON DELETE CASCADE,
+  FOREIGN KEY (user_id)       REFERENCES usuarios(id)    ON DELETE CASCADE
+) ENGINE=InnoDB;
+  `);
 }
 
 // ─────────────────────────────────────────────────────────────

@@ -275,6 +275,19 @@ const BattleService = {
         throw new Error('Invalid commission rate on challenge ' + b.id);
       }
 
+      // Amistoso (apuesta 0): solo cerrar el challenge, sin tocar wallets
+      if (!(betAmount > 0)) {
+        await conn.execute(
+          `UPDATE challenges
+           SET status = 'finished', winner_id = ?, prize_amount = 0, commission_amount = 0, finished_at = NOW()
+           WHERE id = ?`,
+          [winnerId, b.id]
+        );
+        auditLog('battle_settle_casual', { roomId, winnerId, loserId, challengeId: b.id });
+        settled = { prize: 0, commission: 0, battleId: b.id, loserId, betAmount: 0, casual: true };
+        return;
+      }
+
       // 2. Lock wallets in ascending userId order to prevent deadlock
       const [firstId, secondId] = winnerId < loserId
         ? [winnerId, loserId]
@@ -339,6 +352,10 @@ const BattleService = {
 
     if (!settled) return null;
 
+    if (settled.casual) {
+      return settled;
+    }
+
     // Notifications outside the transaction (non-critical)
     const { prize, battleId, loserId, betAmount } = settled;
     await Promise.all([
@@ -383,9 +400,11 @@ const BattleService = {
     });
 
     const amount = parseFloat(b.amount);
-    await WalletService.refundLocked(b.creator_id, amount, `battle_refund:${battleId}:${reason}`).catch(() => {});
-    if (b.opponent_id) {
-      await WalletService.refundLocked(b.opponent_id, amount, `battle_refund:${battleId}:${reason}`).catch(() => {});
+    if (amount > 0) {
+      await WalletService.refundLocked(b.creator_id, amount, `battle_refund:${battleId}:${reason}`).catch(() => {});
+      if (b.opponent_id) {
+        await WalletService.refundLocked(b.opponent_id, amount, `battle_refund:${battleId}:${reason}`).catch(() => {});
+      }
     }
     auditLog('battle_refund', { battleId, reason });
   },
@@ -410,10 +429,13 @@ const BattleService = {
           return true;
         });
         if (changed) {
-          await WalletService.refundLocked(
-            b.creator_id, parseFloat(b.amount), `battle_expired:${b.id}`
-          );
-          logger.info(`Battle expired & refunded: ${b.id}`);
+          const amt = parseFloat(b.amount);
+          if (amt > 0) {
+            await WalletService.refundLocked(
+              b.creator_id, amt, `battle_expired:${b.id}`
+            );
+          }
+          logger.info(`Battle expired${amt > 0 ? ' & refunded' : ''}: ${b.id}`);
         }
       } catch (err) {
         logger.error(`Expire battle ${b.id}: ${err.message}`);

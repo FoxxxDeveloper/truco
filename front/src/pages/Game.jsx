@@ -3,6 +3,8 @@ import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '../context/AuthContext';
 import { useGame } from '../context/GameContext';
+import { getSocket } from '../services/socket';
+import BrandNavLockup from '../components/brand/BrandNavLockup';
 import PlayerHand    from '../components/game/PlayerHand';
 import OpponentHand  from '../components/game/OpponentHand';
 import PlayArea      from '../components/game/PlayArea';
@@ -19,7 +21,7 @@ export default function Game() {
   const { user }   = useAuth();
   const navigate   = useNavigate();
   const {
-   gameState, opponent, gameOver, chatMessages, lastEvent,
+   gameState, roomId, opponent, gameOver, chatMessages, lastEvent,
   reconnectGame, reconnectingGame, abandonGame,
     playCard, envido, envidoResp, truco, trucoResp, flor, florResp, irseAlMazo,
     sendMessage, sendReaction,
@@ -29,6 +31,23 @@ export default function Game() {
  const autoReconnectTriedRef = useRef(false);
  const [showAbandonConfirm, setShowAbandonConfirm] = useState(false);
  const [envidoResult, setEnvidoResult] = useState(null);
+ const [socketLive, setSocketLive] = useState(() => !!getSocket()?.connected);
+
+ useEffect(() => {
+   const s = getSocket();
+   if (!s) {
+     setSocketLive(false);
+     return undefined;
+   }
+   const sync = () => setSocketLive(!!s.connected);
+   s.on('connect', sync);
+   s.on('disconnect', sync);
+   sync();
+   return () => {
+     s.off('connect', sync);
+     s.off('disconnect', sync);
+   };
+ }, []);
 
   // Redirect if no game
  useEffect(() => {
@@ -79,9 +98,9 @@ export default function Game() {
 
 if (!gameState) {
   return (
-    <div className="loading-screen">
+    <div className="loading-screen game-loading">
       <div className="spinner" />
-      <p style={{ color: 'var(--text-soft)', marginTop: 12 }}>
+      <p className="game-loading-text">
         {reconnectingGame ? 'Reconectando a tu partida...' : 'Cargando partida...'}
       </p>
     </div>
@@ -92,6 +111,8 @@ if (!gameState) {
   const myHand     = gameState.myHand || [];
   const oppCount   = gameState.opponentCardCount ?? 0;
   const inEndRound = gameState.state === 'END_ROUND';
+  const puntosObjetivo = gameState.config?.puntosMaximos ?? 30;
+  const modoLabel = gameState.config?.modo === 'ranked' ? 'Ranked' : 'Casual';
 
   return (
     <div className="game-page">
@@ -107,26 +128,56 @@ if (!gameState) {
 
       {/* Header */}
       <motion.header className="game-header" initial={{ y: -60 }} animate={{ y: 0 }}>
-        <ScoreBoard scores={gameState.scores} myId={myId} opponent={opponent} />
-
-        {/* Turn timer bar */}
-        {turnTimer && (
-          <TurnTimer
-            playerId={turnTimer.playerId}
-            seconds={turnTimer.seconds}
-            myId={myId}
-          />
-        )}
-
-        <div className={`turn-indicator ${isMyTurn ? 'my-turn' : ''}`}>
-          {isMyTurn ? '▶ Tu turno' : `⏸ Turno de ${opponent?.username}`}
+        <div className="game-header-brand">
+          <BrandNavLockup size="sm" showSubtitle={false} className="brand-lockup--game" />
         </div>
-        <button
-          className="btn btn-ghost btn-sm"
-          onClick={() => setShowAbandonConfirm(true)}
-        >
-          ✕ Abandonar
-        </button>
+
+        <ScoreBoard
+          scores={gameState.scores}
+          myId={myId}
+          opponent={opponent}
+          targetPoints={puntosObjetivo}
+        />
+
+        <div className="game-header-center">
+          {turnTimer && (
+            <div className="game-turn-timer-wrap">
+              <TurnTimer
+                playerId={turnTimer.playerId}
+                seconds={turnTimer.seconds}
+                myId={myId}
+              />
+            </div>
+          )}
+
+          <div
+            className={`turn-indicator game-status-badge ${isMyTurn ? 'my-turn' : 'waiting'}`}
+          >
+            {isMyTurn ? 'Tu turno' : `Turno de ${opponent?.username ?? 'rival'}`}
+          </div>
+        </div>
+
+        <div className="game-header-aside">
+          <span
+            className={`game-connection-badge ${socketLive ? 'is-live' : 'is-off'}`}
+            title={socketLive ? 'Socket conectado' : 'Sin conexión'}
+          >
+            {socketLive ? 'En vivo' : 'Offline'}
+          </span>
+          <span className="game-room-meta" title={roomId != null ? String(roomId) : ''}>
+            <span className="game-room-mode">{modoLabel}</span>
+            {roomId != null && (
+              <span className="game-room-id">· {String(roomId).slice(0, 8)}…</span>
+            )}
+          </span>
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm game-leave-btn"
+            onClick={() => setShowAbandonConfirm(true)}
+          >
+            Salir
+          </button>
+        </div>
       </motion.header>
 
       {/* Abandon confirmation modal */}
@@ -140,29 +191,30 @@ if (!gameState) {
             onClick={() => setShowAbandonConfirm(false)}
           >
             <motion.div
-              className="modal"
-              style={{ maxWidth: 380, textAlign: 'center' }}
+              className="modal fx-card game-modal game-abandon-modal"
               initial={{ scale: 0.85, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.85, opacity: 0 }}
               onClick={e => e.stopPropagation()}
             >
-              <div style={{ fontSize: '2.2rem', marginBottom: 12 }}>⚠</div>
-              <h2 style={{ color: 'var(--gold)', marginBottom: 8, fontFamily: 'var(--font-display)' }}>¿Abandonar partida?</h2>
-              <p style={{ color: 'var(--text-secondary)', marginBottom: 8 }}>
+              <div className="game-modal-icon game-modal-icon--warn" aria-hidden>!</div>
+              <h2 className="game-modal-title">¿Abandonar partida?</h2>
+              <p className="game-modal-lead">
                 Si abandonás, tu rival gana automáticamente.
               </p>
-              <p style={{ color: 'var(--red)', fontSize: '0.85rem', marginBottom: 24 }}>
+              <p className="game-modal-warn">
                 Perderás puntos ELO y cualquier apuesta activa.
               </p>
-              <div style={{ display: 'flex', gap: 12, justifyContent: 'center' }}>
+              <div className="game-modal-actions">
                 <button
+                  type="button"
                   className="btn btn-ghost"
                   onClick={() => setShowAbandonConfirm(false)}
                 >
                   Cancelar
                 </button>
                 <button
+                  type="button"
                   className="btn btn-danger"
                   onClick={() => {
                     setShowAbandonConfirm(false);
@@ -178,8 +230,9 @@ if (!gameState) {
         )}
       </AnimatePresence>
 
+      <div className="game-shell">
       {/* Board */}
-      <div className="game-board">
+      <div className="game-board game-table game-felt">
         <OpponentHand cardCount={oppCount} />
 
         <PlayArea
@@ -222,9 +275,10 @@ if (!gameState) {
 
         {inEndRound && !gameOver && (
           <motion.div className="next-round-wrap" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}>
-            <p style={{ color: 'var(--text-muted)', fontSize: 14 }}>Preparando nueva ronda…</p>
+            <p className="next-round-text">Preparando nueva ronda…</p>
           </motion.div>
         )}
+      </div>
       </div>
 
       <Chat messages={chatMessages} onSend={sendMessage} onReaction={sendReaction} myId={myId} />

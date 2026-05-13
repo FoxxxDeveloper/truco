@@ -16,6 +16,7 @@ import VerificationPage from './pages/VerificationPage';
 import TournamentsPage from './pages/TournamentsPage';
 import TournamentDetail from './pages/TournamentDetail';
 import TournamentBracket from './pages/TournamentBracket';
+import NotFound from './pages/NotFound';
 
 function App() {
   return (
@@ -27,11 +28,12 @@ function App() {
             toastOptions={{
               duration: 3000,
               style: {
-                background: '#30210f',
-                color: '#fff4d8',
-                border: '1px solid rgba(255, 199, 87, .35)',
+                background: 'linear-gradient(165deg, rgba(43,27,18,0.98) 0%, rgba(26,26,26,0.98) 100%)',
+                color: '#FFF6DD',
+                border: '1px solid rgba(212, 175, 55, 0.42)',
                 borderRadius: '16px',
-                boxShadow: '0 18px 45px rgba(0,0,0,.35)',
+                boxShadow: '0 24px 70px rgba(0,0,0,0.5), 0 12px 36px rgba(212, 175, 55, 0.12)',
+                fontFamily: '"Montserrat", "Segoe UI", system-ui, sans-serif',
               },
             }}
           />
@@ -130,6 +132,8 @@ function App() {
                 </ProtectedRoute>
               }
             />
+
+            <Route path="*" element={<NotFound />} />
           </Routes>
         </BrowserRouter>
       </GameProvider>

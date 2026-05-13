@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
+import { MessageSquare } from 'lucide-react';
 
 const REACTIONS = ['👍', '👎', '😂', '😤', '🃏', '🔥', '👏', '🤔'];
 
@@ -19,9 +20,13 @@ export default function Chat({ messages, onSend, onReaction, myId }) {
   };
 
   return (
-    <div className={`chat-panel ${open ? 'chat-open' : ''}`}>
-      <button className="chat-toggle" onClick={() => setOpen(o => !o)}>
-        💬 Chat {messages.length > 0 && <span className="badge">{messages.length}</span>}
+    <div className={`chat-panel game-chat-panel ${open ? 'chat-open' : ''}`}>
+      <button type="button" className="chat-toggle" onClick={() => setOpen(o => !o)}>
+        <span className="chat-toggle-inner">
+          <MessageSquare className="chat-toggle-icon" size={18} strokeWidth={2.25} aria-hidden />
+          <span className="chat-toggle-label">Chat</span>
+          {messages.length > 0 && <span className="badge">{messages.length}</span>}
+        </span>
       </button>
 
       {open && (

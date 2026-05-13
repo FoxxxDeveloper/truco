@@ -7,7 +7,8 @@
  *   - Eliminación directa (phase: general / format: single_elimination)
  *
  * Reglas generales:
- *   - Sin movimiento de wallet (torneo gratuito).
+ *   - Torneos con costo: cargo idempotente al inscribirse como titular (entry_fee > 0;
+ *     is_paid en DB debe ir con entry_fee > 0). Suplentes no pagan hasta promoción al cerrar check-in.
  *   - Titulares: primeros max_players en registrarse (status registered/checked_in).
  *   - Suplentes: los que llegan después (status substitute).
  *   - Check-in obligatorio; suplentes con check-in cubren ausencias de titulares en el bracket.
@@ -17,6 +18,8 @@
 
 const { query, withTransaction } = require('../config/database');
 const logger = require('../config/logger');
+const VerificationService = require('./verificationService');
+const WalletService = require('./walletService');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CONSTANTS
@@ -24,7 +27,6 @@ const logger = require('../config/logger');
 
 const ACTIVE_REG_STATUSES = ['registered', 'checked_in', 'substitute'];
 const QUALIFY_COUNT       = 4;   // cuántos avanzan por fase clasificatoria
-const READY_MINUTES       = 5;   // minutos para presionar Listo antes de walkover
 
 // ─────────────────────────────────────────────────────────────────────────────
 // HELPERS INTERNOS
@@ -84,6 +86,8 @@ function normalizeMatch(r) {
       : null,
     player1_ready:    !!r.player1_ready,
     player2_ready:    !!r.player2_ready,
+    player1_ready_at: r.player1_ready_at,
+    player2_ready_at: r.player2_ready_at,
     ready_deadline:   r.ready_deadline,
     player1_score:    r.player1_score,
     player2_score:    r.player2_score,
@@ -189,7 +193,7 @@ async function _advanceWinnerConn(conn, matchId, winnerId) {
         [winnerId, tId]
       );
       await conn.execute(
-        `UPDATE tournament_registrations SET status = 'winner'
+        `UPDATE tournament_registrations SET status = 'winner', final_position = 1
          WHERE tournament_id = ? AND user_id = ?`,
         [tId, winnerId]
       );
@@ -220,6 +224,44 @@ async function _advanceWinnerConn(conn, matchId, winnerId) {
       winnerId
     );
   }
+}
+
+/**
+ * Marca al perdedor de un cruce ya finalizado (eliminatoria / clasificatorio).
+ */
+async function _markLoserFromFinishedMatch(conn, tournamentId, matchRow, loserId) {
+  if (!loserId) return;
+
+  const [tRows] = await conn.execute('SELECT phase FROM tournaments WHERE id = ?', [tournamentId]);
+  const phase   = tRows[0]?.phase || 'general';
+  const isQual  = phase === 'qualifier_a' || phase === 'qualifier_b';
+
+  const [mxRows] = await conn.execute(
+    'SELECT MAX(round_number) AS mx FROM tournament_matches WHERE tournament_id = ?',
+    [tournamentId]
+  );
+  const maxR = Number(mxRows[0]?.mx || 0);
+  const r    = Number(matchRow.round_number || 0);
+
+  let finalPosition = null;
+  if (!isQual && maxR > 0) {
+    if (r === maxR) finalPosition = 2;
+    else if (maxR > 1 && r === maxR - 1) finalPosition = 3;
+  }
+
+  let sql =
+    `UPDATE tournament_registrations
+     SET status = 'eliminated', eliminated_round = ?`;
+  const params = [r];
+  if (finalPosition != null) {
+    sql += ', final_position = ?';
+    params.push(finalPosition);
+  }
+  sql += ` WHERE tournament_id = ? AND user_id = ?
+     AND status NOT IN ('winner','qualified','cancelled','no_show','disqualified')`;
+  params.push(tournamentId, loserId);
+
+  await conn.execute(sql, params);
 }
 
 /**
@@ -296,6 +338,9 @@ const TournamentService = {
          t.max_players, t.status, t.format, t.phase,
          t.puntos_maximos, t.flor_habilitada,
          t.starts_at, t.checkin_starts_at, t.registration_closes_at,
+         t.entry_fee, t.prize_amount, t.is_paid,
+         t.auto_checkin_enabled, t.auto_start_enabled,
+         t.checkin_closed_at, t.bracket_generated_at, t.ready_timeout_minutes,
          t.winner_id, t.created_at,
          SUM(CASE WHEN tr.status IN ('registered','checked_in') THEN 1 ELSE 0 END) AS titular_count,
          SUM(CASE WHEN tr.status = 'substitute'                  THEN 1 ELSE 0 END) AS substitute_count
@@ -337,6 +382,9 @@ const TournamentService = {
          t.puntos_maximos, t.flor_habilitada,
          t.turn_seconds, t.reconnect_seconds,
          t.starts_at, t.checkin_starts_at, t.registration_closes_at,
+         t.entry_fee, t.prize_amount, t.is_paid,
+         t.auto_checkin_enabled, t.auto_start_enabled,
+         t.checkin_closed_at, t.bracket_generated_at, t.ready_timeout_minutes,
          t.winner_id, t.created_at, t.updated_at,
          u.username AS winner_username, u.avatar AS winner_avatar,
          SUM(CASE WHEN tr.status IN ('registered','checked_in') THEN 1 ELSE 0 END) AS titular_count,
@@ -355,7 +403,8 @@ const TournamentService = {
     tournament.myRegistration = null;
     if (userId) {
       const myRows = await query(
-        `SELECT status, position_number, seed, checked_in_at, created_at
+        `SELECT status, position_number, seed, checked_in_at, created_at,
+                paid_amount, payment_tx_id, refunded_at, final_position, eliminated_round
          FROM tournament_registrations WHERE tournament_id = ? AND user_id = ?`,
         [tournamentId, userId]
       );
@@ -416,18 +465,23 @@ const TournamentService = {
    * Usa transacción + FOR UPDATE para evitar race conditions en el último cupo.
    */
   async register(tournamentId, userId) {
+    await VerificationService.requireVerifiedForTournaments(userId);
+
     return withTransaction(async (conn) => {
       const [tRows] = await conn.execute(
-        'SELECT id, status, max_players FROM tournaments WHERE id = ? FOR UPDATE',
+        `SELECT id, status, max_players, entry_fee, is_paid
+         FROM tournaments WHERE id = ? FOR UPDATE`,
         [tournamentId]
       );
       if (!tRows.length) throw new Error('Torneo no encontrado');
       const t = tRows[0];
       if (t.status !== 'open') throw new Error('El torneo no está abierto para inscripción');
 
-      // Verificar registro existente
+      const entryFee = parseFloat(t.entry_fee || 0);
+      const chargeAmount = entryFee > 0 ? entryFee : 0;
+
       const [existing] = await conn.execute(
-        'SELECT id, status FROM tournament_registrations WHERE tournament_id = ? AND user_id = ?',
+        'SELECT id, status FROM tournament_registrations WHERE tournament_id = ? AND user_id = ? FOR UPDATE',
         [tournamentId, userId]
       );
       if (existing.length && ACTIVE_REG_STATUSES.includes(existing[0].status)) {
@@ -437,6 +491,19 @@ const TournamentService = {
       const titularCount = await getActiveTitularCount(conn, tournamentId);
       const isTitular    = titularCount < t.max_players;
       const newStatus    = isTitular ? 'registered' : 'substitute';
+
+      let paymentTxId = null;
+      let paidAmount  = 0;
+
+      if (isTitular && chargeAmount > 0) {
+        const idem = `trn_entry:${tournamentId}:${userId}:register`;
+        const ref  = `tournament:register:${tournamentId}`;
+        const pay  = await WalletService.debitTournamentEntry(
+          conn, userId, chargeAmount, ref, idem
+        );
+        paymentTxId = pay.transactionId;
+        paidAmount  = chargeAmount;
+      }
 
       if (isTitular) {
         const [posRows] = await conn.execute(
@@ -450,15 +517,17 @@ const TournamentService = {
         if (existing.length) {
           await conn.execute(
             `UPDATE tournament_registrations
-             SET status = 'registered', position_number = ?, seed = NULL, checked_in_at = NULL
+             SET status = 'registered', position_number = ?, seed = NULL, checked_in_at = NULL,
+                 paid_amount = ?, payment_tx_id = ?, refunded_at = NULL
              WHERE tournament_id = ? AND user_id = ?`,
-            [pos, tournamentId, userId]
+            [pos, paidAmount, paymentTxId, tournamentId, userId]
           );
         } else {
           await conn.execute(
-            `INSERT INTO tournament_registrations (tournament_id, user_id, status, position_number)
-             VALUES (?, ?, 'registered', ?)`,
-            [tournamentId, userId, pos]
+            `INSERT INTO tournament_registrations
+               (tournament_id, user_id, status, position_number, paid_amount, payment_tx_id)
+             VALUES (?, ?, 'registered', ?, ?, ?)`,
+            [tournamentId, userId, pos, paidAmount, paymentTxId]
           );
         }
       } else {
@@ -468,14 +537,16 @@ const TournamentService = {
         if (existing.length) {
           await conn.execute(
             `UPDATE tournament_registrations
-             SET status = 'substitute', position_number = ?, checked_in_at = NULL
+             SET status = 'substitute', position_number = ?, checked_in_at = NULL,
+                 paid_amount = 0, payment_tx_id = NULL, refunded_at = NULL
              WHERE tournament_id = ? AND user_id = ?`,
             [subPos, tournamentId, userId]
           );
         } else {
           await conn.execute(
-            `INSERT INTO tournament_registrations (tournament_id, user_id, status, position_number)
-             VALUES (?, ?, 'substitute', ?)`,
+            `INSERT INTO tournament_registrations
+               (tournament_id, user_id, status, position_number, paid_amount, payment_tx_id)
+             VALUES (?, ?, 'substitute', ?, 0, NULL)`,
             [tournamentId, userId, subPos]
           );
         }
@@ -483,9 +554,10 @@ const TournamentService = {
 
       await createEvent(conn, tournamentId,
         isTitular ? 'registered' : 'substitute_registered',
-        null, userId
+        { paidAmount },
+        userId
       );
-      return { ok: true, status: newStatus };
+      return { ok: true, status: newStatus, paidAmount };
     });
   },
 
@@ -497,22 +569,37 @@ const TournamentService = {
       throw new Error('No podés retirarte de un torneo que ya comenzó');
     }
 
-    const rows = await query(
-      `SELECT id, status FROM tournament_registrations
-       WHERE tournament_id = ? AND user_id = ?`,
-      [tournamentId, userId]
-    );
-    if (!rows.length || !ACTIVE_REG_STATUSES.includes(rows[0].status)) {
-      throw new Error('No estás inscripto en este torneo');
-    }
+    return withTransaction(async (conn) => {
+      const [rows] = await conn.execute(
+        `SELECT id, status, paid_amount, payment_tx_id, refunded_at
+         FROM tournament_registrations
+         WHERE tournament_id = ? AND user_id = ? FOR UPDATE`,
+        [tournamentId, userId]
+      );
+      if (!rows.length || !ACTIVE_REG_STATUSES.includes(rows[0].status)) {
+        throw new Error('No estás inscripto en este torneo');
+      }
+      const reg = rows[0];
+      const paid  = parseFloat(reg.paid_amount || 0);
 
-    await query(
-      `UPDATE tournament_registrations SET status = 'cancelled'
-       WHERE tournament_id = ? AND user_id = ?`,
-      [tournamentId, userId]
-    );
-    await createEvent(null, tournamentId, 'unregistered', null, userId);
-    return { ok: true };
+      if (paid > 0 && reg.payment_tx_id && !reg.refunded_at) {
+        const idem = `trn_refund:${tournamentId}:${userId}:${reg.id}`;
+        const ref  = `tournament:unregister:${tournamentId}`;
+        await WalletService.creditTournamentRefund(conn, userId, paid, ref, idem);
+        await conn.execute(
+          'UPDATE tournament_registrations SET refunded_at = NOW() WHERE id = ?',
+          [reg.id]
+        );
+      }
+
+      await conn.execute(
+        `UPDATE tournament_registrations SET status = 'cancelled'
+         WHERE tournament_id = ? AND user_id = ?`,
+        [tournamentId, userId]
+      );
+      await createEvent(conn, tournamentId, 'unregistered', { refunded: paid > 0 }, userId);
+      return { ok: true };
+    });
   },
 
   // ── 5. checkin ────────────────────────────────────────────────────────────
@@ -552,6 +639,120 @@ const TournamentService = {
     );
     await createEvent(null, tournamentId, 'checked_in', null, userId);
     return { ok: true };
+  },
+
+  /**
+   * Cierra check-in: titulares sin check-in → no_show, promueve suplentes con check-in
+   * hasta completar max_players. En torneos con costo, cobra al promover (idempotente).
+   */
+  async closeCheckinAndPromoteSubstitutes(tournamentId, adminId = null) {
+    return withTransaction(async (conn) => {
+      const [tRows] = await conn.execute(
+        'SELECT * FROM tournaments WHERE id = ? FOR UPDATE',
+        [tournamentId]
+      );
+      if (!tRows.length) throw new Error('Torneo no encontrado');
+      const t = tRows[0];
+      if (t.status !== 'checkin') {
+        throw new Error('El torneo no está en check-in');
+      }
+      if (t.checkin_closed_at) {
+        return { ok: true, alreadyClosed: true };
+      }
+
+      const [pendingNoShow] = await conn.execute(
+        `SELECT user_id FROM tournament_registrations
+         WHERE tournament_id = ? AND status = 'registered' AND checked_in_at IS NULL`,
+        [tournamentId]
+      );
+      await conn.execute(
+        `UPDATE tournament_registrations SET status = 'no_show'
+         WHERE tournament_id = ? AND status = 'registered' AND checked_in_at IS NULL`,
+        [tournamentId]
+      );
+      for (const row of pendingNoShow) {
+        await createEvent(conn, tournamentId, 'player_no_show', { userId: row.user_id }, row.user_id, adminId);
+      }
+
+      const [cntRows] = await conn.execute(
+        `SELECT COUNT(*) AS c FROM tournament_registrations
+         WHERE tournament_id = ? AND status = 'checked_in'`,
+        [tournamentId]
+      );
+      let slots = Math.max(0, Number(t.max_players) - Number(cntRows[0].c));
+
+      const entryFee = parseFloat(t.entry_fee || 0);
+      const paidTournament = entryFee > 0;
+
+      const [subs] = await conn.execute(
+        `SELECT id, user_id, position_number FROM tournament_registrations
+         WHERE tournament_id = ? AND status = 'substitute' AND checked_in_at IS NOT NULL
+         ORDER BY position_number ASC`,
+        [tournamentId]
+      );
+
+      for (const sub of subs) {
+        if (slots <= 0) break;
+
+        const [mxPos] = await conn.execute(
+          `SELECT COALESCE(MAX(position_number), 0) AS m
+           FROM tournament_registrations
+           WHERE tournament_id = ? AND status = 'checked_in'`,
+          [tournamentId]
+        );
+        const nextPos = Number(mxPos[0].m) + 1;
+
+        if (paidTournament) {
+          const idem = `trn_entry:${tournamentId}:${sub.user_id}:promote:${sub.id}`;
+          const ref  = `tournament:promote:${tournamentId}`;
+          try {
+            const pay = await WalletService.debitTournamentEntry(
+              conn, sub.user_id, entryFee, ref, idem
+            );
+            if (!pay.alreadyProcessed) {
+              await conn.execute(
+                `UPDATE tournament_registrations
+                 SET status = 'checked_in', position_number = ?,
+                     paid_amount = ?, payment_tx_id = ?
+                 WHERE id = ?`,
+                [nextPos, entryFee, pay.transactionId, sub.id]
+              );
+            } else {
+              await conn.execute(
+                `UPDATE tournament_registrations
+                 SET status = 'checked_in', position_number = ?
+                 WHERE id = ?`,
+                [nextPos, sub.id]
+              );
+            }
+          } catch (e) {
+            if (String(e.message || '').includes('Saldo insuficiente')) {
+              await createEvent(conn, tournamentId, 'substitute_payment_failed',
+                { userId: sub.user_id, registrationId: sub.id }, sub.user_id, adminId);
+              continue;
+            }
+            throw e;
+          }
+        } else {
+          await conn.execute(
+            `UPDATE tournament_registrations
+             SET status = 'checked_in', position_number = ?
+             WHERE id = ?`,
+            [nextPos, sub.id]
+          );
+        }
+
+        await createEvent(conn, tournamentId, 'substitute_promoted',
+          { userId: sub.user_id, registrationId: sub.id }, sub.user_id, adminId);
+        slots--;
+      }
+
+      await conn.execute(
+        `UPDATE tournaments SET checkin_closed_at = NOW() WHERE id = ?`,
+        [tournamentId]
+      );
+      return { ok: true };
+    });
   },
 
   // ── 6. getBracket ─────────────────────────────────────────────────────────
@@ -650,7 +851,7 @@ const TournamentService = {
          WHERE tournament_id = ? AND user_id IN (${ph})`,
         [tournamentId, ...players]
       );
-      await query("UPDATE tournaments SET status = 'finished' WHERE id = ?", [tournamentId]);
+      await query("UPDATE tournaments SET status = 'finished', bracket_generated_at = NOW() WHERE id = ?", [tournamentId]);
       await createEvent(null, tournamentId, 'bracket_generated',
         { method: 'direct_qualify', playerCount: players.length }, null, adminId);
       return { ok: true, method: 'direct_qualify', qualifiedCount: players.length };
@@ -724,14 +925,14 @@ const TournamentService = {
       // ── Pasada 3: resolver byes y walkovers iterativamente ─────────────────
       await _processAllByes(conn, tournamentId);
 
-      // Actualizar estado del torneo a 'started' (salvo que ya terminó por classify directo)
+      // Actualizar metadatos del torneo (no cambia a "started" aquí — eso es startTournament / auto-start)
       const [tCheck] = await conn.execute(
         'SELECT status FROM tournaments WHERE id = ?',
         [tournamentId]
       );
       if (tCheck.length && tCheck[0].status !== 'finished') {
         await conn.execute(
-          "UPDATE tournaments SET status = 'started' WHERE id = ?",
+          `UPDATE tournaments SET bracket_generated_at = NOW() WHERE id = ?`,
           [tournamentId]
         );
       }
@@ -766,8 +967,10 @@ const TournamentService = {
   async setPlayerReady(tournamentId, matchId, userId) {
     return withTransaction(async (conn) => {
       const [rows] = await conn.execute(
-        `SELECT * FROM tournament_matches
-         WHERE id = ? AND tournament_id = ? FOR UPDATE`,
+        `SELECT tm.*, t.ready_timeout_minutes AS rtm
+         FROM tournament_matches tm
+         JOIN tournaments t ON t.id = tm.tournament_id
+         WHERE tm.id = ? AND tm.tournament_id = ? FOR UPDATE`,
         [matchId, tournamentId]
       );
       if (!rows.length) throw new Error('El cruce no existe en este torneo');
@@ -784,23 +987,26 @@ const TournamentService = {
       // Idempotente
       if ((isP1 && m.player1_ready) || (isP2 && m.player2_ready)) {
         return {
-          ok:          true,
+          ok:           true,
           alreadyReady: true,
-          bothReady:   !!(m.player1_ready && m.player2_ready),
+          bothReady:    !!(m.player1_ready && m.player2_ready),
         };
       }
 
       const newP1 = isP1 ? 1 : (m.player1_ready ? 1 : 0);
       const newP2 = isP2 ? 1 : (m.player2_ready ? 1 : 0);
       const bothReady = newP1 === 1 && newP2 === 1;
+      const mins = Math.min(60, Math.max(1, Number(m.rtm) || 5));
 
       await conn.execute(
         `UPDATE tournament_matches
          SET player1_ready = ?, player2_ready = ?,
+             player1_ready_at = IF(? = 1, COALESCE(player1_ready_at, NOW()), player1_ready_at),
+             player2_ready_at = IF(? = 1, COALESCE(player2_ready_at, NOW()), player2_ready_at),
              status        = ?,
              ready_deadline = COALESCE(ready_deadline, DATE_ADD(NOW(), INTERVAL ? MINUTE))
          WHERE id = ?`,
-        [newP1, newP2, bothReady ? 'ready' : 'waiting_ready', READY_MINUTES, matchId]
+        [newP1, newP2, isP1 ? 1 : 0, isP2 ? 1 : 0, bothReady ? 'ready' : 'waiting_ready', mins, matchId]
       );
 
       await createEvent(conn, tournamentId, 'player_ready',
@@ -811,10 +1017,70 @@ const TournamentService = {
     });
   },
 
+  /**
+   * Cancela "listo" antes de que el cruce pase a activo / ambos listos inicien partida.
+   */
+  async unsetPlayerReady(tournamentId, matchId, userId) {
+    return withTransaction(async (conn) => {
+      const [rows] = await conn.execute(
+        `SELECT * FROM tournament_matches
+         WHERE id = ? AND tournament_id = ? FOR UPDATE`,
+        [matchId, tournamentId]
+      );
+      if (!rows.length) throw new Error('El cruce no existe en este torneo');
+      const m = rows[0];
+
+      if (m.status === 'active') {
+        throw new Error('No podés cancelar listo: la partida ya comenzó.');
+      }
+      if (!['ready', 'waiting_ready'].includes(m.status)) {
+        throw new Error('El cruce no está listo');
+      }
+
+      const isP1 = Number(m.player1_id) === Number(userId);
+      const isP2 = Number(m.player2_id) === Number(userId);
+      if (!isP1 && !isP2) throw new Error('No sos jugador de este cruce');
+
+      if ((isP1 && !m.player1_ready) || (isP2 && !m.player2_ready)) {
+        return { ok: true, alreadyNotReady: true };
+      }
+
+      const newP1 = isP1 ? 0 : (m.player1_ready ? 1 : 0);
+      const newP2 = isP2 ? 0 : (m.player2_ready ? 1 : 0);
+      const neither = newP1 === 0 && newP2 === 0;
+      const newStatus = neither ? 'ready' : 'waiting_ready';
+      const newDeadline = neither ? null : m.ready_deadline;
+
+      await conn.execute(
+        `UPDATE tournament_matches
+         SET player1_ready = ?, player2_ready = ?,
+             player1_ready_at = IF(? = 1, NULL, player1_ready_at),
+             player2_ready_at = IF(? = 1, NULL, player2_ready_at),
+             status = ?, ready_deadline = ?, ready_cancelled_by = ?
+         WHERE id = ?`,
+        [
+          newP1, newP2,
+          isP1 ? 1 : 0,
+          isP2 ? 1 : 0,
+          newStatus,
+          newDeadline,
+          userId,
+          matchId,
+        ]
+      );
+
+      await createEvent(conn, tournamentId, 'player_unready',
+        { matchId, slot: isP1 ? 'player1' : 'player2' },
+        userId
+      );
+      return { ok: true, matchId, newStatus };
+    });
+  },
+
   // ── 9. forceResult ────────────────────────────────────────────────────────
   /**
-   * Admin fuerza el resultado de un cruce.
-   * Actualiza match y llama a advanceWinner en una operación separada.
+   * Admin fuerza el resultado de un cruce (o walkover automático).
+   * Actualiza match, marca perdedor y avanza el ganador en la misma transacción.
    */
   async forceResult(tournamentId, matchId, winnerId, adminId, reason = 'admin_decision') {
     await withTransaction(async (conn) => {
@@ -835,7 +1101,7 @@ const TournamentService = {
       if (!validPlayers.includes(Number(winnerId))) throw new Error('Ganador inválido');
 
       const loserId     = Number(m.player1_id) === Number(winnerId) ? m.player2_id : m.player1_id;
-      const matchStatus = reason === 'no_show' ? 'walkover' : 'finished';
+      const matchStatus = reason === 'no_show' || reason === 'ready_timeout' ? 'walkover' : 'finished';
 
       await conn.execute(
         `UPDATE tournament_matches
@@ -846,11 +1112,8 @@ const TournamentService = {
       await createEvent(conn, tournamentId, 'admin_force_result',
         { matchId, winnerId, loserId, reason }, null, adminId
       );
-    });
-
-    // Avanzar ganador en operación separada (si falla, admin puede reintentar)
-    await this.advanceWinner(matchId, winnerId).catch(err => {
-      logger.error(`advanceWinner fallido tras forceResult (match=${matchId}): ${err.message}`);
+      await _markLoserFromFinishedMatch(conn, tournamentId, m, loserId);
+      await _advanceWinnerConn(conn, matchId, winnerId);
     });
 
     return { ok: true };
@@ -878,13 +1141,19 @@ const TournamentService = {
       name,
       description          = null,
       prize_text           = null,
-      max_players          = 64,
+      max_players          = 128,
       format               = 'single_elimination',
       phase                = 'general',
       puntos_maximos       = 15,
       flor_habilitada      = 0,
       turn_seconds         = 30,
       reconnect_seconds    = 60,
+      entry_fee            = 0,
+      prize_amount         = null,
+      is_paid              = 0,
+      auto_checkin_enabled = 1,
+      auto_start_enabled   = 1,
+      ready_timeout_minutes = 5,
       starts_at            = null,
       checkin_starts_at    = null,
       registration_closes_at = null,
@@ -913,13 +1182,26 @@ const TournamentService = {
     if (!validFormats.includes(format)) throw new Error('Formato inválido');
     if (!validPhases.includes(phase))   throw new Error('Fase inválida');
 
+    const fee = parseFloat(entry_fee);
+    if (!isFinite(fee) || fee < 0) throw new Error('entry_fee inválido');
+    const paidFlag = Number(is_paid) === 1;
+    if (paidFlag && (!fee || fee <= 0)) {
+      throw new Error('Torneo pago: definí entry_fee mayor a 0.');
+    }
+    const rtm = parseInt(ready_timeout_minutes, 10);
+    if (!isFinite(rtm) || rtm < 1 || rtm > 60) {
+      throw new Error('ready_timeout_minutes debe estar entre 1 y 60');
+    }
+
     const result = await query(
       `INSERT INTO tournaments
          (name, description, prize_text, max_players, format, phase,
           puntos_maximos, flor_habilitada, turn_seconds, reconnect_seconds,
+          entry_fee, prize_amount, is_paid, auto_checkin_enabled, auto_start_enabled,
+          ready_timeout_minutes,
           starts_at, checkin_starts_at, registration_closes_at,
           status, created_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?)`,
       [
         name.trim().substring(0, 120),
         description?.trim() || null,
@@ -931,6 +1213,12 @@ const TournamentService = {
         flor_habilitada ? 1 : 0,
         ts,
         rs,
+        fee,
+        prize_amount != null ? parseFloat(prize_amount) : null,
+        paidFlag ? 1 : 0,
+        auto_checkin_enabled ? 1 : 0,
+        auto_start_enabled ? 1 : 0,
+        rtm,
         starts_at            || null,
         checkin_starts_at    || null,
         registration_closes_at || null,
@@ -958,6 +1246,8 @@ const TournamentService = {
       'name', 'description', 'prize_text', 'max_players', 'format', 'phase',
       'puntos_maximos', 'flor_habilitada', 'turn_seconds', 'reconnect_seconds',
       'starts_at', 'checkin_starts_at', 'registration_closes_at',
+      'entry_fee', 'prize_amount', 'is_paid',
+      'auto_checkin_enabled', 'auto_start_enabled', 'ready_timeout_minutes',
     ];
     const updates = {};
     for (const field of ALLOWED) {
@@ -987,6 +1277,29 @@ const TournamentService = {
       if (!isFinite(v) || v < 30 || v > 300) throw new Error('reconnect_seconds debe estar entre 30 y 300');
       updates.reconnect_seconds = v;
     }
+    if (updates.entry_fee !== undefined) {
+      const v = parseFloat(updates.entry_fee);
+      if (!isFinite(v) || v < 0) throw new Error('entry_fee inválido');
+      updates.entry_fee = v;
+    }
+    if (updates.ready_timeout_minutes !== undefined) {
+      const v = parseInt(updates.ready_timeout_minutes, 10);
+      if (!isFinite(v) || v < 1 || v > 60) throw new Error('ready_timeout_minutes debe estar entre 1 y 60');
+      updates.ready_timeout_minutes = v;
+    }
+    if (updates.is_paid !== undefined) updates.is_paid = updates.is_paid ? 1 : 0;
+    if (updates.auto_checkin_enabled !== undefined) {
+      updates.auto_checkin_enabled = updates.auto_checkin_enabled ? 1 : 0;
+    }
+    if (updates.auto_start_enabled !== undefined) {
+      updates.auto_start_enabled = updates.auto_start_enabled ? 1 : 0;
+    }
+
+    const mergedFee = updates.entry_fee !== undefined ? Number(updates.entry_fee) : parseFloat(t.entry_fee);
+    const mergedPaid = updates.is_paid !== undefined ? Number(updates.is_paid) : Number(t.is_paid);
+    if (mergedPaid === 1 && (!mergedFee || mergedFee <= 0)) {
+      throw new Error('Torneo pago: definí entry_fee mayor a 0.');
+    }
 
     const setClauses = Object.keys(updates).map(k => `\`${k}\` = ?`).join(', ');
     await query(
@@ -1003,7 +1316,7 @@ const TournamentService = {
    * Admin cambia el estado del torneo siguiendo transiciones válidas.
    * Válido para: open, checkin, started, finished, cancelled.
    */
-  async setTournamentStatus(tournamentId, adminId, newStatus) {
+  async setTournamentStatus(tournamentId, adminId, newStatus, opts = {}) {
     const VALID = ['open', 'checkin', 'started', 'cancelled', 'finished'];
     if (!VALID.includes(newStatus)) throw new Error('Estado inválido');
 
@@ -1029,7 +1342,8 @@ const TournamentService = {
       cancelled: 'tournament_cancelled',
       finished:  'tournament_finished',
     };
-    await createEvent(null, tournamentId, EVENT_MAP[newStatus], { adminId }, null, adminId);
+    const eventType = opts.eventTypeOverride || EVENT_MAP[newStatus];
+    await createEvent(null, tournamentId, eventType, { adminId }, null, adminId);
     return { ok: true };
   },
 
@@ -1037,7 +1351,7 @@ const TournamentService = {
   /**
    * Admin inicia el torneo. Requiere que el bracket ya esté generado.
    */
-  async startTournament(tournamentId, adminId) {
+  async startTournament(tournamentId, adminId, opts = {}) {
     const matchCount = await query(
       'SELECT COUNT(*) AS cnt FROM tournament_matches WHERE tournament_id = ?',
       [tournamentId]
@@ -1045,7 +1359,143 @@ const TournamentService = {
     if (Number(matchCount[0].cnt) === 0) {
       throw new Error('El torneo no tiene bracket generado. Generá el bracket antes de iniciar');
     }
-    return this.setTournamentStatus(tournamentId, adminId, 'started');
+    return this.setTournamentStatus(tournamentId, adminId, 'started', opts);
+  },
+
+  /**
+   * Posiciones y grupos para la vista "tabla final" (fuente: registrations + torneo).
+   */
+  async getStandings(tournamentId) {
+    await assertTournamentExists(tournamentId);
+
+    const tw = await query(
+      'SELECT id, name, status, winner_id, phase FROM tournaments WHERE id = ?',
+      [tournamentId]
+    );
+    if (!tw.length) throw new Error('Torneo no encontrado');
+    const tournament = tw[0];
+
+    const regs = await query(
+      `SELECT tr.user_id AS id, tr.status, tr.final_position, tr.eliminated_round,
+              u.username, u.avatar
+       FROM tournament_registrations tr
+       JOIN usuarios u ON u.id = tr.user_id
+       WHERE tr.tournament_id = ?`,
+      [tournamentId]
+    );
+
+    const champion = regs.find(r => r.status === 'winner' || r.id === tournament.winner_id) || null;
+    const runnerUp = regs.find(r => r.final_position === 2 && r.status === 'eliminated') || null;
+    const semi = regs.filter(
+      r => r.status === 'eliminated'
+        && r.final_position != null
+        && Number(r.final_position) >= 3
+        && Number(r.final_position) <= 4
+    );
+    const qualified = regs.filter(r => r.status === 'qualified');
+    const noShow = regs.filter(r => r.status === 'no_show');
+    const disqualified = regs.filter(r => r.status === 'disqualified');
+
+    const eliminated = regs.filter(
+      r => r.status === 'eliminated' && r.eliminated_round != null && r.final_position == null
+    );
+    const eliminatedByRound = {};
+    for (const r of eliminated) {
+      const k = String(r.eliminated_round);
+      if (!eliminatedByRound[k]) eliminatedByRound[k] = [];
+      eliminatedByRound[k].push(r);
+    }
+
+    const standingsList = [...regs].filter(r => !['cancelled'].includes(r.status)).sort((a, b) => {
+      const pa = a.final_position != null ? a.final_position : 999;
+      const pb = b.final_position != null ? b.final_position : 999;
+      if (pa !== pb) return pa - pb;
+      return (a.username || '').localeCompare(b.username || '');
+    });
+
+    return {
+      tournament: {
+        id:        tournament.id,
+        name:      tournament.name,
+        status:    tournament.status,
+        phase:     tournament.phase,
+        winner_id: tournament.winner_id,
+      },
+      champion:   champion ? { id: champion.id, username: champion.username, avatar: champion.avatar } : null,
+      runner_up:  runnerUp ? { id: runnerUp.id, username: runnerUp.username, avatar: runnerUp.avatar } : null,
+      semifinalists: semi.map(r => ({ id: r.id, username: r.username, avatar: r.avatar, label: '3°/4°' })),
+      qualified: qualified.map(r => ({ id: r.id, username: r.username, avatar: r.avatar })),
+      eliminatedByRound,
+      no_show: noShow.map(r => ({ id: r.id, username: r.username, avatar: r.avatar })),
+      disqualified: disqualified.map(r => ({ id: r.id, username: r.username, avatar: r.avatar })),
+      standingsList: standingsList.map(r => ({
+        id:               r.id,
+        username:         r.username,
+        avatar:           r.avatar,
+        status:           r.status,
+        final_position:   r.final_position,
+        eliminated_round: r.eliminated_round,
+      })),
+    };
+  },
+
+  /**
+   * Walkovers por vencimiento de ready_deadline (un jugador listo, el otro no).
+   */
+  async applyReadyDeadlineWalkovers() {
+    let rows = [];
+    try {
+      rows = await query(
+        `SELECT tm.id, tm.tournament_id, tm.player1_id, tm.player2_id, tm.player1_ready, tm.player2_ready
+         FROM tournament_matches tm
+         JOIN tournaments t ON t.id = tm.tournament_id
+         WHERE t.status = 'started'
+           AND tm.status IN ('ready','waiting_ready')
+           AND tm.ready_deadline IS NOT NULL AND tm.ready_deadline <= NOW()`
+      );
+    } catch (e) {
+      logger.warn(`applyReadyDeadlineWalkovers query: ${e.message}`);
+      return [];
+    }
+
+    const out = [];
+    for (const m of rows) {
+      const p1 = !!m.player1_ready;
+      const p2 = !!m.player2_ready;
+      try {
+        if (p1 && !p2) {
+          await this.forceResult(m.tournament_id, m.id, m.player1_id, null, 'ready_timeout');
+          out.push({ matchId: m.id, tournamentId: m.tournament_id, winnerId: m.player1_id });
+        } else if (!p1 && p2) {
+          await this.forceResult(m.tournament_id, m.id, m.player2_id, null, 'ready_timeout');
+          out.push({ matchId: m.id, tournamentId: m.tournament_id, winnerId: m.player2_id });
+        } else if (!p1 && !p2) {
+          await createEvent(null, m.tournament_id, 'both_not_ready_timeout', { matchId: m.id });
+          out.push({ matchId: m.id, tournamentId: m.tournament_id, bothNotReady: true });
+        }
+      } catch (e) {
+        logger.warn(`applyReadyDeadlineWalkovers match ${m.id}: ${e.message}`);
+      }
+    }
+    return out;
+  },
+
+  /** Cruces con ambos listos pero sin room (p. ej. offline al iniciar). */
+  async getMatchesBothReadyWithoutRoom() {
+    try {
+      const rows = await query(
+        `SELECT tm.id FROM tournament_matches tm
+         JOIN tournaments t ON t.id = tm.tournament_id
+         WHERE t.status = 'started'
+           AND tm.status IN ('ready','waiting_ready')
+           AND tm.player1_ready = 1 AND tm.player2_ready = 1
+           AND tm.room_id IS NULL`
+      );
+      return rows.map(r => r.id);
+    } catch (e) {
+      logger.warn(`getMatchesBothReadyWithoutRoom: ${e.message}`);
+      return [];
+    }
   },
 
   // ── 11. resolveAbsence ────────────────────────────────────────────────────
@@ -1099,6 +1549,9 @@ const TournamentService = {
       [matchId]
     );
     if (!rows.length) throw new Error('Cruce no encontrado');
+    if (rows[0].tournament_status !== 'started') {
+      throw new Error('El torneo aún no inició oficialmente. Esperá la señal de inicio.');
+    }
     return rows[0];
   },
 
@@ -1116,6 +1569,24 @@ const TournamentService = {
     );
   },
 
+  /**
+   * Intenta tomar el cruce para iniciar partida: solo si sigue listo, ambos ready y sin room_id.
+   * Evita dos partidas concurrentes por doble click / socket + scheduler.
+   */
+  async claimMatchActive(matchId, roomId) {
+    const header = await query(
+      `UPDATE tournament_matches
+       SET status = 'active', room_id = ?, started_at = NOW()
+       WHERE id = ?
+         AND status IN ('ready','waiting_ready')
+         AND player1_ready = 1 AND player2_ready = 1
+         AND room_id IS NULL`,
+      [roomId, matchId]
+    );
+    const n = header && typeof header.affectedRows === 'number' ? header.affectedRows : 0;
+    return n === 1;
+  },
+
   // ── 18. finishMatchFromGame ───────────────────────────────────────────────
   /**
    * Llamado desde _finishGame de gameHandler cuando termina una partida.
@@ -1125,7 +1596,7 @@ const TournamentService = {
    */
   async finishMatchFromGame(roomId, winnerId, scores = {}) {
     const rows = await query(
-      `SELECT tm.id, tm.tournament_id, tm.player1_id, tm.player2_id
+      `SELECT tm.id, tm.tournament_id, tm.player1_id, tm.player2_id, tm.round_number, tm.next_match_id
        FROM   tournament_matches tm
        WHERE  tm.room_id = ?`,
       [roomId]
@@ -1153,6 +1624,7 @@ const TournamentService = {
       );
       await createEvent(conn, m.tournament_id, 'match_finished',
         { matchId: m.id, winnerId, loserId, roomId }, winnerId);
+      await _markLoserFromFinishedMatch(conn, m.tournament_id, m, loserId);
       await _advanceWinnerConn(conn, m.id, winnerId);
     });
 

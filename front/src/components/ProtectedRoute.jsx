@@ -1,5 +1,6 @@
 import { Navigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import FriendChallengeListener from './social/FriendChallengeListener';
 
 export default function ProtectedRoute({ children }) {
   const { user, loading } = useAuth();
@@ -8,5 +9,12 @@ export default function ProtectedRoute({ children }) {
     return <div className="loading-screen"><div className="spinner" /></div>;
   }
 
-  return user ? children : <Navigate to="/login" replace />;
+  if (!user) return <Navigate to="/login" replace />;
+
+  return (
+    <>
+      <FriendChallengeListener />
+      {children}
+    </>
+  );
 }

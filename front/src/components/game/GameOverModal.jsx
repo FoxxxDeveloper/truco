@@ -19,57 +19,40 @@ export default function GameOverModal({ gameOver, myId }) {
   return (
     <AnimatePresence>
       <motion.div
-        className="modal-backdrop"
+        className="modal-backdrop game-modal-backdrop"
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
-        style={{ zIndex: 300 }}
       >
         <motion.div
-          className="overlay-card"
+          className={`fx-card game-modal game-over-modal ${won ? 'game-over-modal--won' : 'game-over-modal--lost'}`}
           initial={{ scale: 0.5, y: -80, opacity: 0 }}
           animate={{ scale: 1, y: 0, opacity: 1 }}
           exit={{ scale: 0.5, opacity: 0 }}
           transition={{ type: 'spring', stiffness: 300, damping: 25 }}
-          style={{ textAlign: 'center' }}
         >
-          <div className="overlay-icon" style={{ color: won ? 'var(--gold)' : 'var(--text-muted)' }}>
+          <div className={`game-over-icon ${won ? 'game-over-icon--won' : 'game-over-icon--lost'}`}>
             <TrophyIcon size={52} />
           </div>
-          <h2
-            className="overlay-title"
-            style={{ color: won ? 'var(--gold)' : 'var(--text-secondary)' }}
-          >
+          <h2 className="game-over-title">
             {won ? '¡Ganaste!' : '¡Perdiste!'}
           </h2>
 
           {gameOver.reason === 'abandon' && (
-            <p style={{ color: 'var(--text-muted)', fontSize: '0.88rem', marginBottom: 8, marginTop: -4 }}>
+            <p className="game-over-abandon-note">
               {gameOver.abandonedBy !== myId ? 'Tu rival abandonó la partida.' : 'Abandonaste la partida.'}
             </p>
           )}
 
           {delta !== undefined && (
-            <div
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 6,
-                background: delta >= 0 ? 'rgba(34,197,94,0.1)' : 'rgba(239,68,68,0.1)',
-                border: `1px solid ${delta >= 0 ? 'rgba(34,197,94,0.3)' : 'rgba(239,68,68,0.3)'}`,
-                borderRadius: '999px',
-                padding: '4px 16px',
-                marginBottom: 24,
-                color: delta >= 0 ? 'var(--green)' : 'var(--red)',
-                fontWeight: 700,
-              }}
-            >
+            <div className={`game-over-elo ${delta >= 0 ? 'game-over-elo--up' : 'game-over-elo--down'}`}>
               ELO: {delta >= 0 ? '+' : ''}{delta}
             </div>
           )}
 
-          <div style={{ display: 'flex', gap: 12, justifyContent: 'center', flexWrap: 'wrap' }}>
+          <div className="game-modal-actions game-over-actions">
             <button
+              type="button"
               className="btn btn-gold btn-lg"
               onClick={handleLobby}
             >

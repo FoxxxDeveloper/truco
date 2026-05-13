@@ -8,7 +8,7 @@
  *   onAbandon: () => void (navigate away if abandoned)
  */
 import { useState, useEffect } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion } from 'framer-motion';
 
 export default function ReconnectOverlay({ type, graceSecs = 60, onAbandon }) {
   const [remaining, setRemaining] = useState(graceSecs);
@@ -19,61 +19,54 @@ export default function ReconnectOverlay({ type, graceSecs = 60, onAbandon }) {
     return () => clearInterval(t);
   }, []);
 
-  const progress = remaining / graceSecs; // 1 → 0
+  const progress = remaining / graceSecs;
 
   if (type === 'self') {
     return (
       <motion.div
-        initial={{ opacity: 0 }} animate={{ opacity: 1 }}
-        style={{
-          position: 'fixed', inset: 0, zIndex: 500,
-          background: 'rgba(0,0,0,0.85)',
-          display: 'flex', flexDirection: 'column',
-          alignItems: 'center', justifyContent: 'center', gap: 20,
-        }}
+        className="game-reconnect-overlay game-reconnect-overlay--self"
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
       >
-        <div style={{ fontSize: 48 }}>🔄</div>
-        <h2 style={{ color: '#fff', margin: 0 }}>Reconectando a tu partida…</h2>
-        <p style={{ color: '#9ca3af', textAlign: 'center' }}>
-          No cierres esta ventana.<br />Tu partida sigue activa.
-        </p>
-        <div style={{ width: 200, height: 6, background: '#374151', borderRadius: 3 }}>
-          <motion.div
-            animate={{ width: `${progress * 100}%` }}
-            transition={{ duration: 1, ease: 'linear' }}
-            style={{ height: '100%', background: '#3b82f6', borderRadius: 3 }}
-          />
-        </div>
-        <div style={{ color: '#6b7280', fontSize: 13 }}>
-          {remaining > 0 ? `${remaining}s para que cuente como abandono` : 'Tiempo agotado'}
+        <div className="game-reconnect-card fx-card game-modal">
+            <div className="game-reconnect-icon" aria-hidden>↻</div>
+            <h2 className="game-modal-title">Reconectando a tu partida…</h2>
+            <p className="game-modal-lead game-reconnect-lead">
+              No cierres esta ventana. Tu partida sigue activa.
+            </p>
+            <div className="game-reconnect-progress">
+              <motion.div
+                className="game-reconnect-progress-fill game-reconnect-progress-fill--self"
+                animate={{ width: `${progress * 100}%` }}
+                transition={{ duration: 1, ease: 'linear' }}
+              />
+            </div>
+            <p className="game-reconnect-meta">
+              {remaining > 0 ? `${remaining}s para que cuente como abandono` : 'Tiempo agotado'}
+            </p>
         </div>
       </motion.div>
     );
   }
 
-  // type === 'opponent'
   return (
     <motion.div
-      initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }}
-      style={{
-        position: 'fixed', top: 0, left: 0, right: 0, zIndex: 400,
-        background: 'rgba(239,68,68,0.95)',
-        padding: '14px 24px',
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16,
-      }}
+      className="game-reconnect-banner game-reconnect-banner--opponent"
+      initial={{ opacity: 0, y: -20 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -12 }}
     >
-      <div>
-        <div style={{ color: '#fff', fontWeight: 700 }}>⚡ Tu rival se desconectó</div>
-        <div style={{ color: '#fecaca', fontSize: 13 }}>
+      <div className="game-reconnect-banner-text">
+        <div className="game-reconnect-banner-title">Tu rival se desconectó</div>
+        <div className="game-reconnect-banner-sub">
           Si no vuelve en {remaining}s, ganás la partida automáticamente
         </div>
       </div>
-      {/* Progress bar */}
-      <div style={{ width: 120, height: 6, background: 'rgba(255,255,255,0.3)', borderRadius: 3, flexShrink: 0 }}>
+      <div className="game-reconnect-progress game-reconnect-progress--inline">
         <motion.div
+          className="game-reconnect-progress-fill"
           animate={{ width: `${progress * 100}%` }}
           transition={{ duration: 1, ease: 'linear' }}
-          style={{ height: '100%', background: '#fff', borderRadius: 3 }}
         />
       </div>
     </motion.div>

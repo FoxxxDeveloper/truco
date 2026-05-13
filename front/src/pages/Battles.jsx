@@ -10,13 +10,14 @@ import { useAuth } from '../context/AuthContext';
 import { useGame } from '../context/GameContext';
 import { battleApi, walletApi, verificationApi } from '../services/api';
 import { getSocket } from '../services/socket';
+import AppHeader from '../components/layout/AppHeader';
 
 const TABS = [
-  { id: 'available', label: '⚔️ Disponibles' },
-  { id: 'mine',      label: '🃏 Mis salas'   },
-  { id: 'active',    label: '🎮 En curso'     },
-  { id: 'history',   label: '📜 Historial'   },
-  { id: 'create',    label: '➕ Crear'        },
+  { id: 'available', label: 'Disponibles' },
+  { id: 'mine', label: 'Mis salas' },
+  { id: 'active', label: 'En curso' },
+  { id: 'history', label: 'Historial' },
+  { id: 'create', label: 'Crear' },
 ];
 
 const MIN_BET = 2500;
@@ -42,21 +43,26 @@ function Countdown({ expiresAt }) {
 // ── Battle card for "Disponibles" tab ───────────────────────────────────────
 function PublicBattleCard({ battle, onAccept, loading }) {
   const config = battle.config || {};
+  const turnSec = config.turnTimeoutSecs ?? 30;
   return (
     <motion.div
-      className="battle-card"
+      className="battle-card battle-card--et3 fx-card"
       initial={{ opacity: 0, y: 12 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0 }}
     >
+      <div className="battle-card-top">
+        <span className="battle-card-amount-main">{battle.amount.toLocaleString('es-AR')} cr</span>
+        <span className="fx-badge fx-badge--muted battle-card-state">Abierta</span>
+      </div>
       <div className="battle-card-header">
-        <span className="battle-creator">⚔️ {battle.creatorUsername}</span>
-        {battle.creatorElo && <span className="battle-elo">ELO {battle.creatorElo}</span>}
+        <span className="battle-creator">{battle.creatorUsername}</span>
+        {battle.creatorElo != null && <span className="battle-elo">ELO {battle.creatorElo}</span>}
         <Countdown expiresAt={battle.expiresAt} />
       </div>
       <div className="battle-amounts">
         <div className="battle-bet">
-          <span className="label">Tu apuesta</span>
+          <span className="label">Apostás</span>
           <span className="value">{battle.amount.toLocaleString('es-AR')} cr</span>
         </div>
         <div className="battle-prize">
@@ -69,16 +75,17 @@ function PublicBattleCard({ battle, onAccept, loading }) {
         </div>
       </div>
       <div className="battle-config-chips">
-        <span>{config.puntosMaximos} pts</span>
-        <span>{config.florHabilitada ? 'Con flor' : 'Sin flor'}</span>
-        <span>Turno {config.turnTimeoutSecs}s</span>
+        <span className="fx-badge fx-badge--muted">{config.puntosMaximos} pts</span>
+        <span className="fx-badge fx-badge--muted">{config.florHabilitada ? 'Con flor' : 'Sin flor'}</span>
+        <span className="fx-badge fx-badge--muted">Turno {turnSec}s</span>
       </div>
       <button
+        type="button"
         className="btn btn-primary battle-btn"
         onClick={() => onAccept(battle.id)}
         disabled={loading}
       >
-        {loading ? 'Aceptando...' : 'Aceptar desafío'}
+        {loading ? 'Aceptando…' : 'Aceptar reto'}
       </button>
     </motion.div>
   );
@@ -86,6 +93,7 @@ function PublicBattleCard({ battle, onAccept, loading }) {
 
 // ── My room card ─────────────────────────────────────────────────────────────
 function MyBattleCard({ battle, onCancel, loading }) {
+  const navigate = useNavigate();
   const [copied, setCopied] = useState(false);
 
   const copyCode = () => {
@@ -106,16 +114,27 @@ function MyBattleCard({ battle, onCancel, loading }) {
     refunded:  'Reembolsada',
   }[battle.status] || battle.status;
 
+  const config = battle.config || {};
+  const turnSec = config.turnTimeoutSecs ?? 30;
+
   return (
     <motion.div
-      className={`battle-card battle-mine status-${battle.status}`}
+      className={`battle-card battle-mine battle-card--et3 fx-card status-${battle.status}`}
       initial={{ opacity: 0, y: 12 }}
       animate={{ opacity: 1, y: 0 }}
     >
-      <div className="battle-card-header">
+      <div className="battle-card-top">
+        <span className="battle-card-amount-main">{battle.amount.toLocaleString('es-AR')} cr</span>
         <span className={`battle-status-badge status-${battle.status}`}>{statusLabel}</span>
+      </div>
+      <div className="battle-card-header">
         {battle.rival && <span className="battle-rival">vs {battle.rival}</span>}
         {battle.status === 'open' && <Countdown expiresAt={battle.expiresAt} />}
+      </div>
+      <div className="battle-config-chips">
+        <span className="fx-badge fx-badge--muted">{config.puntosMaximos ?? 30} pts</span>
+        <span className="fx-badge fx-badge--muted">{config.florHabilitada ? 'Con flor' : 'Sin flor'}</span>
+        <span className="fx-badge fx-badge--muted">Turno {turnSec}s</span>
       </div>
       <div className="battle-amounts">
         <div className="battle-bet">
@@ -130,18 +149,24 @@ function MyBattleCard({ battle, onCancel, loading }) {
       {battle.isPrivate && battle.iCreator && battle.inviteCode && battle.status === 'open' && (
         <div className="invite-code-row">
           <span className="invite-code">{battle.inviteCode}</span>
-          <button className="btn btn-ghost btn-sm" onClick={copyCode}>
-            {copied ? '✓ Copiado' : 'Copiar código'}
+          <button type="button" className="btn btn-ghost btn-sm" onClick={copyCode}>
+            {copied ? 'Copiado' : 'Copiar código'}
           </button>
         </div>
       )}
       {battle.iCreator && battle.status === 'open' && (
         <button
+          type="button"
           className="btn btn-danger btn-sm battle-btn"
           onClick={() => onCancel(battle.id)}
           disabled={loading}
         >
-          {loading ? 'Cancelando...' : 'Cancelar sala'}
+          {loading ? 'Cancelando…' : 'Cancelar sala'}
+        </button>
+      )}
+      {(battle.status === 'active' || battle.status === 'accepted') && (
+        <button type="button" className="btn btn-primary battle-btn" onClick={() => navigate('/game')}>
+          Entrar a la partida
         </button>
       )}
     </motion.div>
@@ -152,7 +177,7 @@ function MyBattleCard({ battle, onCancel, loading }) {
 function HistoryCard({ battle }) {
   const won = battle.iWon;
   return (
-    <div className={`battle-card battle-history ${won ? 'won' : 'lost'}`}>
+    <div className={`battle-card battle-history battle-card--et3 fx-card ${won ? 'won' : 'lost'}`}>
       <div className="battle-card-header">
         <span className={`result-badge ${won ? 'won' : 'lost'}`}>
           {won ? '🏆 Victoria' : '💀 Derrota'}
@@ -204,9 +229,9 @@ function CreateForm({ onCreated, balance }) {
   const netGain = prize - n;
 
   return (
-    <form className="create-battle-form" onSubmit={handleSubmit}>
-      <h3>Nueva sala de batalla</h3>
-
+    <div className="fx-card battle-create-panel">
+      <h3 className="section-header battle-create-title">Crear batalla</h3>
+      <form className="create-battle-form create-battle-form--embedded" onSubmit={handleSubmit}>
       <div className="form-group">
         <label>Monto a apostar (mín. {MIN_BET.toLocaleString('es-AR')} cr)</label>
         <input
@@ -260,10 +285,11 @@ function CreateForm({ onCreated, balance }) {
         <p className="balance-note">Tu saldo disponible: {(balance || 0).toLocaleString('es-AR')} cr</p>
       )}
 
-      <button type="submit" className="btn btn-primary btn-large" disabled={loading || n < MIN_BET}>
-        {loading ? 'Creando...' : 'Crear sala'}
+      <button type="submit" className="btn btn-primary btn-large battle-create-submit" disabled={loading || n < MIN_BET}>
+        {loading ? 'Creando…' : 'Crear batalla'}
       </button>
     </form>
+    </div>
   );
 }
 
@@ -287,19 +313,18 @@ function JoinPrivate({ onJoined }) {
   };
 
   return (
-    <form className="join-private-form" onSubmit={handleSubmit}>
-      <h4>Unirse a sala privada</h4>
-      <div className="form-group" style={{ flexDirection: 'row', gap: 8 }}>
+    <form className="join-private-form fx-card battle-join-panel" onSubmit={handleSubmit}>
+      <h4 className="section-header battle-join-title">Unirse a sala privada</h4>
+      <div className="form-group join-private-row">
         <input
           value={code}
           onChange={e => setCode(e.target.value.toUpperCase())}
           maxLength={10}
           placeholder="CÓDIGO"
-          className="form-input"
-          style={{ flex: 1, letterSpacing: 4, textTransform: 'uppercase' }}
+          className="form-input join-private-input"
         />
-        <button type="submit" className="btn btn-primary" disabled={loading || !code.trim()}>
-          {loading ? '...' : 'Unirse'}
+        <button type="submit" className="btn btn-primary join-private-submit" disabled={loading || !code.trim()}>
+          {loading ? '…' : 'Unirse'}
         </button>
       </div>
     </form>
@@ -444,21 +469,66 @@ export default function Battles() {
   };
 
   return (
-    <div className="battles-page">
-      <header className="battles-header">
-        <button className="btn btn-ghost" onClick={() => navigate('/lobby')}>← Volver</button>
-        <h1>⚔️ Batallas Competitivas</h1>
-        {balance !== null && (
-          <span className="balance-display">
-            💰 {balance.toLocaleString('es-AR')} cr
-          </span>
-        )}
+    <div className="battles-page battle-page page-shell battle-page--et3">
+      <AppHeader />
+
+      <header className="battle-hero fx-card battle-hero--premium">
+        <div className="battle-hero-top battle-hero-top--compact">
+          <div className="battle-hero-meta">
+            {verifyStatus === 'verified' && (
+              <span className="fx-badge fx-badge--success battle-verify-chip">Verificado</span>
+            )}
+            {verifyStatus === 'pending' && (
+              <span className="fx-badge fx-badge--warning battle-verify-chip">Verificación pendiente</span>
+            )}
+            {verifyStatus === 'rejected' && (
+              <span className="fx-badge fx-badge--danger battle-verify-chip">Verificación rechazada</span>
+            )}
+            {verifyStatus &&
+              verifyStatus !== 'verified' &&
+              verifyStatus !== 'pending' &&
+              verifyStatus !== 'rejected' && (
+                <span className="fx-badge fx-badge--muted battle-verify-chip">No verificado</span>
+              )}
+          </div>
+        </div>
+        <h1 className="battle-page-title section-header">Batallas competitivas</h1>
+        <p className="battle-hero-sub">Competí por créditos contra otros jugadores.</p>
       </header>
 
-      <nav className="battles-tabs">
-        {TABS.map(t => (
+      <section className="fx-card battle-info-strip" aria-label="Cómo funcionan las batallas">
+        <ul className="battle-info-list">
+          <li>Las batallas usan créditos.</li>
+          <li>1 crédito = 1 peso argentino.</li>
+          <li>Solo usuarios verificados pueden participar.</li>
+          <li>La comisión de la casa se descuenta del pozo final.</li>
+        </ul>
+      </section>
+
+      {verifyStatus && verifyStatus !== 'verified' && (
+        <div
+          className={`battle-verify-banner${verifyStatus === 'pending' ? ' battle-verify-banner--pending' : ''}${
+            verifyStatus === 'rejected' ? ' battle-verify-banner--rejected' : ''
+          }`}
+        >
+          <p className="battle-verify-banner-text">
+            {verifyStatus === 'pending'
+              ? 'Tu verificación de identidad está pendiente de revisión.'
+              : verifyStatus === 'rejected'
+                ? 'Tu verificación fue rechazada. Corregí los datos para participar.'
+                : 'Para crear o aceptar batallas necesitás verificar tu identidad.'}
+          </p>
+          <button type="button" className="btn btn-primary btn-sm battle-verify-banner-btn" onClick={() => navigate('/verification')}>
+            {verifyStatus === 'pending' ? 'Ver estado' : 'Verificar identidad'}
+          </button>
+        </div>
+      )}
+
+      <nav className="battles-tabs battle-tabs" aria-label="Secciones de batallas">
+        {TABS.map((t) => (
           <button
             key={t.id}
+            type="button"
             className={`tab-btn${tab === t.id ? ' active' : ''}`}
             onClick={() => setTab(t.id)}
           >
@@ -467,56 +537,26 @@ export default function Battles() {
         ))}
       </nav>
 
-      {/* Verification banner */}
-      {verifyStatus && verifyStatus !== 'verified' && (
-        <div style={{
-          background: verifyStatus === 'pending' ? 'rgba(245,158,11,0.1)' : 'rgba(239,68,68,0.1)',
-          border: `1px solid ${verifyStatus === 'pending' ? 'rgba(245,158,11,0.4)' : 'rgba(239,68,68,0.4)'}`,
-          borderRadius: 10, margin: '0 0 16px', padding: '12px 16px',
-          display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap',
-        }}>
-          <span style={{ color: verifyStatus === 'pending' ? '#f59e0b' : '#fca5a5', fontSize: 14 }}>
-            {verifyStatus === 'pending'
-              ? '⏳ Tu verificación de identidad está pendiente de revisión'
-              : verifyStatus === 'rejected'
-                ? '❌ Tu verificación fue rechazada. Corregí los datos para participar'
-                : '⚠️ Para crear o aceptar batallas necesitás verificar tu identidad'}
-          </span>
-          <button
-            onClick={() => navigate('/verification')}
-            style={{
-              background: verifyStatus === 'pending' ? '#f59e0b' : '#ef4444',
-              color: '#fff', border: 'none', borderRadius: 7,
-              padding: '7px 14px', fontWeight: 700, fontSize: 13, cursor: 'pointer', flexShrink: 0,
-            }}
-          >
-            {verifyStatus === 'pending' ? 'Ver estado' : 'Verificar identidad'}
-          </button>
-        </div>
-      )}
-
-      <main className="battles-main">
+      <main className="battles-main battle-main">
         <AnimatePresence mode="wait">
-          {/* ── Disponibles ── */}
           {tab === 'available' && (
             <motion.div key="available" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
               <div className="battles-section-header">
-                <h2>Salas públicas abiertas</h2>
-                <button className="btn btn-ghost btn-sm" onClick={loadPublic} disabled={fetching}>
-                  {fetching ? '...' : '↻ Actualizar'}
+                <h2 className="section-header">Salas públicas</h2>
+                <button type="button" className="btn btn-ghost btn-sm" onClick={loadPublic} disabled={fetching}>
+                  {fetching ? '…' : 'Actualizar'}
                 </button>
               </div>
 
-              {/* Join private */}
               <JoinPrivate onJoined={handleJoined} />
 
-              {fetching && publicList.length === 0 && <p className="empty-state">Cargando...</p>}
+              {fetching && publicList.length === 0 && <p className="empty-state">Cargando…</p>}
               {!fetching && publicList.length === 0 && (
-                <p className="empty-state">No hay salas disponibles. ¡Creá la primera!</p>
+                <p className="empty-state">No hay salas disponibles. Creá la primera en la pestaña Crear.</p>
               )}
-              <div className="battles-grid">
+              <div className="battles-grid battle-grid">
                 <AnimatePresence>
-                  {publicList.map(b => (
+                  {publicList.map((b) => (
                     <PublicBattleCard
                       key={b.id}
                       battle={b}
@@ -529,20 +569,19 @@ export default function Battles() {
             </motion.div>
           )}
 
-          {/* ── Mis salas ── */}
           {tab === 'mine' && (
             <motion.div key="mine" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
               <div className="battles-section-header">
-                <h2>Mis salas</h2>
-                <button className="btn btn-ghost btn-sm" onClick={loadMine} disabled={fetching}>
-                  {fetching ? '...' : '↻ Actualizar'}
+                <h2 className="section-header">Mis salas</h2>
+                <button type="button" className="btn btn-ghost btn-sm" onClick={loadMine} disabled={fetching}>
+                  {fetching ? '…' : 'Actualizar'}
                 </button>
               </div>
               {!fetching && myList.length === 0 && (
-                <p className="empty-state">No tenés salas. ¡Creá una nueva!</p>
+                <p className="empty-state">No tenés salas. Creá una nueva en la pestaña Crear.</p>
               )}
-              <div className="battles-grid">
-                {myList.map(b => (
+              <div className="battles-grid battle-grid">
+                {myList.map((b) => (
                   <MyBattleCard
                     key={b.id}
                     battle={b}
@@ -554,37 +593,33 @@ export default function Battles() {
             </motion.div>
           )}
 
-          {/* ── Activa ── */}
           {tab === 'active' && (
             <motion.div key="active" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-              <h2>Partida activa</h2>
+              <h2 className="section-header">Batalla en curso</h2>
               {active ? (
-                <div className="active-battle">
+                <div className="active-battle fx-card battle-active-panel">
                   <MyBattleCard battle={active} onCancel={() => {}} loading={false} />
-                  <button className="btn btn-primary" onClick={() => navigate('/game')}>
-                    Ir a la partida
-                  </button>
                 </div>
               ) : (
-                <p className="empty-state">No tenés una batalla en curso actualmente.</p>
+                <p className="empty-state">No tenés una batalla en curso.</p>
               )}
             </motion.div>
           )}
 
-          {/* ── Historial ── */}
           {tab === 'history' && (
             <motion.div key="history" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-              <h2>Historial de batallas</h2>
+              <h2 className="section-header">Historial</h2>
               {!fetching && history.length === 0 && (
                 <p className="empty-state">Aún no jugaste batallas competitivas.</p>
               )}
-              <div className="battles-grid">
-                {history.map(b => <HistoryCard key={b.id} battle={b} />)}
+              <div className="battles-grid battle-grid">
+                {history.map((b) => (
+                  <HistoryCard key={b.id} battle={b} />
+                ))}
               </div>
             </motion.div>
           )}
 
-          {/* ── Crear ── */}
           {tab === 'create' && (
             <motion.div key="create" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
               <CreateForm onCreated={handleCreated} balance={balance} />

@@ -26,11 +26,12 @@ router.get('/friends', async (req, res) => {
   }
 });
 
-// GET /api/social/friends/requests
+// GET /api/social/friends/requests — received (incoming) + sent (outgoing)
 router.get('/friends/requests', async (req, res) => {
   try {
-    const requests = await Friend.getPendingReceived(req.user.id);
-    return res.json({ requests });
+    const received = await Friend.getPendingReceived(req.user.id);
+    const sent = await Friend.getPendingSent(req.user.id);
+    return res.json({ received, sent, requests: received });
   } catch (err) {
     logger.error('get friend requests: ' + err.message);
     return res.status(500).json({ error: 'Server error' });
@@ -49,6 +50,22 @@ router.post('/friends/:userId/request', async (req, res) => {
     const [target] = await query('SELECT id, username FROM usuarios WHERE id = ?', [targetId]);
     if (!target) return res.status(404).json({ error: 'User not found' });
 
+    const rel = await Friend.getRelationship(req.user.id, targetId);
+    if (rel?.status === 'accepted') {
+      return res.status(400).json({ error: 'Ya son amigos' });
+    }
+    if (rel?.status === 'pending') {
+      if (Number(rel.requested_by) === Number(req.user.id)) {
+        return res.status(400).json({ error: 'Ya enviaste una solicitud pendiente' });
+      }
+      return res.status(400).json({
+        error: 'Ya recibiste una solicitud de este usuario. Revisá la pestaña Solicitudes.',
+      });
+    }
+    if (rel?.status === 'blocked') {
+      return res.status(400).json({ error: 'No se puede enviar solicitud' });
+    }
+
     await Friend.sendRequest(req.user.id, targetId);
 
     // Notify target
@@ -59,7 +76,7 @@ router.post('/friends/:userId/request', async (req, res) => {
       metadata: { fromId: req.user.id, fromUsername: req.user.username },
     });
 
-    return res.json({ ok: true });
+    return res.json({ ok: true, friendshipStatus: 'request_sent' });
   } catch (err) {
     logger.error('send friend request: ' + err.message);
     return res.status(500).json({ error: 'Server error' });
@@ -174,6 +191,7 @@ router.get('/messages/:userId', async (req, res) => {
     if (!areFriends) return res.status(403).json({ error: 'Not friends' });
 
     const messages = await Message.getConversation(req.user.id, otherId, req.query);
+    logger.info(`[chat] GET messages/:friendId count=${messages.length} me=${req.user.id} other=${otherId}`);
     // Auto-mark messages from other user as read when conversation is fetched
     await Message.markRead(otherId, req.user.id);
     return res.json({ messages });
@@ -203,6 +221,7 @@ router.get('/general-messages', async (req, res) => {
   try {
     const limit = Math.min(parseInt(req.query.limit) || 50, 100);
     const messages = await GeneralMessage.getRecent(limit);
+    logger.info(`[chat] GET general-messages count=${messages.length} userId=${req.user.id}`);
     return res.json({ messages });
   } catch (err) {
     logger.error('get general messages: ' + err.message);

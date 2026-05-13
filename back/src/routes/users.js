@@ -6,6 +6,7 @@ const express        = require('express');
 const authMiddleware = require('../middleware/auth');
 const logger         = require('../config/logger');
 const { query }      = require('../config/database');
+const Friend         = require('../models/Friend');
 
 const router = express.Router();
 
@@ -33,6 +34,7 @@ router.get('/:id/public', authMiddleware, async (req, res) => {
 
     const u = rows[0];
     const total = (u.wins || 0) + (u.losses || 0);
+    const friendshipStatus = await Friend.getFriendshipStatus(req.user.id, userId);
     return res.json({
       id:              u.id,
       username:        u.username,
@@ -45,6 +47,7 @@ router.get('/:id/public', authMiddleware, async (req, res) => {
       draws:           Number(u.draws  ?? 0),
       winrate:         total > 0 ? parseFloat(((u.wins / total) * 100).toFixed(1)) : 0,
       identity_status: u.identity_status || 'unverified',
+      friendshipStatus,
     });
   } catch (err) {
     logger.error('users/:id/public: ' + err.message);

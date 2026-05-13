@@ -1,10 +1,30 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
+import {
+  Users,
+  Gamepad2,
+  Clock,
+  Coins,
+  Swords,
+  Search,
+  Plus,
+  Minus,
+  Shield,
+  ArrowLeft,
+  AlertTriangle,
+  Wallet,
+  ArrowDownToLine,
+  ArrowUpFromLine,
+  Check,
+  X,
+  Info,
+} from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
-import { adminApi, verificationApi } from '../services/api';
+import { adminApi } from '../services/api';
 import toast from 'react-hot-toast';
 import TournamentAdminPanel from '../components/admin/TournamentAdminPanel';
+import BrandNavLockup from '../components/brand/BrandNavLockup';
 
 const TABS = ['Dashboard', 'Cajero', 'Usuarios', 'Transacciones', 'Partidas', 'Auditoría', 'Verificaciones', 'Torneos'];
 
@@ -53,97 +73,97 @@ function CajeroPanel() {
   };
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24, alignItems: 'start' }}>
-
-      {/* Left: user search */}
-      <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 14, padding: 24 }}>
-        <h3 style={{ margin: '0 0 16px', fontSize: 15, color: 'var(--gold)' }}>🔍 Buscar jugador</h3>
-        <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+    <div className="admin-cajero-grid">
+      <div className="fx-card admin-cajero-card">
+        <h3 className="section-header admin-cajero-card-title">Buscar jugador</h3>
+        <div className="admin-cajero-search-row">
           <input
-            className="form-input"
-            style={{ flex: 1 }}
+            className="form-input admin-cajero-search-input"
             placeholder="Username o email"
             value={search}
-            onChange={e => setSearch(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && searchUsers()}
+            onChange={(e) => setSearch(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && searchUsers()}
           />
-          <button className="btn btn-ghost btn-sm" onClick={searchUsers}>Buscar</button>
+          <button type="button" className="btn btn-secondary btn-sm admin-cajero-search-btn" onClick={searchUsers}>
+            <Search size={16} aria-hidden />
+            Buscar
+          </button>
         </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-          {users.map(u => (
-            <div
+        <div className="admin-cajero-user-list">
+          {users.map((u) => (
+            <button
               key={u.id}
+              type="button"
+              className={`admin-cajero-user-row${selected?.id === u.id ? ' admin-cajero-user-row--selected' : ''}`.trim()}
               onClick={() => setSelected(u)}
-              style={{
-                padding: '10px 14px', borderRadius: 10, cursor: 'pointer', transition: 'all 0.15s',
-                background: selected?.id === u.id ? 'rgba(246,196,83,0.12)' : 'var(--bg-surface)',
-                border: `1px solid ${selected?.id === u.id ? 'var(--border-gold)' : 'var(--border)'}`,
-              }}
             >
-              <div style={{ fontWeight: 600, fontSize: 14 }}>{u.username}</div>
-              <div style={{ color: 'var(--text-muted)', fontSize: 12 }}>{u.email}</div>
-              <div style={{ color: 'var(--gold)', fontSize: 13, fontWeight: 700, marginTop: 2 }}>
-                🪙 {parseFloat(u.balance || 0).toFixed(0)} CRD
+              <div className="admin-cajero-user-name">{u.username}</div>
+              <div className="admin-cajero-user-email">{u.email}</div>
+              <div className="admin-cajero-user-balance">
+                <Coins size={14} aria-hidden />
+                {parseFloat(u.balance || 0).toFixed(0)} CRD
                 {parseFloat(u.reserved || 0) > 0 && (
-                  <span style={{ color: '#fb923c', fontWeight: 400, marginLeft: 8 }}>
-                    🔒 {parseFloat(u.reserved).toFixed(0)} reservados
-                  </span>
+                  <span className="admin-cajero-reserved">Reservado: {parseFloat(u.reserved).toFixed(0)}</span>
                 )}
               </div>
-            </div>
+            </button>
           ))}
-          {users.length === 0 && (
-            <p style={{ color: 'var(--text-muted)', fontSize: 13, textAlign: 'center', padding: 12 }}>
-              Buscá un jugador para empezar
-            </p>
-          )}
+          {users.length === 0 && <p className="admin-cajero-empty">Buscá un jugador para empezar</p>}
         </div>
       </div>
 
-      {/* Right: adjustment form */}
-      <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 14, padding: 24 }}>
-        <h3 style={{ margin: '0 0 4px', fontSize: 15, color: 'var(--gold)' }}>🪙 Ajuste de créditos</h3>
+      <div className="fx-card admin-cajero-card">
+        <h3 className="section-header admin-cajero-card-title">Ajuste de créditos</h3>
         {selected ? (
           <>
-            <p style={{ color: 'var(--text-muted)', fontSize: 13, marginBottom: 16 }}>
-              Jugador: <strong style={{ color: 'var(--text)' }}>{selected.username}</strong>
-              {' · '}Saldo actual: <strong style={{ color: 'var(--gold)' }}>{parseFloat(selected.balance || 0).toFixed(0)} CRD</strong>
+            <p className="admin-cajero-selected-meta">
+              Jugador: <strong>{selected.username}</strong>
+              {' · '}
+              Saldo: <strong className="admin-cajero-saldo-strong">{parseFloat(selected.balance || 0).toFixed(0)} CRD</strong>
             </p>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              <div>
-                <label style={{ color: 'var(--text-muted)', fontSize: 12, display: 'block', marginBottom: 6 }}>Cantidad de créditos</label>
-                <input type="number" min="1" step="1" placeholder="500" className="form-input" style={{ width: '100%' }}
-                  value={amount} onChange={e => setAmount(e.target.value)} />
+            <div className="admin-cajero-form">
+              <div className="form-group">
+                <label className="form-label" htmlFor="cajero-amount">
+                  Cantidad de créditos
+                </label>
+                <input
+                  id="cajero-amount"
+                  type="number"
+                  min="1"
+                  step="1"
+                  placeholder="500"
+                  className="form-input"
+                  value={amount}
+                  onChange={(e) => setAmount(e.target.value)}
+                />
               </div>
-              <div>
-                <label style={{ color: 'var(--text-muted)', fontSize: 12, display: 'block', marginBottom: 6 }}>Motivo / referencia</label>
-                <input type="text" placeholder="Depósito MP confirmado" className="form-input" style={{ width: '100%' }}
-                  value={reason} onChange={e => setReason(e.target.value)} />
+              <div className="form-group">
+                <label className="form-label" htmlFor="cajero-reason">
+                  Motivo / referencia
+                </label>
+                <input
+                  id="cajero-reason"
+                  type="text"
+                  placeholder="Depósito MP confirmado"
+                  className="form-input"
+                  value={reason}
+                  onChange={(e) => setReason(e.target.value)}
+                />
               </div>
-              <div style={{ display: 'flex', gap: 10, marginTop: 4 }}>
-                <button
-                  className="btn btn-accept"
-                  style={{ flex: 1, padding: '11px 0' }}
-                  disabled={loading}
-                  onClick={() => handleAdjust(1)}
-                >
-                  {loading ? '…' : '➕ Acreditar CRD'}
+              <div className="admin-cajero-actions">
+                <button type="button" className="btn btn-accept btn-sm admin-cajero-action-btn" disabled={loading} onClick={() => handleAdjust(1)}>
+                  <Plus size={16} aria-hidden />
+                  {loading ? '…' : 'Acreditar'}
                 </button>
-                <button
-                  className="btn btn-danger"
-                  style={{ flex: 1, padding: '11px 0' }}
-                  disabled={loading}
-                  onClick={() => handleAdjust(-1)}
-                >
-                  {loading ? '…' : '➖ Deducir CRD'}
+                <button type="button" className="btn btn-danger btn-sm admin-cajero-action-btn" disabled={loading} onClick={() => handleAdjust(-1)}>
+                  <Minus size={16} aria-hidden />
+                  {loading ? '…' : 'Deducir'}
                 </button>
               </div>
             </div>
           </>
         ) : (
-          <p style={{ color: 'var(--text-muted)', fontSize: 14, textAlign: 'center', padding: '2rem 0' }}>
-            Seleccioná un jugador de la lista
-          </p>
+          <p className="admin-cajero-placeholder">Seleccioná un jugador de la lista</p>
         )}
       </div>
     </div>
@@ -152,23 +172,28 @@ function CajeroPanel() {
 
 // ─── Verifications Panel ───────────────────────────────────────────────────
 function VerificationsPanel() {
-  const [list,     setList]     = useState([]);
-  const [loading,  setLoading]  = useState(true);
+  const [list, setList] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState('pending');
   const [rejectTarget, setRejectTarget] = useState(null);
   const [rejectReason, setRejectReason] = useState('');
-  const [working,  setWorking]  = useState(null);
+  const [working, setWorking] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
       const r = await adminApi.listVerifications({ status: statusFilter });
       setList(r.data.verifications || []);
-    } catch { toast.error('Error cargando verificaciones'); }
-    finally { setLoading(false); }
+    } catch {
+      toast.error('Error cargando verificaciones');
+    } finally {
+      setLoading(false);
+    }
   }, [statusFilter]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    load();
+  }, [load]);
 
   const handleApprove = async (userId, username) => {
     if (!window.confirm(`¿Aprobar verificación de ${username}?`)) return;
@@ -179,11 +204,16 @@ function VerificationsPanel() {
       load();
     } catch (err) {
       toast.error(err.response?.data?.error || 'Error al aprobar');
-    } finally { setWorking(null); }
+    } finally {
+      setWorking(null);
+    }
   };
 
   const handleRejectSubmit = async () => {
-    if (!rejectReason.trim()) { toast.error('El motivo es obligatorio'); return; }
+    if (!rejectReason.trim()) {
+      toast.error('El motivo es obligatorio');
+      return;
+    }
     setWorking(rejectTarget.user_id);
     try {
       await adminApi.rejectVerification(rejectTarget.user_id, { reason: rejectReason });
@@ -193,84 +223,101 @@ function VerificationsPanel() {
       load();
     } catch (err) {
       toast.error(err.response?.data?.error || 'Error al rechazar');
-    } finally { setWorking(null); }
+    } finally {
+      setWorking(null);
+    }
   };
 
-  const TD = ({ children, muted }) => (
-    <td style={{ padding: '10px 14px', color: muted ? 'var(--text-muted)' : undefined, fontSize: muted ? 12 : 14 }}>
-      {children}
-    </td>
-  );
+  const statusBadgeClass = (s) => {
+    if (s === 'verified') return 'admin-verif-badge admin-verif-badge--ok';
+    if (s === 'pending') return 'admin-verif-badge admin-verif-badge--pending';
+    if (s === 'rejected') return 'admin-verif-badge admin-verif-badge--reject';
+    return 'admin-verif-badge admin-verif-badge--muted';
+  };
 
   return (
-    <div>
-      <div style={{ display: 'flex', gap: 10, marginBottom: 16, alignItems: 'center' }}>
-        <h3 style={{ margin: 0, color: '#fff' }}>Verificaciones de identidad</h3>
+    <div className="admin-verif-panel">
+      <div className="admin-verif-toolbar">
+        <h3 className="admin-verif-title">Verificaciones de identidad</h3>
         <select
+          className="form-input admin-verif-filter"
           value={statusFilter}
-          onChange={e => setStatusFilter(e.target.value)}
-          style={{ background: '#243447', border: '1px solid #374151', borderRadius: 7, color: '#fff', padding: '5px 10px', fontSize: 13 }}
+          onChange={(e) => setStatusFilter(e.target.value)}
         >
-          {['pending','verified','rejected','all'].map(s => (
-            <option key={s} value={s}>{s}</option>
+          {['pending', 'verified', 'rejected', 'all'].map((s) => (
+            <option key={s} value={s}>
+              {s}
+            </option>
           ))}
         </select>
-        <button onClick={load} style={{ background: 'none', border: '1px solid #374151', borderRadius: 7, color: '#9ca3af', padding: '5px 12px', cursor: 'pointer', fontSize: 13 }}>
-          ↻
+        <button type="button" className="btn btn-secondary btn-sm admin-verif-refresh" onClick={load}>
+          ↻ Actualizar
         </button>
       </div>
 
-      {loading && <p style={{ color: 'var(--text-muted)', padding: '20px 0' }}>Cargando…</p>}
+      {loading && <p className="admin-verif-loading">Cargando…</p>}
 
       {!loading && list.length === 0 && (
-        <p style={{ color: 'var(--text-muted)', padding: '20px 0' }}>No hay solicitudes con estado "{statusFilter}".</p>
+        <p className="admin-verif-empty">No hay solicitudes con estado &quot;{statusFilter}&quot;.</p>
       )}
 
       {!loading && list.length > 0 && (
-        <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', background: 'var(--bg-card)', borderRadius: 12, overflow: 'hidden' }}>
+        <div className="admin-verif-table-wrap">
+          <table className="admin-verif-table">
             <thead>
-              <tr style={{ background: 'var(--bg-surface)' }}>
-                {['Usuario', 'Nombre legal', 'Documento', 'Nacimiento', 'País', 'Estado', 'Enviado', 'Acciones'].map(h => (
-                  <th key={h} style={{ padding: '10px 14px', textAlign: 'left', fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', whiteSpace: 'nowrap' }}>{h}</th>
+              <tr>
+                {['Usuario', 'Nombre legal', 'Documento', 'Nacimiento', 'País', 'Estado', 'Enviado', 'Acciones'].map((h) => (
+                  <th key={h}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {list.map(v => (
-                <tr key={v.user_id} style={{ borderTop: '1px solid var(--border)' }}>
-                  <TD>{v.username}<br /><span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{v.email}</span></TD>
-                  <TD>{v.legal_first_name} {v.legal_last_name}</TD>
-                  <TD muted>{v.document_type?.toUpperCase()}: {v.document_number_masked}</TD>
-                  <TD muted>{v.date_of_birth ? new Date(v.date_of_birth).toLocaleDateString('es-AR') : '—'}</TD>
-                  <TD muted>{v.country}{v.province ? `, ${v.province}` : ''}</TD>
-                  <TD>
-                    <span style={{
-                      padding: '2px 8px', borderRadius: 10, fontSize: 11, fontWeight: 700,
-                      background: v.identity_status === 'verified' ? 'rgba(34,197,94,.2)' : v.identity_status === 'pending' ? 'rgba(245,158,11,.2)' : v.identity_status === 'rejected' ? 'rgba(239,68,68,.2)' : '#243447',
-                      color:      v.identity_status === 'verified' ? '#22c55e' : v.identity_status === 'pending' ? '#f59e0b' : v.identity_status === 'rejected' ? '#ef4444' : '#9ca3af',
-                    }}>
-                      {v.identity_status}
-                    </span>
+              {list.map((v) => (
+                <tr key={v.user_id}>
+                  <td>
+                    <span className="admin-verif-username">{v.username}</span>
+                    <br />
+                    <span className="admin-verif-email">{v.email}</span>
+                  </td>
+                  <td>
+                    {v.legal_first_name} {v.legal_last_name}
+                  </td>
+                  <td className="admin-verif-muted">
+                    {v.document_type?.toUpperCase()}: {v.document_number_masked}
+                  </td>
+                  <td className="admin-verif-muted">{v.date_of_birth ? new Date(v.date_of_birth).toLocaleDateString('es-AR') : '—'}</td>
+                  <td className="admin-verif-muted">
+                    {v.country}
+                    {v.province ? `, ${v.province}` : ''}
+                  </td>
+                  <td>
+                    <span className={statusBadgeClass(v.identity_status)}>{v.identity_status}</span>
                     {v.rejection_reason && (
-                      <span title={v.rejection_reason} style={{ marginLeft: 6, fontSize: 11, color: '#f87171', cursor: 'help' }}>ⓘ</span>
+                      <span className="admin-verif-reject-hint" title={v.rejection_reason}>
+                        <Info size={13} aria-hidden />
+                      </span>
                     )}
-                  </TD>
-                  <TD muted>{new Date(v.created_at).toLocaleDateString('es-AR')}</TD>
-                  <td style={{ padding: '8px 14px', whiteSpace: 'nowrap' }}>
+                  </td>
+                  <td className="admin-verif-muted">{new Date(v.created_at).toLocaleDateString('es-AR')}</td>
+                  <td className="admin-verif-actions">
                     {v.identity_status === 'pending' && (
                       <>
                         <button
+                          type="button"
+                          className="btn btn-accept btn-sm admin-verif-btn-approve"
                           onClick={() => handleApprove(v.user_id, v.username)}
                           disabled={working === v.user_id}
-                          style={{ background: '#22c55e', color: '#000', border: 'none', borderRadius: 6, padding: '5px 12px', fontWeight: 700, fontSize: 12, cursor: 'pointer', marginRight: 6 }}
                         >
                           Aprobar
                         </button>
                         <button
-                          onClick={() => { setRejectTarget(v); setRejectReason(''); }}
+                          type="button"
+                          className="btn btn-secondary btn-sm admin-verif-btn-reject"
+                          onClick={() => {
+                            setRejectTarget(v);
+                            setRejectReason('');
+                          }}
                           disabled={working === v.user_id}
-                          style={{ background: '#ef4444', color: '#fff', border: 'none', borderRadius: 6, padding: '5px 12px', fontWeight: 700, fontSize: 12, cursor: 'pointer' }}
                         >
                           Rechazar
                         </button>
@@ -284,32 +331,33 @@ function VerificationsPanel() {
         </div>
       )}
 
-      {/* Reject modal */}
       {rejectTarget && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999 }}>
-          <div style={{ background: '#1e2a3a', border: '1px solid #374151', borderRadius: 14, padding: 28, width: '100%', maxWidth: 420 }}>
-            <h3 style={{ color: '#fff', marginTop: 0 }}>Rechazar verificación</h3>
-            <p style={{ color: '#9ca3af', fontSize: 13 }}>Usuario: <strong style={{ color: '#fff' }}>{rejectTarget.username}</strong></p>
+        <div className="admin-verif-modal-overlay" role="presentation">
+          <div className="fx-card admin-verif-modal" role="dialog" aria-modal="true" aria-labelledby="admin-verif-reject-title">
+            <h3 id="admin-verif-reject-title" className="admin-verif-modal-title">
+              Rechazar verificación
+            </h3>
+            <p className="admin-verif-modal-user">
+              Usuario: <strong>{rejectTarget.username}</strong>
+            </p>
             <textarea
+              className="form-input admin-verif-reject-textarea"
               value={rejectReason}
-              onChange={e => setRejectReason(e.target.value)}
+              onChange={(e) => setRejectReason(e.target.value)}
               placeholder="Motivo del rechazo (obligatorio)"
               maxLength={500}
               rows={4}
-              style={{ width: '100%', background: '#243447', border: '1px solid #374151', borderRadius: 8, color: '#fff', padding: '10px 12px', fontSize: 13, resize: 'vertical', boxSizing: 'border-box' }}
             />
-            <div style={{ display: 'flex', gap: 10, marginTop: 16 }}>
+            <div className="admin-verif-modal-actions">
               <button
+                type="button"
+                className="btn btn-danger btn-reject admin-verif-modal-confirm"
                 onClick={handleRejectSubmit}
                 disabled={!rejectReason.trim() || working !== null}
-                style={{ flex: 1, background: '#ef4444', color: '#fff', border: 'none', borderRadius: 8, padding: '10px', fontWeight: 700, cursor: 'pointer' }}
               >
                 Confirmar rechazo
               </button>
-              <button
-                onClick={() => setRejectTarget(null)}
-                style={{ flex: 1, background: '#374151', color: '#fff', border: 'none', borderRadius: 8, padding: '10px', cursor: 'pointer' }}
-              >
+              <button type="button" className="btn btn-secondary" onClick={() => setRejectTarget(null)}>
                 Cancelar
               </button>
             </div>
@@ -376,7 +424,7 @@ export default function Admin() {
   const approveTransaction = async (id) => {
     try {
       await adminApi.approveDeposit(id);
-      toast.success('Transacción aprobada ✓');
+      toast.success('Transacción aprobada');
       loadTab('Transacciones');
     } catch (err) {
       toast.error(err.response?.data?.error || 'Error');
@@ -395,228 +443,284 @@ export default function Admin() {
     }
   };
 
+  const statusBadgeClass = (status) => {
+    if (status === 'active') return 'admin-status-badge admin-status-badge--active';
+    if (status === 'suspended') return 'admin-status-badge admin-status-badge--suspended';
+    if (status === 'banned') return 'admin-status-badge admin-status-badge--banned';
+    return 'admin-status-badge admin-status-badge--muted';
+  };
+
+  const roleBadgeClass = (role) =>
+    role === 'admin' ? 'admin-role-badge admin-role-badge--admin' : 'admin-role-badge admin-role-badge--user';
+
   return (
-    <div style={{ minHeight: '100vh', background: 'var(--bg-dark)' }}>
-      <header style={{ display: 'flex', alignItems: 'center', gap: 16, padding: '1rem 2rem', background: 'var(--bg-card)', borderBottom: '1px solid var(--border)' }}>
-        <button onClick={() => navigate('/lobby')} className="btn btn-ghost btn-sm">← Lobby</button>
-        <h1 style={{ fontSize: 18, margin: 0 }}>🛡️ Panel de Administración</h1>
-        <span style={{ marginLeft: 'auto', color: 'var(--text-muted)', fontSize: 13 }}>
-          Admin: <strong style={{ color: 'var(--gold)' }}>{user?.username}</strong>
-        </span>
-      </header>
-
-      <div style={{ display: 'flex', gap: 0, borderBottom: '1px solid var(--border)', background: 'var(--bg-card)', overflowX: 'auto' }}>
-        {TABS.map(t => (
-          <button key={t} onClick={() => setTab(t)} style={{
-            padding: '12px 20px', border: 'none', background: 'none', cursor: 'pointer', fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap',
-            color: tab === t ? 'var(--gold)' : 'var(--text-muted)',
-            borderBottom: tab === t ? '2px solid var(--gold)' : '2px solid transparent',
-          }}>{t}</button>
-        ))}
-      </div>
-
-      <div style={{ padding: '1.5rem 2rem', maxWidth: 1200, margin: '0 auto' }}>
-        {loading && tab !== 'Cajero' && tab !== 'Torneos' && tab !== 'Verificaciones' && (
-          <div className="spinner-center"><div className="spinner" /></div>
-        )}
-
-        {/* ─── Dashboard ─── */}
-        {!loading && tab === 'Dashboard' && (
-          <div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(190px, 1fr))', gap: 16, marginBottom: 24 }}>
-              {[
-                ['👥 Usuarios', data.users, '#4ade80'],
-                ['🎮 Partidas activas', data.activeGames, '#60a5fa'],
-                ['⏳ Solicitudes pendientes', data.pendingTxs, '#fb923c'],
-                ['🪙 Créditos totales', `${(data.totalBalance || 0).toFixed(0)} CRD`, '#facc15'],
-                ['⚔️ Retos abiertos', data.openChallenges, '#c084fc'],
-              ].map(([label, val, color]) => (
-                <motion.div key={label} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
-                  style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 14, padding: '20px 24px', textAlign: 'center' }}>
-                  <div style={{ color: 'var(--text-muted)', fontSize: 12, marginBottom: 8 }}>{label}</div>
-                  <div style={{ color, fontSize: 26, fontWeight: 800 }}>{val ?? '—'}</div>
-                </motion.div>
-              ))}
+    <div className="admin-page">
+      <div className="page-shell admin-page-shell">
+        <header className="admin-hero fx-card">
+          <div className="admin-hero-top">
+            <button type="button" className="btn btn-ghost btn-sm admin-hero-back" onClick={() => navigate('/lobby')}>
+              <ArrowLeft size={18} aria-hidden />
+              Volver al lobby
+            </button>
+            <BrandNavLockup className="admin-hero-brand" size="sm" showSubtitle={false} />
+            <div className="admin-hero-admin-chip fx-badge fx-badge--muted">
+              <Shield size={12} aria-hidden />
+              <span>
+                Admin: <strong>{user?.username}</strong>
+              </span>
             </div>
-            {data.pendingTxs > 0 && (
-              <div style={{ background: 'rgba(251,146,60,0.1)', border: '1px solid rgba(251,146,60,0.3)', borderRadius: 12, padding: '14px 20px', color: '#fb923c', fontWeight: 600 }}>
-                ⚠️ Hay {data.pendingTxs} solicitud{data.pendingTxs !== 1 ? 'es' : ''} de créditos pendiente{data.pendingTxs !== 1 ? 's' : ''} de aprobación.
-                <button className="btn btn-ghost btn-sm" style={{ marginLeft: 12 }} onClick={() => setTab('Transacciones')}>
-                  Ver solicitudes →
-                </button>
+          </div>
+          <h1 className="admin-hero-title">Panel de administración</h1>
+          <p className="admin-hero-sub">Gestión de usuarios, torneos, wallet y seguridad</p>
+        </header>
+
+        <nav className="admin-tabs" aria-label="Secciones del panel">
+          {TABS.map((t) => (
+            <button
+              key={t}
+              type="button"
+              className={`admin-tab${tab === t ? ' admin-tab--active' : ''}`.trim()}
+              onClick={() => setTab(t)}
+            >
+              {t}
+            </button>
+          ))}
+        </nav>
+
+        <div className="admin-body">
+          {loading && tab !== 'Cajero' && tab !== 'Torneos' && tab !== 'Verificaciones' && (
+            <div className="spinner-center">
+              <div className="spinner" />
+            </div>
+          )}
+
+          {!loading && tab === 'Dashboard' && (
+            <div className="admin-dashboard">
+              <div className="admin-metrics-grid">
+                {[
+                  { label: 'Usuarios', icon: Users, value: data.users, mod: 'admin-metric--users' },
+                  { label: 'Partidas activas', icon: Gamepad2, value: data.activeGames, mod: 'admin-metric--games' },
+                  { label: 'Solicitudes pendientes', icon: Clock, value: data.pendingTxs, mod: 'admin-metric--pending' },
+                  { label: 'Créditos en sistema', icon: Coins, value: `${(data.totalBalance ?? 0).toFixed(0)} CRD`, mod: 'admin-metric--credits' },
+                  { label: 'Retos abiertos', icon: Swords, value: data.openChallenges, mod: 'admin-metric--challenges' },
+                ].map(({ label, icon: Icon, value, mod }) => (
+                  <motion.div
+                    key={label}
+                    className={`fx-card admin-metric-card ${mod}`.trim()}
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                  >
+                    <div className="admin-metric-icon-wrap" aria-hidden>
+                      <Icon size={22} />
+                    </div>
+                    <div className="admin-metric-label">{label}</div>
+                    <div className="admin-metric-value">{value ?? '—'}</div>
+                  </motion.div>
+                ))}
               </div>
-            )}
-          </div>
-        )}
-
-        {/* ─── Cajero ─── */}
-        {tab === 'Cajero' && <CajeroPanel />}
-
-        {/* ─── Users ─── */}
-        {!loading && tab === 'Usuarios' && (
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', background: 'var(--bg-card)', borderRadius: 12, overflow: 'hidden' }}>
-              <thead>
-                <tr style={{ background: 'var(--bg-surface)' }}>
-                  {['ID', 'Usuario', 'Email', 'Rol', 'Estado', 'ELO', 'Créditos', 'Acciones'].map(h => (
-                    <th key={h} style={{ padding: '10px 14px', textAlign: 'left', fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase' }}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {(data.users || []).map(u => (
-                  <tr key={u.id} style={{ borderTop: '1px solid var(--border)' }}>
-                    <td style={{ padding: '10px 14px', color: 'var(--text-muted)', fontSize: 12 }}>{u.id}</td>
-                    <td style={{ padding: '10px 14px', fontWeight: 600 }}>{u.username}</td>
-                    <td style={{ padding: '10px 14px', color: 'var(--text-muted)', fontSize: 12 }}>{u.email}</td>
-                    <td style={{ padding: '10px 14px' }}>
-                      <select value={u.role} onChange={e => updateUser(u.id, 'role', e.target.value)}
-                        style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)', color: 'var(--text-primary)', borderRadius: 6, padding: '4px 8px', fontSize: 12 }}>
-                        <option value="user">user</option>
-                        <option value="admin">admin</option>
-                      </select>
-                    </td>
-                    <td style={{ padding: '10px 14px' }}>
-                      <select value={u.status} onChange={e => updateUser(u.id, 'status', e.target.value)}
-                        style={{ background: 'var(--bg-surface)', border: '1px solid var(--border)', color: u.status === 'active' ? '#4ade80' : '#f87171', borderRadius: 6, padding: '4px 8px', fontSize: 12 }}>
-                        <option value="active">active</option>
-                        <option value="suspended">suspended</option>
-                        <option value="banned">banned</option>
-                      </select>
-                    </td>
-                    <td style={{ padding: '10px 14px', color: 'var(--gold)', fontWeight: 700 }}>{u.elo}</td>
-                    <td style={{ padding: '10px 14px', color: '#4ade80', fontWeight: 600 }}>
-                      {parseFloat(u.balance || 0).toFixed(0)} CRD
-                    </td>
-                    <td style={{ padding: '10px 14px' }}>
-                      <button className="btn btn-ghost btn-sm"
-                        onClick={() => {
-                          setTab('Cajero');
-                        }}
-                        title="Ir al Cajero para ajustar créditos"
-                      >
-                        🪙 Cajero
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-
-        {/* ─── Transacciones ─── */}
-        {!loading && tab === 'Transacciones' && (
-          <div>
-            <p style={{ color: 'var(--text-muted)', marginBottom: 16, fontSize: 13 }}>
-              Solicitudes de carga/retiro de créditos pendientes de aprobación:
-            </p>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              {(data.transactions || []).length === 0
-                ? <p style={{ color: 'var(--text-muted)', textAlign: 'center', padding: '2rem 0' }}>✓ Sin solicitudes pendientes</p>
-                : (data.transactions || []).map(tx => (
-                  <div key={tx.id} style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 12, padding: '16px 20px', display: 'flex', alignItems: 'center', gap: 16, justifyContent: 'space-between' }}>
-                    <div>
-                      <div style={{ fontWeight: 700, marginBottom: 2 }}>
-                        {tx.username}
-                        <span style={{ marginLeft: 8, padding: '2px 8px', borderRadius: 8, fontSize: 11, fontWeight: 600, background: tx.type === 'deposit' ? 'rgba(74,222,128,0.1)' : 'rgba(248,113,113,0.1)', color: tx.type === 'deposit' ? '#4ade80' : '#f87171' }}>
-                          {tx.type === 'deposit' ? '⬆ CARGA' : '⬇ RETIRO'}
-                        </span>
-                      </div>
-                      <div style={{ color: 'var(--gold)', fontSize: 22, fontWeight: 900 }}>
-                        {parseFloat(tx.amount).toFixed(0)} CRD
-                      </div>
-                      {tx.reference && <div style={{ color: 'var(--text-muted)', fontSize: 12 }}>Ref: {tx.reference}</div>}
-                      <div style={{ color: 'var(--text-muted)', fontSize: 11 }}>{new Date(tx.created_at).toLocaleString('es-AR')}</div>
-                    </div>
-                    <div style={{ display: 'flex', gap: 8 }}>
-                      <button className="btn btn-accept btn-sm" onClick={() => approveTransaction(tx.id)}>✓ Aprobar</button>
-                      <button className="btn btn-danger btn-sm" onClick={() => rejectTransaction(tx.id)}>✗ Rechazar</button>
-                    </div>
-                  </div>
-                ))
-              }
+              {data.pendingTxs > 0 && (
+                <div className="fx-card admin-alert-pending">
+                  <AlertTriangle className="admin-alert-icon" size={20} aria-hidden />
+                  <span>
+                    Hay {data.pendingTxs} solicitud{data.pendingTxs !== 1 ? 'es' : ''} de créditos pendiente{data.pendingTxs !== 1 ? 's' : ''} de
+                    aprobación.
+                  </span>
+                  <button type="button" className="btn btn-secondary btn-sm admin-alert-btn" onClick={() => setTab('Transacciones')}>
+                    Ver solicitudes
+                  </button>
+                </div>
+              )}
             </div>
-          </div>
-        )}
+          )}
 
-        {/* ─── Games ─── */}
-        {!loading && tab === 'Partidas' && (
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', background: 'var(--bg-card)', borderRadius: 12, overflow: 'hidden' }}>
-              <thead>
-                <tr style={{ background: 'var(--bg-surface)' }}>
-                  {['Room', 'Jugador 1', 'Jugador 2', 'Estado', 'Ganador', 'Inicio'].map(h => (
-                    <th key={h} style={{ padding: '10px 14px', textAlign: 'left', fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase' }}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {(data.games || []).map(g => (
-                  <tr key={g.room_id} style={{ borderTop: '1px solid var(--border)' }}>
-                    <td style={{ padding: '10px 14px', fontFamily: 'monospace', fontSize: 11, color: 'var(--text-muted)' }}>{g.room_id?.substring(0, 8)}…</td>
-                    <td style={{ padding: '10px 14px' }}>{g.player1_username}</td>
-                    <td style={{ padding: '10px 14px' }}>{g.player2_username}</td>
-                    <td style={{ padding: '10px 14px' }}>
-                      <span style={{ padding: '2px 8px', borderRadius: 12, fontSize: 11, fontWeight: 600, textTransform: 'capitalize', background: g.status === 'active' ? 'rgba(74,222,128,0.1)' : 'rgba(31,111,235,0.1)', color: g.status === 'active' ? '#4ade80' : '#60a5fa' }}>
-                        {g.status}
-                      </span>
-                    </td>
-                    <td style={{ padding: '10px 14px', color: 'var(--gold)', fontWeight: 600 }}>{g.winner_username || '—'}</td>
-                    <td style={{ padding: '10px 14px', color: 'var(--text-muted)', fontSize: 12 }}>
-                      {g.started_at ? new Date(g.started_at).toLocaleString('es-AR') : '—'}
-                    </td>
+          {tab === 'Cajero' && <CajeroPanel />}
+
+          {!loading && tab === 'Usuarios' && (
+            <div className="admin-table-wrap">
+              <table className="admin-table">
+                <thead>
+                  <tr>
+                    {['ID', 'Usuario', 'Email', 'Rol', 'Estado', 'ELO', 'Créditos', 'Acciones'].map((h) => (
+                      <th key={h}>{h}</th>
+                    ))}
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-
-        {/* ─── Auditoría ─── */}
-        {!loading && tab === 'Auditoría' && (
-          <div style={{ overflowX: 'auto' }}>
-            <p style={{ color: 'var(--text-muted)', marginBottom: 12, fontSize: 13 }}>Historial completo de movimientos de créditos (más recientes primero)</p>
-            <table style={{ width: '100%', borderCollapse: 'collapse', background: 'var(--bg-card)', borderRadius: 12, overflow: 'hidden' }}>
-              <thead>
-                <tr style={{ background: 'var(--bg-surface)' }}>
-                  {['ID', 'Usuario', 'Tipo', 'Créditos', 'Estado', 'Referencia', 'Fecha'].map(h => (
-                    <th key={h} style={{ padding: '10px 14px', textAlign: 'left', fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase' }}>{h}</th>
+                </thead>
+                <tbody>
+                  {(data.users || []).map((u) => (
+                    <tr key={u.id}>
+                      <td className="admin-table-muted">{u.id}</td>
+                      <td className="admin-table-strong">{u.username}</td>
+                      <td className="admin-table-muted">{u.email}</td>
+                      <td>
+                        <div className="admin-table-cell-stack">
+                          <span className={roleBadgeClass(u.role)}>{u.role}</span>
+                          <select
+                            value={u.role}
+                            className="form-input admin-table-select"
+                            onChange={(e) => updateUser(u.id, 'role', e.target.value)}
+                          >
+                            <option value="user">user</option>
+                            <option value="admin">admin</option>
+                          </select>
+                        </div>
+                      </td>
+                      <td>
+                        <div className="admin-table-cell-stack">
+                          <span className={statusBadgeClass(u.status)}>{u.status}</span>
+                          <select
+                            value={u.status}
+                            className="form-input admin-table-select"
+                            onChange={(e) => updateUser(u.id, 'status', e.target.value)}
+                          >
+                            <option value="active">active</option>
+                            <option value="suspended">suspended</option>
+                            <option value="banned">banned</option>
+                          </select>
+                        </div>
+                      </td>
+                      <td className="admin-table-gold">{u.elo}</td>
+                      <td className="admin-table-credits">{parseFloat(u.balance || 0).toFixed(0)} CRD</td>
+                      <td>
+                        <button type="button" className="btn btn-secondary btn-sm" onClick={() => setTab('Cajero')} title="Ir al Cajero para ajustar créditos">
+                          <Wallet size={14} aria-hidden />
+                          Cajero
+                        </button>
+                      </td>
+                    </tr>
                   ))}
-                </tr>
-              </thead>
-              <tbody>
-                {(data.logs || []).map(tx => (
-                  <tr key={tx.id} style={{ borderTop: '1px solid var(--border)' }}>
-                    <td style={{ padding: '10px 14px', color: 'var(--text-muted)', fontSize: 12 }}>{tx.id}</td>
-                    <td style={{ padding: '10px 14px', fontWeight: 600 }}>{tx.username}</td>
-                    <td style={{ padding: '10px 14px', fontSize: 12, color: 'var(--text-muted)' }}>{tx.type}</td>
-                    <td style={{ padding: '10px 14px', color: ['deposit','prize','bet_win','refund','bet_refund'].includes(tx.type) ? '#4ade80' : '#f87171', fontWeight: 700 }}>
-                      {['deposit','prize','bet_win','refund','bet_refund'].includes(tx.type) ? '+' : '−'}{Math.abs(parseFloat(tx.amount)).toFixed(0)} CRD
-                    </td>
-                    <td style={{ padding: '10px 14px', fontSize: 12, color: tx.status === 'completed' ? '#4ade80' : tx.status === 'pending' ? '#fb923c' : '#f87171' }}>
-                      {tx.status}
-                    </td>
-                    <td style={{ padding: '10px 14px', color: 'var(--text-muted)', fontSize: 11 }}>{tx.reference || '—'}</td>
-                    <td style={{ padding: '10px 14px', color: 'var(--text-muted)', fontSize: 11 }}>
-                      {new Date(tx.created_at).toLocaleString('es-AR')}
-                    </td>
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {!loading && tab === 'Transacciones' && (
+            <div className="admin-tx-section">
+              <p className="admin-section-lead">Solicitudes de carga o retiro de créditos pendientes de aprobación.</p>
+              <div className="admin-tx-list">
+                {(data.transactions || []).length === 0 ? (
+                  <p className="admin-empty-state">Sin solicitudes pendientes</p>
+                ) : (
+                  (data.transactions || []).map((tx) => (
+                    <div key={tx.id} className="fx-card admin-tx-card">
+                      <div className="admin-tx-main">
+                        <div className="admin-tx-userline">
+                          <span className="admin-tx-username">{tx.username}</span>
+                          <span className={`fx-badge admin-tx-type-badge${tx.type === 'deposit' ? ' admin-tx-type-badge--in' : ' admin-tx-type-badge--out'}`.trim()}>
+                            {tx.type === 'deposit' ? (
+                              <>
+                                <ArrowDownToLine size={12} aria-hidden /> Carga
+                              </>
+                            ) : (
+                              <>
+                                <ArrowUpFromLine size={12} aria-hidden /> Retiro
+                              </>
+                            )}
+                          </span>
+                        </div>
+                        <div className="admin-tx-amount">{parseFloat(tx.amount).toFixed(0)} CRD</div>
+                        {tx.reference && <div className="admin-tx-ref">Ref: {tx.reference}</div>}
+                        <div className="admin-tx-date">{new Date(tx.created_at).toLocaleString('es-AR')}</div>
+                      </div>
+                      <div className="admin-tx-actions">
+                        <button type="button" className="btn btn-accept btn-sm" onClick={() => approveTransaction(tx.id)}>
+                          <Check size={14} aria-hidden />
+                          Aprobar
+                        </button>
+                        <button type="button" className="btn btn-danger btn-sm" onClick={() => rejectTransaction(tx.id)}>
+                          <X size={14} aria-hidden />
+                          Rechazar
+                        </button>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          )}
+
+          {!loading && tab === 'Partidas' && (
+            <div className="admin-table-wrap">
+              <table className="admin-table">
+                <thead>
+                  <tr>
+                    {['Room', 'Jugador 1', 'Jugador 2', 'Estado', 'Ganador', 'Inicio'].map((h) => (
+                      <th key={h}>{h}</th>
+                    ))}
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+                </thead>
+                <tbody>
+                  {(data.games || []).map((g) => (
+                    <tr key={g.room_id}>
+                      <td className="admin-table-mono">{g.room_id?.substring(0, 8)}…</td>
+                      <td>{g.player1_username}</td>
+                      <td>{g.player2_username}</td>
+                      <td>
+                        <span className={`fx-badge admin-game-status${g.status === 'active' ? ' admin-game-status--active' : ' admin-game-status--idle'}`.trim()}>
+                          {g.status}
+                        </span>
+                      </td>
+                      <td className="admin-table-gold">{g.winner_username || '—'}</td>
+                      <td className="admin-table-muted">{g.started_at ? new Date(g.started_at).toLocaleString('es-AR') : '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
 
-        {/* ─── Verificaciones ─── */}
-        {tab === 'Verificaciones' && (
-          <VerificationsPanel />
-        )}
+          {!loading && tab === 'Auditoría' && (
+            <div className="admin-audit">
+              <p className="admin-section-lead">Historial de movimientos de créditos (más recientes primero).</p>
+              <div className="admin-table-wrap">
+                <table className="admin-table admin-table--compact">
+                  <thead>
+                    <tr>
+                      {['ID', 'Usuario', 'Tipo', 'Créditos', 'Estado', 'Referencia', 'Fecha'].map((h) => (
+                        <th key={h}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(data.logs || []).map((tx) => (
+                      <tr key={tx.id}>
+                        <td className="admin-table-muted">{tx.id}</td>
+                        <td className="admin-table-strong">{tx.username}</td>
+                        <td className="admin-table-muted">{tx.type}</td>
+                        <td
+                          className={
+                            ['deposit', 'prize', 'bet_win', 'refund', 'bet_refund'].includes(tx.type)
+                              ? 'admin-table-pos'
+                              : 'admin-table-neg'
+                          }
+                        >
+                          {['deposit', 'prize', 'bet_win', 'refund', 'bet_refund'].includes(tx.type) ? '+' : '−'}
+                          {Math.abs(parseFloat(tx.amount)).toFixed(0)} CRD
+                        </td>
+                        <td>
+                          <span
+                            className={`fx-badge admin-audit-status${tx.status === 'completed' ? ' admin-audit-status--ok' : tx.status === 'pending' ? ' admin-audit-status--pending' : ' admin-audit-status--fail'}`.trim()}
+                          >
+                            {tx.status}
+                          </span>
+                        </td>
+                        <td className="admin-table-muted admin-table-sm">{tx.reference || '—'}</td>
+                        <td className="admin-table-muted admin-table-sm">{new Date(tx.created_at).toLocaleString('es-AR')}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
 
-        {/* ─── Torneos ─── */}
-        {tab === 'Torneos' && (
-          <TournamentAdminPanel />
-        )}
+          {tab === 'Verificaciones' && <VerificationsPanel />}
+
+          {tab === 'Torneos' && (
+            <div className="admin-tournament-embed">
+              <TournamentAdminPanel />
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

@@ -19,9 +19,33 @@ import {
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { tournamentApi, adminTournamentApi } from '../../services/api';
-import { avatarUrl, formatDate } from '../../utils/tournaments';
+import { formatDate } from '../../utils/tournaments';
+import TrucoAvatar from '../avatar/TrucoAvatar';
 
 const PRESETS = {
+  opening128: {
+    label: 'Torneo Apertura TrucoFX 128 (recomendado)',
+    name: 'Torneo Apertura TrucoFX',
+    description:
+      'Torneo gratuito de lanzamiento de TrucoFX. Cupo principal de 128 jugadores. Los inscriptos que superen el cupo quedan como suplentes y podrán ingresar si un titular no realiza el check-in.',
+    prize_text: '$100.000 ARS al campeón',
+    max_players: 128,
+    entry_fee: 0,
+    is_paid: false,
+    prize_amount: '',
+    format: 'single_elimination',
+    phase: 'general',
+    puntos_maximos: 15,
+    flor_habilitada: false,
+    turn_seconds: 30,
+    reconnect_seconds: 60,
+    ready_timeout_minutes: 5,
+    auto_checkin_enabled: true,
+    auto_start_enabled: true,
+    starts_at: '',
+    checkin_starts_at: '',
+    registration_closes_at: '',
+  },
   qualifierA: {
     label: 'Clasificatorio A',
     name: 'Torneo Apertura TrucoFX - Clasificatorio A',
@@ -105,13 +129,19 @@ const emptyForm = {
   name: '',
   description: '',
   prize_text: '',
-  max_players: 64,
-  format: 'qualifier',
-  phase: 'qualifier_a',
+  max_players: 128,
+  format: 'single_elimination',
+  phase: 'general',
   puntos_maximos: 15,
   flor_habilitada: false,
   turn_seconds: 30,
   reconnect_seconds: 60,
+  entry_fee: 0,
+  prize_amount: '',
+  is_paid: false,
+  auto_checkin_enabled: true,
+  auto_start_enabled: true,
+  ready_timeout_minutes: 5,
   starts_at: '',
   checkin_starts_at: '',
   registration_closes_at: '',
@@ -168,7 +198,7 @@ export default function TournamentAdminPanel() {
   const flatMatches = useMemo(() => flattenBracket(detail?.bracket), [detail?.bracket]);
 
   const openCreate = () => {
-    setForm({ ...emptyForm, ...PRESETS.qualifierA });
+    setForm({ ...emptyForm, ...PRESETS.opening128 });
     setCreateOpen(true);
   };
 
@@ -188,6 +218,12 @@ export default function TournamentAdminPanel() {
       starts_at: detail.starts_at ? detail.starts_at.slice(0, 16) : '',
       checkin_starts_at: detail.checkin_starts_at ? detail.checkin_starts_at.slice(0, 16) : '',
       registration_closes_at: detail.registration_closes_at ? detail.registration_closes_at.slice(0, 16) : '',
+      entry_fee: detail.entry_fee != null ? Number(detail.entry_fee) : 0,
+      prize_amount: detail.prize_amount != null ? String(detail.prize_amount) : '',
+      is_paid: !!detail.is_paid,
+      auto_checkin_enabled: detail.auto_checkin_enabled !== 0,
+      auto_start_enabled: detail.auto_start_enabled !== 0,
+      ready_timeout_minutes: detail.ready_timeout_minutes ?? 5,
     });
     setEditOpen(true);
   };
@@ -206,6 +242,12 @@ export default function TournamentAdminPanel() {
     starts_at: f.starts_at || null,
     checkin_starts_at: f.checkin_starts_at || null,
     registration_closes_at: f.registration_closes_at || null,
+    entry_fee: Number(f.entry_fee) || 0,
+    prize_amount: f.prize_amount === '' || f.prize_amount == null ? null : Number(f.prize_amount),
+    is_paid: f.is_paid ? 1 : 0,
+    auto_checkin_enabled: f.auto_checkin_enabled ? 1 : 0,
+    auto_start_enabled: f.auto_start_enabled ? 1 : 0,
+    ready_timeout_minutes: Number(f.ready_timeout_minutes) || 5,
   });
 
   const handleCreate = async () => {
@@ -436,6 +478,30 @@ export default function TournamentAdminPanel() {
         Cierre inscripción
         <input type="datetime-local" className="form-input" value={form.registration_closes_at} onChange={(e) => setForm((f) => ({ ...f, registration_closes_at: e.target.value }))} />
       </label>
+      <label>
+        Costo inscripción (créditos)
+        <input type="number" className="form-input" min={0} step="0.01" value={form.entry_fee} onChange={(e) => setForm((f) => ({ ...f, entry_fee: e.target.value }))} />
+      </label>
+      <label>
+        Premio en efectivo (opcional, referencia)
+        <input className="form-input" value={form.prize_amount} onChange={(e) => setForm((f) => ({ ...f, prize_amount: e.target.value }))} />
+      </label>
+      <label className="checkbox-row">
+        <input type="checkbox" checked={form.is_paid} onChange={(e) => setForm((f) => ({ ...f, is_paid: e.target.checked }))} />
+        Marcar como torneo pago (informativo si costo = 0)
+      </label>
+      <label className="checkbox-row">
+        <input type="checkbox" checked={form.auto_checkin_enabled} onChange={(e) => setForm((f) => ({ ...f, auto_checkin_enabled: e.target.checked }))} />
+        Check-in automático por horario
+      </label>
+      <label className="checkbox-row">
+        <input type="checkbox" checked={form.auto_start_enabled} onChange={(e) => setForm((f) => ({ ...f, auto_start_enabled: e.target.checked }))} />
+        Inicio automático por horario
+      </label>
+      <label>
+        Minutos para listo (walkover)
+        <input type="number" className="form-input" min={1} max={60} value={form.ready_timeout_minutes} onChange={(e) => setForm((f) => ({ ...f, ready_timeout_minutes: e.target.value }))} />
+      </label>
     </div>
   );
 
@@ -503,6 +569,19 @@ export default function TournamentAdminPanel() {
                       <dt>Turno / reconexión</dt><dd>{detail.turn_seconds}s / {detail.reconnect_seconds}s</dd>
                       <dt>Inicio</dt><dd>{formatDate(detail.starts_at)}</dd>
                       <dt>Titulares / suplentes</dt><dd>{Number(detail.titular_count)} / {Number(detail.substitute_count)}</dd>
+                      <dt>Inscripción</dt>
+                      <dd>{Number(detail.entry_fee ?? 0) <= 0 ? 'Gratis' : `${detail.entry_fee} créditos`} {detail.is_paid ? '(marcado pago)' : ''}</dd>
+                      <dt>Auto check-in / inicio</dt>
+                      <dd>{detail.auto_checkin_enabled ? 'Sí' : 'No'} / {detail.auto_start_enabled ? 'Sí' : 'No'}</dd>
+                      <dt>Check-in cerrado</dt><dd>{formatDate(detail.checkin_closed_at)}</dd>
+                      <dt>Bracket generado</dt><dd>{formatDate(detail.bracket_generated_at)}</dd>
+                      <dt>Ready timeout (min)</dt><dd>{detail.ready_timeout_minutes ?? '—'}</dd>
+                      <dt>Máx. partidas campeón</dt>
+                      <dd>
+                        {Number(detail.max_players) > 1
+                          ? Math.ceil(Math.log2(Number(detail.max_players)))
+                          : '—'}
+                      </dd>
                       {detail.winner_username && (
                         <>
                           <dt>Campeón</dt>
@@ -530,7 +609,7 @@ export default function TournamentAdminPanel() {
                             <td>{row.position_number ?? '—'}</td>
                             <td>
                               <span className="admin-t-usercell">
-                                {row.avatar ? <img src={avatarUrl(row.avatar)} alt="" className="admin-t-av" /> : <span className="admin-t-av ph">{row.username?.[0]}</span>}
+                                <TrucoAvatar avatar={row.avatar} username={row.username} size={28} className="admin-t-av" />
                                 {row.username}
                               </span>
                             </td>
@@ -560,7 +639,7 @@ export default function TournamentAdminPanel() {
                             <td>{row.position_number ?? '—'}</td>
                             <td>
                               <span className="admin-t-usercell">
-                                {row.avatar ? <img src={avatarUrl(row.avatar)} alt="" className="admin-t-av" /> : <span className="admin-t-av ph">{row.username?.[0]}</span>}
+                                <TrucoAvatar avatar={row.avatar} username={row.username} size={28} className="admin-t-av" />
                                 {row.username}
                               </span>
                             </td>

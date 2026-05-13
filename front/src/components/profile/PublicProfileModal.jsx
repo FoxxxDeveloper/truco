@@ -1,167 +1,253 @@
 /**
- * PublicProfileModal — shows another user's public profile.
- *
- * Props:
- *   userId  number — the user to show
- *   onClose () => void
+ * PublicProfileModal — perfil público con estado de amistad (friendshipStatus desde API).
  */
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { motion } from 'framer-motion';
-import { X, Shield, ShieldCheck } from 'lucide-react';
+import {
+  X,
+  ShieldCheck,
+  Shield,
+  MessageCircle,
+  Swords,
+  UserPlus,
+  UserMinus,
+  Loader2,
+} from 'lucide-react';
 import { usersApi, socialApi } from '../../services/api';
 import toast from 'react-hot-toast';
+import { useAuth } from '../../context/AuthContext';
+import TrucoAvatar from '../avatar/TrucoAvatar';
 
-function AvatarBig({ username, avatar, size = 72 }) {
-  const [err, setErr] = useState(false);
-  const initials = (username || '?').slice(0, 2).toUpperCase();
-  const hue = [...(username || '')].reduce((a, c) => a + c.charCodeAt(0), 0) % 360;
-  if (avatar && !err) {
-    return (
-      <img
-        src={avatar}
-        alt={username}
-        onError={() => setErr(true)}
-        style={{ width: size, height: size, borderRadius: '50%', objectFit: 'cover', border: '3px solid var(--gold)', flexShrink: 0 }}
-      />
-    );
-  }
-  return (
-    <div style={{
-      width: size, height: size, borderRadius: '50%',
-      background: `hsl(${hue},48%,30%)`,
-      display: 'flex', alignItems: 'center', justifyContent: 'center',
-      fontSize: size * 0.36, fontWeight: 900, color: '#fff',
-      border: '3px solid var(--gold)', flexShrink: 0,
-      fontFamily: 'var(--font-display)',
-    }}>
-      {initials}
-    </div>
-  );
-}
+export default function PublicProfileModal({
+  userId,
+  onClose,
+  onStartChat,
+  onChallengeFriend,
+  onFriendshipChange,
+}) {
+  const { user: me } = useAuth();
+  const [profile, setProfile] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [acting, setActing] = useState(false);
 
-export default function PublicProfileModal({ userId, onClose }) {
-  const [profile, setProfile]     = useState(null);
-  const [loading, setLoading]     = useState(true);
-  const [adding, setAdding]       = useState(false);
-  const [friendSent, setFriendSent] = useState(false);
+  const loadProfile = useCallback(() => {
+    setLoading(true);
+    return usersApi
+      .getPublic(userId)
+      .then((res) => setProfile(res.data))
+      .catch(() => {
+        toast.error('No se pudo cargar el perfil');
+        onClose?.();
+      })
+      .finally(() => setLoading(false));
+  }, [userId, onClose]);
 
   useEffect(() => {
-    usersApi.getPublic(userId)
-      .then(res => setProfile(res.data))
-      .catch(() => toast.error('No se pudo cargar el perfil'))
-      .finally(() => setLoading(false));
-  }, [userId]);
+    loadProfile();
+  }, [loadProfile]);
+
+  const status = profile?.friendshipStatus || (Number(me?.id) === Number(userId) ? 'self' : 'none');
 
   const sendFriendReq = async () => {
-    setAdding(true);
+    setActing(true);
     try {
       await socialApi.sendFriendRequest(userId);
       toast.success('Solicitud enviada');
-      setFriendSent(true);
+      await loadProfile();
+      onFriendshipChange?.();
     } catch (err) {
       toast.error(err.response?.data?.error || 'Error al enviar solicitud');
     } finally {
-      setAdding(false);
+      setActing(false);
     }
+  };
+
+  const acceptIncoming = async () => {
+    setActing(true);
+    try {
+      await socialApi.acceptFriend(userId);
+      toast.success('¡Ahora son amigos!');
+      await loadProfile();
+      onFriendshipChange?.();
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Error al aceptar');
+    } finally {
+      setActing(false);
+    }
+  };
+
+  const rejectIncoming = async () => {
+    setActing(true);
+    try {
+      await socialApi.removeFriend(userId);
+      toast.success('Solicitud rechazada');
+      await loadProfile();
+      onFriendshipChange?.();
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Error');
+    } finally {
+      setActing(false);
+    }
+  };
+
+  const removeFriendship = async () => {
+    setActing(true);
+    try {
+      await socialApi.removeFriend(userId);
+      toast.success('Amigo eliminado');
+      await loadProfile();
+      onFriendshipChange?.();
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Error al eliminar');
+    } finally {
+      setActing(false);
+    }
+  };
+
+  const openChat = () => {
+    if (!profile) return;
+    onStartChat?.({ id: profile.id, username: profile.username, avatar: profile.avatar });
+    onClose?.();
+  };
+
+  const challenge = () => {
+    if (!profile) return;
+    onChallengeFriend?.({ id: profile.id, username: profile.username, avatar: profile.avatar });
+    onClose?.();
   };
 
   return (
     <motion.div
+      className="modal-overlay public-profile-overlay"
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       onClick={onClose}
-      style={{
-        position: 'fixed', inset: 0,
-        background: 'rgba(0,0,0,0.72)',
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        zIndex: 300, padding: 16,
-      }}
     >
       <motion.div
-        initial={{ scale: 0.9, y: 20 }}
+        className="modal-panel public-profile-modal"
+        initial={{ scale: 0.94, y: 16 }}
         animate={{ scale: 1, y: 0 }}
-        exit={{ scale: 0.9 }}
-        onClick={e => e.stopPropagation()}
-        style={{
-          background: 'linear-gradient(180deg, rgba(42,19,6,0.98), rgba(20,8,2,0.99))',
-          border: '1px solid rgba(246,196,83,0.32)',
-          borderRadius: 20, padding: 28,
-          width: 380, maxWidth: '100%',
-          position: 'relative',
-        }}
+        exit={{ scale: 0.94 }}
+        onClick={(e) => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="public-profile-title"
       >
-        <button
-          onClick={onClose}
-          style={{
-            position: 'absolute', top: 14, right: 14,
-            background: 'none', border: 'none', color: 'var(--text-muted)',
-            cursor: 'pointer', padding: 4,
-          }}
-        >
-          <X size={18} />
+        <button type="button" className="btn-close public-profile-close" onClick={onClose} aria-label="Cerrar">
+          <X size={18} aria-hidden />
         </button>
 
-        {loading && (
-          <div style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-muted)' }}>
-            Cargando…
-          </div>
-        )}
+        {loading && <p className="public-profile-loading">Cargando…</p>}
 
         {!loading && profile && (
           <>
-            {/* Header */}
-            <div style={{ display: 'flex', gap: 16, alignItems: 'center', marginBottom: 20 }}>
-              <AvatarBig username={profile.username} avatar={profile.avatar} size={72} />
-              <div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                  <h2 style={{ margin: 0, fontSize: 20, fontFamily: 'var(--font-display)', color: 'var(--gold)' }}>
+            <div className="public-profile-head">
+              <div className="brand-logo-clean public-profile-avatar-ring">
+                <TrucoAvatar username={profile.username} avatar={profile.avatar} size={72} className="public-profile-avatar-lg" />
+              </div>
+              <div className="public-profile-head-text">
+                <div className="public-profile-name-row">
+                  <h2 id="public-profile-title" className="public-profile-username">
                     {profile.username}
                   </h2>
                   {profile.identity_status === 'verified' ? (
-                    <ShieldCheck size={16} color="#22c55e" title="Identidad verificada" />
+                    <ShieldCheck className="public-profile-shield public-profile-shield--ok" size={18} aria-label="Identidad verificada" />
                   ) : (
-                    <Shield size={16} color="var(--text-muted)" title="No verificado" />
+                    <Shield className="public-profile-shield" size={18} aria-label="Identidad no verificada" />
                   )}
                 </div>
-                <div style={{ color: 'var(--text-muted)', fontSize: 13, marginTop: 4 }}>
-                  ELO {profile.elo}
-                </div>
+                <p className="public-profile-elo">ELO {profile.elo}</p>
               </div>
             </div>
 
-            {/* Bio */}
-            {profile.bio && (
-              <p style={{ color: 'var(--text-soft)', fontSize: 13, lineHeight: 1.65, marginBottom: 16 }}>
-                {profile.bio}
-              </p>
-            )}
+            {profile.bio && <p className="public-profile-bio">{profile.bio}</p>}
 
-            {/* Stats */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10, marginBottom: 20 }}>
-              {[
-                ['Victorias', profile.wins, 'var(--gold)'],
-                ['Derrotas',  profile.losses, '#ef4444'],
-                ['Winrate',   `${profile.winrate}%`, 'var(--text)'],
-              ].map(([label, val, color]) => (
-                <div key={label} style={{
-                  background: 'rgba(255,255,255,0.05)', borderRadius: 10, padding: '10px 8px', textAlign: 'center',
-                }}>
-                  <div style={{ color: 'var(--text-muted)', fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 4 }}>{label}</div>
-                  <div style={{ color, fontSize: 20, fontWeight: 900, fontFamily: 'var(--font-display)' }}>{val}</div>
-                </div>
-              ))}
+            <div className="public-profile-stats">
+              <div className="fx-card public-profile-stat">
+                <span className="public-profile-stat-label">Victorias</span>
+                <span className="public-profile-stat-value public-profile-stat-value--wins">{profile.wins}</span>
+              </div>
+              <div className="fx-card public-profile-stat">
+                <span className="public-profile-stat-label">Derrotas</span>
+                <span className="public-profile-stat-value public-profile-stat-value--losses">{profile.losses}</span>
+              </div>
+              <div className="fx-card public-profile-stat">
+                <span className="public-profile-stat-label">Win rate</span>
+                <span className="public-profile-stat-value">{profile.winrate != null ? `${profile.winrate}%` : '—'}</span>
+              </div>
             </div>
 
-            {/* Actions */}
-            <button
-              className="btn btn-primary"
-              style={{ width: '100%' }}
-              onClick={sendFriendReq}
-              disabled={adding || friendSent}
-            >
-              {friendSent ? '✓ Solicitud enviada' : adding ? 'Enviando…' : '+ Agregar amigo'}
-            </button>
+            <div className="public-profile-actions">
+              {status === 'self' && <p className="public-profile-self-note">Este es tu perfil</p>}
+
+              {status === 'friends' && (
+                <>
+                  <span className="fx-badge public-profile-friend-badge">Ya son amigos</span>
+                  <div className="public-profile-action-row">
+                    {onStartChat && (
+                      <button type="button" className="btn btn-primary btn-sm public-profile-action-btn" onClick={openChat}>
+                        <MessageCircle size={16} aria-hidden /> Chat
+                      </button>
+                    )}
+                    {typeof onChallengeFriend === 'function' && (
+                      <button type="button" className="btn btn-secondary btn-sm public-profile-action-btn" onClick={challenge}>
+                        <Swords size={16} aria-hidden /> Retar
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm public-profile-action-btn public-profile-action-btn--danger"
+                      onClick={removeFriendship}
+                      disabled={acting}
+                    >
+                      <UserMinus size={16} aria-hidden /> Quitar
+                    </button>
+                  </div>
+                </>
+              )}
+
+              {status === 'request_sent' && (
+                <button type="button" className="btn btn-secondary btn-block" disabled>
+                  Solicitud enviada
+                </button>
+              )}
+
+              {status === 'request_received' && (
+                <div className="public-profile-request-block">
+                  <p className="public-profile-request-lead">Te envió una solicitud de amistad</p>
+                  <div className="public-profile-action-row">
+                    <button type="button" className="btn btn-primary btn-sm" onClick={acceptIncoming} disabled={acting}>
+                      {acting ? <Loader2 className="spin" size={16} /> : 'Aceptar'}
+                    </button>
+                    <button type="button" className="btn btn-secondary btn-sm" onClick={rejectIncoming} disabled={acting}>
+                      Rechazar
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {status === 'none' && (
+                <button
+                  type="button"
+                  className="btn btn-primary btn-block public-profile-friend-btn"
+                  onClick={sendFriendReq}
+                  disabled={acting}
+                >
+                  {acting ? (
+                    <>
+                      <Loader2 className="spin" size={16} aria-hidden /> Enviando…
+                    </>
+                  ) : (
+                    <>
+                      <UserPlus size={16} aria-hidden /> Agregar amigo
+                    </>
+                  )}
+                </button>
+              )}
+
+              {status === 'blocked' && <p className="public-profile-muted">No disponible</p>}
+            </div>
           </>
         )}
       </motion.div>

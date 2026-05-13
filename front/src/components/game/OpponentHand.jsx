@@ -5,7 +5,7 @@ export default function OpponentHand({ cardCount }) {
   const cards = Array.from({ length: cardCount });
   return (
     <motion.div
-      className="opponent-hand"
+      className="opponent-hand opponent-zone game-opponent-zone"
       initial={{ y: -100, opacity: 0 }}
       animate={{ y: 0, opacity: 1 }}
       transition={{ delay: 0.2 }}

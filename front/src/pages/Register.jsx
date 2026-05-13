@@ -2,6 +2,8 @@ import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
+import BrandNavLockup from '../components/brand/BrandNavLockup';
+import wordmarkBwUrl from '../assets/panoramicobw.png';
 
 export default function Register() {
   const navigate = useNavigate();
@@ -56,81 +58,88 @@ export default function Register() {
   };
 
   return (
-    <main className="auth-page">
-      <section className="auth-card animate-pop-in">
-    
-        <div className="auth-logo">
-          <h1>TrucoFX</h1>
-          <p>Truco Argentino Online</p>
-          <p>Creá tu cuenta y empezá la partida</p>
+    <main className="auth-page auth-page--et6">
+      <img src={wordmarkBwUrl} className="fx-watermark-logo auth-watermark" alt="" aria-hidden />
+      <div className="page-shell auth-page-inner">
+        <div className="auth-layout">
+          <section className="fx-card auth-card auth-card--et6 animate-pop-in">
+            <div className="auth-card-head">
+              <BrandNavLockup size="auth" className="auth-brand-lockup" />
+              <p className="auth-lead">Creá tu cuenta y competí en partidas, rankings y torneos.</p>
+            </div>
+
+            <form className="auth-form" onSubmit={handleSubmit}>
+              <div className="auth-title">
+                <h2>Crear cuenta</h2>
+              </div>
+
+              <div className="form-group">
+                <label className="form-label" htmlFor="username">
+                  Usuario
+                </label>
+
+                <input
+                  id="username"
+                  className="form-input"
+                  type="text"
+                  name="username"
+                  placeholder="Ej: ZorritoxD"
+                  value={form.username}
+                  onChange={handleChange}
+                  autoComplete="username"
+                />
+              </div>
+
+              <div className="form-group">
+                <label className="form-label" htmlFor="email">
+                  Email
+                </label>
+
+                <input
+                  id="email"
+                  className="form-input"
+                  type="email"
+                  name="email"
+                  placeholder="tu@email.com"
+                  value={form.email}
+                  onChange={handleChange}
+                  autoComplete="email"
+                />
+              </div>
+
+              <div className="form-group">
+                <label className="form-label" htmlFor="password">
+                  Contraseña
+                </label>
+
+                <input
+                  id="password"
+                  className="form-input"
+                  type="password"
+                  name="password"
+                  placeholder="Mínimo 6 caracteres"
+                  value={form.password}
+                  onChange={handleChange}
+                  autoComplete="new-password"
+                />
+              </div>
+
+              <p className="auth-form-hint">Los avisos de error o éxito se muestran arriba de la pantalla.</p>
+
+              <button type="submit" className="btn btn-primary btn-block" disabled={loading}>
+                {loading ? 'Creando…' : 'Crear cuenta'}
+              </button>
+            </form>
+
+            <div className="auth-footer">
+              ¿Ya tenés cuenta?{' '}
+              <Link to="/login" className="auth-footer-link">
+                Iniciar sesión
+              </Link>
+            </div>
+          </section>
         </div>
-
-        <form className="auth-form" onSubmit={handleSubmit}>
-          <div className="auth-title">
-            <h2>Crear cuenta</h2>
-            <p>Jugá casual, ranking, amigos y retos con apuesta.</p>
-          </div>
-
-          <div className="form-group">
-            <label className="form-label" htmlFor="username">
-              Usuario
-            </label>
-
-            <input
-              id="username"
-              className="form-input"
-              type="text"
-              name="username"
-              placeholder="Ej: ZorritoxD"
-              value={form.username}
-              onChange={handleChange}
-              autoComplete="username"
-            />
-          </div>
-
-          <div className="form-group">
-            <label className="form-label" htmlFor="email">
-              Email
-            </label>
-
-            <input
-              id="email"
-              className="form-input"
-              type="email"
-              name="email"
-              placeholder="tu@email.com"
-              value={form.email}
-              onChange={handleChange}
-              autoComplete="email"
-            />
-          </div>
-
-          <div className="form-group">
-            <label className="form-label" htmlFor="password">
-              Contraseña
-            </label>
-
-            <input
-              id="password"
-              className="form-input"
-              type="password"
-              name="password"
-              placeholder="Mínimo 6 caracteres"
-              value={form.password}
-              onChange={handleChange}
-              autoComplete="new-password"
-            />
-          </div>
-
-          <button className="btn btn-gold btn-block" disabled={loading}>
-            {loading ? 'Creando...' : 'Crear cuenta'}
-          </button>
-        </form>
-
-        <div className="auth-footer">
-          ¿Ya tenés cuenta? <Link to="/login">Iniciar sesión</Link>
-        </div>
-      </section>
+      </div>
     </main>
   );
 }

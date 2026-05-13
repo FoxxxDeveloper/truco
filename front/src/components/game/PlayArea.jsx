@@ -6,7 +6,7 @@ import Card from './Card';
 
 export default function PlayArea({ playedCards, manoResults, currentMano, myId }) {
   return (
-    <div className="play-area">
+    <div className="play-area game-center-zone">
       {[0, 1, 2].map(manoIdx => {
         const cards = playedCards[manoIdx] || [];
         const result = manoResults[manoIdx];
@@ -31,7 +31,7 @@ export default function PlayArea({ playedCards, manoResults, currentMano, myId }
                   animate={{ scale: 1 }}
                   exit={{ scale: 0 }}
                 >
-                  {result === myId ? '✓ Ganaste' : '✗ Perdiste'}
+                  {result === myId ? 'Ganaste' : 'Perdiste'}
                 </motion.div>
               )}
               {result === null && manoResults.length > manoIdx && (

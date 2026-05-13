@@ -4,7 +4,11 @@ const { query } = require('../config/database');
 function normalizeRow(r) {
   return {
     id:         r.id,
-    from:       { id: r.sender_id },
+    from:       {
+      id:       r.sender_id,
+      username: r.sender_username || null,
+      avatar:   r.sender_avatar || null,
+    },
     to:         { id: r.receiver_id },
     text:       r.content,
     // backward-compat aliases
@@ -42,19 +46,20 @@ const Message = {
    * Conversation between two users, oldest-first (correct chat order).
    */
   async getConversation(userId1, userId2, { limit = 50, before = null } = {}) {
-    limit = Math.min(Math.max(parseInt(limit) || 50, 1), 100);
+    const safeLimit = Math.min(Math.max(Math.floor(Number(limit)) || 50, 1), 100);
     const params = [userId1, userId2, userId2, userId1];
     let sql = `
-      SELECT id, sender_id, receiver_id, content, read_at, created_at
-      FROM private_messages
-      WHERE (sender_id = ? AND receiver_id = ?)
-         OR (sender_id = ? AND receiver_id = ?)`;
+      SELECT pm.id, pm.sender_id, pm.receiver_id, pm.content, pm.read_at, pm.created_at,
+             su.username AS sender_username, su.avatar AS sender_avatar
+      FROM private_messages pm
+      JOIN usuarios su ON su.id = pm.sender_id
+      WHERE (pm.sender_id = ? AND pm.receiver_id = ?)
+         OR (pm.sender_id = ? AND pm.receiver_id = ?)`;
     if (before) {
-      sql += ' AND id < ?';
+      sql += ' AND pm.id < ?';
       params.push(parseInt(before));
     }
-    sql += ' ORDER BY created_at DESC LIMIT ?';
-    params.push(limit);
+    sql += ` ORDER BY created_at DESC LIMIT ${safeLimit}`;
     const rows = await query(sql, params);
     // Reverse so oldest message is first (correct chronological display)
     return rows.reverse().map(normalizeRow);

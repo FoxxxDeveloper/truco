@@ -71,7 +71,7 @@ function registerSocialHandlers(io, socket, user) {
       // ── Unified payload ──
       const payload = {
         id:        msg.id,
-        from:      { id: user.id, username: user.username },
+        from:      { id: user.id, username: user.username, avatar: user.avatar || null },
         to:        { id: receiverId },
         text:      trimmed,
         createdAt: msg.created_at,

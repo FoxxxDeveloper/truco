@@ -38,6 +38,8 @@ const USER_ERRORS = [
   'Ya estás inscripto',
   'No estás inscripto',
   'El check-in no está abierto',
+  'El torneo aún no inició oficialmente',
+  'No podés cancelar listo',
 ];
 
 function _emitTournamentError(socket, message) {
@@ -130,6 +132,40 @@ function registerTournamentHandlers(io, socket, user) {
       );
     }
   });
+
+  // ── tournament:matchUnready ───────────────────────────────────────────────
+  socket.on('tournament:matchUnready', async (payload) => {
+    try {
+      const { tournamentId, matchId } = payload || {};
+      if (!tournamentId || !matchId) {
+        return _emitTournamentError(socket, 'Datos incompletos: se requieren tournamentId y matchId');
+      }
+
+      await TournamentService.unsetPlayerReady(
+        Number(tournamentId),
+        Number(matchId),
+        user.id
+      );
+
+      io.to(`tournament:${tournamentId}`).emit('tournament:playerReady', {
+        tournamentId: Number(tournamentId),
+        matchId:      Number(matchId),
+        userId:       user.id,
+        bothReady:    false,
+        unready:      true,
+      });
+
+      io.to(`tournament:${tournamentId}`).emit('tournament:updated', {
+        tournamentId: Number(tournamentId),
+      });
+    } catch (err) {
+      logger.error(`tournament:matchUnready user=${user.id}: ${err.message}`);
+      _emitTournamentError(
+        socket,
+        _isUserError(err.message) ? err.message : 'Error al cancelar listo'
+      );
+    }
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -203,8 +239,16 @@ async function startTournamentMatch(io, matchId) {
   );
   game.startGame();
 
-  // 6. Marcar match como active en DB y persistir partida
-  await TournamentService.markMatchActive(matchId, roomId);
+  // 6. Persistir room en DB de forma atómica (evita dos partidas por carrera socket/scheduler)
+  const claimed = await TournamentService.claimMatchActive(matchId, roomId);
+  if (!claimed) {
+    try {
+      await gameSession.deleteGame(roomId);
+    } catch (err) {
+      logger.warn(`Tournament match ${matchId}: cleanup game ${roomId}: ${err.message}`);
+    }
+    return;
+  }
 
   try {
     await Game.create({

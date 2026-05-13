@@ -10,57 +10,59 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
+import { ShieldCheck } from 'lucide-react';
 import { verificationApi } from '../services/api';
+import AppHeader from '../components/layout/AppHeader';
 
 const DOC_TYPES = [
-  { value: 'dni',      label: 'DNI' },
+  { value: 'dni', label: 'DNI' },
   { value: 'passport', label: 'Pasaporte' },
-  { value: 'cuit',     label: 'CUIT / CUIL' },
-  { value: 'other',    label: 'Otro' },
+  { value: 'cuit', label: 'CUIT / CUIL' },
+  { value: 'other', label: 'Otro' },
 ];
 
-const STATUS_LABELS = {
-  unverified: { label: 'No verificado',          color: '#9ca3af' },
-  pending:    { label: 'Pendiente de revisión',   color: '#f59e0b' },
-  verified:   { label: 'Identidad verificada',    color: '#22c55e' },
-  rejected:   { label: 'Verificación rechazada',  color: '#ef4444' },
+const STATUS_META = {
+  unverified: { label: 'No verificado', mod: 'verification-status--unverified' },
+  pending: { label: 'Pendiente de revisión', mod: 'verification-status--pending' },
+  verified: { label: 'Identidad verificada', mod: 'verification-status--verified' },
+  rejected: { label: 'Verificación rechazada', mod: 'verification-status--rejected' },
 };
 
 const INITIAL_FORM = {
   legal_first_name: '',
-  legal_last_name:  '',
-  date_of_birth:    '',
-  document_type:    'dni',
-  document_number:  '',
-  country:          'Argentina',
-  province:         '',
-  confirm_adult:    false,
+  legal_last_name: '',
+  date_of_birth: '',
+  document_type: 'dni',
+  document_number: '',
+  country: 'Argentina',
+  province: '',
+  confirm_adult: false,
 };
 
 export default function VerificationPage() {
   const navigate = useNavigate();
-  const [status, setStatus]   = useState(null);
+  const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
-  const [form, setForm]       = useState(INITIAL_FORM);
+  const [form, setForm] = useState(INITIAL_FORM);
   const [showForm, setShowForm] = useState(false);
 
   useEffect(() => {
-    verificationApi.getStatus()
-      .then(res => {
+    verificationApi
+      .getStatus()
+      .then((res) => {
         setStatus(res.data);
-        // Pre-fill form if resubmitting after rejection
         if (res.data.identity_status === 'rejected' || res.data.identity_status === 'unverified') {
           setShowForm(true);
           if (res.data.legal_first_name) {
-            setForm(f => ({
+            setForm((f) => ({
               ...f,
               legal_first_name: res.data.legal_first_name || '',
-              legal_last_name:  res.data.legal_last_name  || '',
-              date_of_birth:    res.data.date_of_birth ? res.data.date_of_birth.substring(0, 10) : '',
-              document_type:    res.data.document_type  || 'dni',
-              country:          res.data.country   || 'Argentina',
-              province:         res.data.province  || '',
+              legal_last_name: res.data.legal_last_name || '',
+              date_of_birth: res.data.date_of_birth ? res.data.date_of_birth.substring(0, 10) : '',
+              document_type: res.data.document_type || 'dni',
+              country: res.data.country || 'Argentina',
+              province: res.data.province || '',
             }));
           }
         }
@@ -71,7 +73,7 @@ export default function VerificationPage() {
 
   const handleChange = (e) => {
     const { name, value, type, checked } = e.target;
-    setForm(f => ({ ...f, [name]: type === 'checkbox' ? checked : value }));
+    setForm((f) => ({ ...f, [name]: type === 'checkbox' ? checked : value }));
   };
 
   const handleSubmit = async (e) => {
@@ -84,15 +86,14 @@ export default function VerificationPage() {
     try {
       await verificationApi.submit({
         legal_first_name: form.legal_first_name,
-        legal_last_name:  form.legal_last_name,
-        date_of_birth:    form.date_of_birth,
-        document_type:    form.document_type,
-        document_number:  form.document_number,
-        country:          form.country,
-        province:         form.province,
+        legal_last_name: form.legal_last_name,
+        date_of_birth: form.date_of_birth,
+        document_type: form.document_type,
+        document_number: form.document_number,
+        country: form.country,
+        province: form.province,
       });
       toast.success('Verificación enviada. Te avisamos cuando sea revisada.');
-      // Refresh status
       const res = await verificationApi.getStatus();
       setStatus(res.data);
       setShowForm(false);
@@ -105,178 +106,226 @@ export default function VerificationPage() {
 
   if (loading) {
     return (
-      <div style={styles.page}>
-        <p style={{ color: '#9ca3af', textAlign: 'center', padding: 40 }}>Cargando…</p>
+      <div className="verification-page page-shell">
+        <AppHeader />
+        <p className="verification-loading">Cargando…</p>
       </div>
     );
   }
 
   const identity_status = status?.identity_status || 'unverified';
-  const statusInfo = STATUS_LABELS[identity_status] || STATUS_LABELS.unverified;
+  const statusInfo = STATUS_META[identity_status] || STATUS_META.unverified;
 
   return (
-    <div style={styles.page}>
-      <div style={styles.card}>
-        {/* Header */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 24 }}>
-          <button onClick={() => navigate(-1)} style={styles.backBtn}>← Volver</button>
-          <h1 style={styles.title}>Verificación de identidad</h1>
-        </div>
+    <div className="verification-page page-shell">
+      <AppHeader />
+      <header className="verification-page-header verification-page-header--compact">
+        <button type="button" className="btn btn-ghost btn-sm" onClick={() => navigate(-1)}>
+          ← Volver
+        </button>
+      </header>
 
-        {/* Status badge */}
-        <div style={{ ...styles.statusBadge, borderColor: statusInfo.color }}>
-          <span style={{ ...styles.statusDot, background: statusInfo.color }} />
-          <span style={{ color: statusInfo.color, fontWeight: 700 }}>{statusInfo.label}</span>
-        </div>
-
-        {/* ── VERIFIED ── */}
-        {identity_status === 'verified' && (
-          <div style={styles.successBox}>
-            <p style={{ fontSize: 16, fontWeight: 700, color: '#22c55e', margin: '0 0 6px' }}>
-              ✓ Identidad verificada
+      <div className="fx-card verification-page-card">
+        <div className="verification-page-title-block">
+          <div className="verification-title-icon-wrap" aria-hidden>
+            <ShieldCheck className="verification-title-icon" size={26} />
+          </div>
+          <div>
+            <h1 className="verification-page-title">Verificación de identidad</h1>
+            <p className="verification-page-lead">
+              Necesitamos verificar identidad y mayoría de edad para participar en torneos y batallas competitivas.
             </p>
-            <p style={{ color: '#9ca3af', fontSize: 14, margin: 0 }}>
+          </div>
+        </div>
+
+        <div className={`fx-badge verification-status-pill ${statusInfo.mod}`.trim()}>
+          <span className="verification-status-dot" aria-hidden />
+          <span>{statusInfo.label}</span>
+        </div>
+
+        {identity_status === 'verified' && (
+          <div className="verification-status-card verification-status-card--ok">
+            <p className="verification-status-card-title">Identidad verificada</p>
+            <p className="verification-status-card-text">
               Podés participar en batallas competitivas y usar todas las funciones de créditos.
             </p>
             {status.legal_first_name && (
-              <p style={{ color: '#d1d5db', fontSize: 13, marginTop: 12 }}>
-                Nombre verificado: <strong>{status.legal_first_name} {status.legal_last_name}</strong>
+              <p className="verification-status-card-foot">
+                Nombre verificado:{' '}
+                <strong>
+                  {status.legal_first_name} {status.legal_last_name}
+                </strong>
               </p>
             )}
           </div>
         )}
 
-        {/* ── PENDING ── */}
         {identity_status === 'pending' && (
-          <div style={styles.pendingBox}>
-            <p style={{ fontSize: 15, fontWeight: 700, color: '#f59e0b', margin: '0 0 6px' }}>
-              Revisión pendiente
-            </p>
-            <p style={{ color: '#9ca3af', fontSize: 14, margin: 0 }}>
-              Tu solicitud está siendo revisada por el equipo. Te notificaremos cuando esté lista.
+          <div className="verification-status-card verification-status-card--pending">
+            <p className="verification-status-card-title">Revisión pendiente</p>
+            <p className="verification-status-card-text">
+              Tu solicitud está siendo revisada por el equipo. Te notificaremos cuando esté lista. Los datos no se pueden
+              editar mientras dure la revisión.
             </p>
           </div>
         )}
 
-        {/* ── REJECTED ── */}
         {identity_status === 'rejected' && (
-          <div style={styles.rejectedBox}>
-            <p style={{ fontSize: 15, fontWeight: 700, color: '#ef4444', margin: '0 0 6px' }}>
-              Verificación rechazada
-            </p>
+          <div className="verification-status-card verification-status-card--reject">
+            <p className="verification-status-card-title">Verificación rechazada</p>
             {status.rejection_reason && (
-              <p style={{ color: '#fca5a5', fontSize: 13, marginTop: 4 }}>
-                Motivo: {status.rejection_reason}
+              <p className="verification-reject-reason">
+                <span className="verification-reject-label">Motivo:</span> {status.rejection_reason}
               </p>
             )}
-            <p style={{ color: '#9ca3af', fontSize: 13, marginTop: 8 }}>
-              Corregí los datos y volvé a enviar tu solicitud.
-            </p>
+            <p className="verification-status-card-text">Corregí los datos y volvé a enviar tu solicitud.</p>
           </div>
         )}
 
-        {/* ── FORM (unverified or rejected) ── */}
         {showForm && (identity_status === 'unverified' || identity_status === 'rejected') && (
-          <form onSubmit={handleSubmit} style={{ marginTop: 24 }}>
-            <p style={styles.sectionLabel}>Datos personales</p>
+          <form className="verification-form" onSubmit={handleSubmit}>
+            <p className="verification-form-section-label">Datos personales</p>
 
-            <div style={styles.row}>
-              <label style={styles.label}>Nombre legal *</label>
-              <input
-                name="legal_first_name" value={form.legal_first_name}
-                onChange={handleChange} required maxLength={100}
-                placeholder="Como figura en tu documento"
-                style={styles.input}
-              />
+            <div className="verification-form-grid">
+              <div className="form-group">
+                <label className="form-label" htmlFor="legal_first_name">
+                  Nombre legal *
+                </label>
+                <input
+                  id="legal_first_name"
+                  className="form-input"
+                  name="legal_first_name"
+                  value={form.legal_first_name}
+                  onChange={handleChange}
+                  required
+                  maxLength={100}
+                  placeholder="Como figura en tu documento"
+                />
+              </div>
+
+              <div className="form-group">
+                <label className="form-label" htmlFor="legal_last_name">
+                  Apellido legal *
+                </label>
+                <input
+                  id="legal_last_name"
+                  className="form-input"
+                  name="legal_last_name"
+                  value={form.legal_last_name}
+                  onChange={handleChange}
+                  required
+                  maxLength={100}
+                  placeholder="Como figura en tu documento"
+                />
+              </div>
+
+              <div className="form-group">
+                <label className="form-label" htmlFor="date_of_birth">
+                  Fecha de nacimiento *
+                </label>
+                <input
+                  id="date_of_birth"
+                  className="form-input"
+                  name="date_of_birth"
+                  value={form.date_of_birth}
+                  onChange={handleChange}
+                  required
+                  type="date"
+                  max={new Date().toISOString().split('T')[0]}
+                />
+              </div>
+
+              <div className="form-group">
+                <label className="form-label" htmlFor="document_type">
+                  Tipo de documento *
+                </label>
+                <select
+                  id="document_type"
+                  className="form-input"
+                  name="document_type"
+                  value={form.document_type}
+                  onChange={handleChange}
+                >
+                  {DOC_TYPES.map((d) => (
+                    <option key={d.value} value={d.value}>
+                      {d.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="form-group verification-form-span-2">
+                <label className="form-label" htmlFor="document_number">
+                  Número de documento *
+                </label>
+                <input
+                  id="document_number"
+                  className="form-input"
+                  name="document_number"
+                  value={form.document_number}
+                  onChange={handleChange}
+                  required
+                  maxLength={50}
+                  placeholder="Sin puntos ni guiones"
+                />
+              </div>
+
+              <div className="form-group">
+                <label className="form-label" htmlFor="country">
+                  País *
+                </label>
+                <input
+                  id="country"
+                  className="form-input"
+                  name="country"
+                  value={form.country}
+                  onChange={handleChange}
+                  required
+                  maxLength={50}
+                />
+              </div>
+
+              <div className="form-group">
+                <label className="form-label" htmlFor="province">
+                  Provincia / Estado
+                </label>
+                <input
+                  id="province"
+                  className="form-input"
+                  name="province"
+                  value={form.province}
+                  onChange={handleChange}
+                  maxLength={50}
+                />
+              </div>
             </div>
 
-            <div style={styles.row}>
-              <label style={styles.label}>Apellido legal *</label>
+            <div className="verification-checkbox-row">
               <input
-                name="legal_last_name" value={form.legal_last_name}
-                onChange={handleChange} required maxLength={100}
-                placeholder="Como figura en tu documento"
-                style={styles.input}
+                type="checkbox"
+                name="confirm_adult"
+                checked={form.confirm_adult}
+                onChange={handleChange}
+                id="confirm_adult"
+                className="verification-checkbox"
               />
-            </div>
-
-            <div style={styles.row}>
-              <label style={styles.label}>Fecha de nacimiento *</label>
-              <input
-                name="date_of_birth" value={form.date_of_birth}
-                onChange={handleChange} required type="date"
-                max={new Date().toISOString().split('T')[0]}
-                style={styles.input}
-              />
-            </div>
-
-            <div style={styles.row}>
-              <label style={styles.label}>Tipo de documento *</label>
-              <select name="document_type" value={form.document_type} onChange={handleChange} style={styles.input}>
-                {DOC_TYPES.map(d => <option key={d.value} value={d.value}>{d.label}</option>)}
-              </select>
-            </div>
-
-            <div style={styles.row}>
-              <label style={styles.label}>Número de documento *</label>
-              <input
-                name="document_number" value={form.document_number}
-                onChange={handleChange} required maxLength={50}
-                placeholder="Sin puntos ni guiones"
-                style={styles.input}
-              />
-            </div>
-
-            <div style={styles.row}>
-              <label style={styles.label}>País *</label>
-              <input
-                name="country" value={form.country}
-                onChange={handleChange} required maxLength={50}
-                style={styles.input}
-              />
-            </div>
-
-            <div style={styles.row}>
-              <label style={styles.label}>Provincia / Estado</label>
-              <input
-                name="province" value={form.province}
-                onChange={handleChange} maxLength={50}
-                style={styles.input}
-              />
-            </div>
-
-            <div style={{ ...styles.row, flexDirection: 'row', alignItems: 'flex-start', gap: 10 }}>
-              <input
-                type="checkbox" name="confirm_adult" checked={form.confirm_adult}
-                onChange={handleChange} id="confirm_adult"
-                style={{ marginTop: 3, flexShrink: 0, accentColor: '#f59e0b' }}
-              />
-              <label htmlFor="confirm_adult" style={{ color: '#d1d5db', fontSize: 13, cursor: 'pointer' }}>
+              <label htmlFor="confirm_adult" className="verification-checkbox-label">
                 Confirmo que soy mayor de 18 años y que los datos ingresados son reales y corresponden a mi identidad.
               </label>
             </div>
 
-            <button
-              type="submit"
-              disabled={submitting || !form.confirm_adult}
-              style={{
-                ...styles.submitBtn,
-                opacity: (submitting || !form.confirm_adult) ? 0.5 : 1,
-                cursor:  (submitting || !form.confirm_adult) ? 'not-allowed' : 'pointer',
-              }}
-            >
+            <button type="submit" className="btn btn-primary btn-block verification-submit" disabled={submitting || !form.confirm_adult}>
               {submitting ? 'Enviando…' : 'Enviar solicitud de verificación'}
             </button>
           </form>
         )}
 
-        {/* Show form button if unverified but form not showing */}
         {identity_status === 'unverified' && !showForm && (
-          <div style={{ textAlign: 'center', marginTop: 24 }}>
-            <p style={{ color: '#9ca3af', fontSize: 14, marginBottom: 16 }}>
-              Para participar en batallas competitivas necesitás verificar tu identidad y mayoría de edad.
+          <div className="verification-start-block">
+            <p className="verification-start-text">
+              Para participar en torneos y batallas competitivas necesitás completar este paso.
             </p>
-            <button onClick={() => setShowForm(true)} style={styles.submitBtn}>
+            <button type="button" className="btn btn-primary verification-start-btn" onClick={() => setShowForm(true)}>
               Iniciar verificación
             </button>
           </div>
@@ -285,112 +334,3 @@ export default function VerificationPage() {
     </div>
   );
 }
-
-const styles = {
-  page: {
-    minHeight: '100vh',
-    background: 'var(--bg, #0f1923)',
-    display: 'flex',
-    justifyContent: 'center',
-    alignItems: 'flex-start',
-    padding: '40px 16px',
-  },
-  card: {
-    background: 'var(--bg-card, #1e2a3a)',
-    border: '1px solid rgba(255,255,255,0.08)',
-    borderRadius: 16,
-    padding: 32,
-    width: '100%',
-    maxWidth: 520,
-  },
-  title: {
-    color: '#fff',
-    fontSize: 20,
-    fontWeight: 700,
-    margin: 0,
-  },
-  backBtn: {
-    background: 'none',
-    border: 'none',
-    color: '#9ca3af',
-    cursor: 'pointer',
-    fontSize: 14,
-    padding: 0,
-    flexShrink: 0,
-  },
-  statusBadge: {
-    display: 'inline-flex',
-    alignItems: 'center',
-    gap: 8,
-    border: '1px solid',
-    borderRadius: 20,
-    padding: '6px 14px',
-    marginBottom: 20,
-  },
-  statusDot: {
-    width: 8,
-    height: 8,
-    borderRadius: '50%',
-    flexShrink: 0,
-  },
-  successBox: {
-    background: 'rgba(34,197,94,0.08)',
-    border: '1px solid rgba(34,197,94,0.25)',
-    borderRadius: 12,
-    padding: 16,
-  },
-  pendingBox: {
-    background: 'rgba(245,158,11,0.08)',
-    border: '1px solid rgba(245,158,11,0.25)',
-    borderRadius: 12,
-    padding: 16,
-  },
-  rejectedBox: {
-    background: 'rgba(239,68,68,0.08)',
-    border: '1px solid rgba(239,68,68,0.25)',
-    borderRadius: 12,
-    padding: 16,
-  },
-  sectionLabel: {
-    color: '#f59e0b',
-    fontSize: 12,
-    fontWeight: 700,
-    textTransform: 'uppercase',
-    letterSpacing: '0.06em',
-    marginBottom: 16,
-  },
-  row: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 4,
-    marginBottom: 14,
-  },
-  label: {
-    color: '#9ca3af',
-    fontSize: 12,
-    fontWeight: 600,
-  },
-  input: {
-    background: '#243447',
-    border: '1px solid #374151',
-    borderRadius: 8,
-    color: '#fff',
-    padding: '9px 12px',
-    fontSize: 14,
-    outline: 'none',
-    width: '100%',
-    boxSizing: 'border-box',
-  },
-  submitBtn: {
-    width: '100%',
-    background: '#f59e0b',
-    color: '#0f1923',
-    border: 'none',
-    borderRadius: 10,
-    padding: '12px 20px',
-    fontWeight: 700,
-    fontSize: 15,
-    cursor: 'pointer',
-    marginTop: 8,
-  },
-};

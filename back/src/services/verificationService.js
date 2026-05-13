@@ -258,6 +258,42 @@ const VerificationService = {
 
     return { ok: true };
   },
+
+  /**
+   * Same rules as requireVerifiedAdult, but copy tuned for tournaments (inscripción).
+   */
+  async requireVerifiedForTournaments(userId) {
+    const rows = await query(
+      'SELECT identity_status, age_verified, date_of_birth FROM user_verifications WHERE user_id = ?',
+      [userId]
+    );
+
+    if (!rows.length || rows[0].identity_status === 'unverified') {
+      throw new Error('Necesitás verificar tu identidad para inscribirte a torneos.');
+    }
+
+    const v = rows[0];
+
+    if (v.identity_status === 'pending') {
+      throw new Error('Tu verificación está pendiente de revisión. No podés inscribirte a torneos hasta que un administrador la apruebe.');
+    }
+    if (v.identity_status === 'rejected') {
+      throw new Error('Tu verificación fue rechazada. Corregí los datos y volvé a enviarla para poder inscribirte a torneos.');
+    }
+    if (v.identity_status !== 'verified') {
+      throw new Error('Necesitás verificar tu identidad para inscribirte a torneos.');
+    }
+    if (!v.age_verified) {
+      throw new Error('Tu edad no ha sido verificada. No podés inscribirte a torneos hasta completar la verificación.');
+    }
+
+    const age = calcAge(v.date_of_birth);
+    if (age !== null && age < 18) {
+      throw new Error('Solo pueden inscribirse a torneos usuarios mayores de 18 años.');
+    }
+
+    return { ok: true };
+  },
 };
 
 module.exports = VerificationService;

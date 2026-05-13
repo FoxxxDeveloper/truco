@@ -77,7 +77,8 @@ function registerBattleHandlers(io, socket, user) {
       const creatorId = b.creator_id;
       const opponentId = b.opponent_id;
       const amount    = parseFloat(b.amount);
-      const prize     = parseFloat(b.prize_amount);
+      const prizeRaw  = parseFloat(b.prize_amount);
+      const prize     = Number.isFinite(prizeRaw) ? prizeRaw : 0;
       const gameConfig = typeof b.game_config === 'string'
         ? JSON.parse(b.game_config)
         : (b.game_config || {});
@@ -119,10 +120,12 @@ function registerBattleHandlers(io, socket, user) {
  * Crea el gameSession, persiste en DB, une los sockets y emite game:start a ambos.
  */
 async function _startBattleMatch(io, { battleId, roomId, creatorId, opponentId, amount, prize, gameConfig }) {
+  const isCasual =
+    gameConfig?.modo === 'casual' || gameConfig?.friendChallengeMode === 'classic';
   const config = {
     puntosMaximos:      gameConfig?.puntosMaximos ?? 30,
     florHabilitada:     gameConfig?.florHabilitada ?? false,
-    modo:               'apuesta',
+    modo:               isCasual ? 'casual' : 'apuesta',
     turnTimeoutSecs:    gameConfig?.turnTimeoutSecs ?? 30,
     reconnectGraceSecs: gameConfig?.reconnectGraceSecs ?? 60,
   };

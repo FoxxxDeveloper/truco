@@ -9,33 +9,55 @@
  */
 import { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
+import {
+  ArrowDownCircle,
+  ArrowUpCircle,
+  Trophy,
+  MinusCircle,
+  RotateCcw,
+  Percent,
+  Lock,
+  Settings,
+  Clock,
+  CheckCircle,
+  XCircle,
+  Ban,
+  Coins,
+} from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useAuth } from '../../context/AuthContext';
 import { walletApi } from '../../services/api';
 
 const TABS = [
-  { id: 'balance',  label: '💰 Saldo'    },
-  { id: 'history',  label: '📋 Historial' },
-  { id: 'deposit',  label: '➕ Depositar' },
-  { id: 'withdraw', label: '➖ Retirar'   },
+  { id: 'balance', label: 'Saldo' },
+  { id: 'history', label: 'Historial' },
+  { id: 'deposit', label: 'Depósito' },
+  { id: 'withdraw', label: 'Retiro' },
 ];
 
 // ── Tx metadata ──────────────────────────────────────────────────────────────
 const TX_META = {
-  deposit:    { label: 'Depósito acreditado', icon: '⬆️', sign: +1 },
-  withdrawal: { label: 'Retiro',               icon: '⬇️', sign: -1 },
-  bet_lock:   { label: 'Apuesta bloqueada',    icon: '🔒', sign: -1 },
-  bet_refund: { label: 'Apuesta devuelta',     icon: '↩️', sign: +1 },
-  bet_win:    { label: 'Premio ganado',         icon: '🏆', sign: +1 },
-  bet_loss:   { label: 'Apuesta perdida',       icon: '💀', sign:  0 },
-  commission: { label: 'Comisión',              icon: '🏛️', sign: -1 },
-  adjustment: { label: 'Ajuste',                icon: '⚙️', sign: +1 },
+  deposit: { label: 'Depósito acreditado', Icon: ArrowDownCircle, sign: +1 },
+  withdrawal: { label: 'Retiro', Icon: ArrowUpCircle, sign: -1 },
+  bet_lock: { label: 'Apuesta bloqueada', Icon: Lock, sign: -1 },
+  bet_refund: { label: 'Reembolso / devolución', Icon: RotateCcw, sign: +1 },
+  bet_win: { label: 'Premio (batalla)', Icon: Trophy, sign: +1 },
+  bet_loss: { label: 'Pérdida de apuesta', Icon: MinusCircle, sign: -1 },
+  commission: { label: 'Comisión', Icon: Percent, sign: -1 },
+  adjustment: { label: 'Ajuste', Icon: Settings, sign: +1 },
+  tournament_entry: { label: 'Inscripción torneo', Icon: MinusCircle, sign: -1 },
+  tournament_prize: { label: 'Premio torneo', Icon: Trophy, sign: +1 },
+  tournament_refund: { label: 'Reembolso torneo', Icon: RotateCcw, sign: +1 },
+  prize: { label: 'Premio', Icon: Trophy, sign: +1 },
+  refund: { label: 'Reembolso', Icon: RotateCcw, sign: +1 },
 };
 
-const STATUS_COLOR = {
-  pending:   '#f59e0b',
-  cancelled: '#94a3b8',
-  completed: '#4ade80',
+const STATUS_META = {
+  pending: { colorClass: 'wallet-tx-status--pending', label: 'pendiente', Icon: Clock },
+  completed: { colorClass: 'wallet-tx-status--completed', label: 'completado', Icon: CheckCircle },
+  cancelled: { colorClass: 'wallet-tx-status--cancelled', label: 'cancelado', Icon: Ban },
+  failed: { colorClass: 'wallet-tx-status--failed', label: 'fallido', Icon: XCircle },
+  rejected: { colorClass: 'wallet-tx-status--rejected', label: 'rechazado', Icon: XCircle },
 };
 
 function fmtDate(dt) {
@@ -48,12 +70,12 @@ function fmtDate(dt) {
 // ── Balance tab ───────────────────────────────────────────────────────────────
 function BalanceView({ wallet }) {
   if (!wallet) return <p className="wp-loading">Cargando...</p>;
-  const available       = parseFloat(wallet.balance || 0);
+  const available = parseFloat(wallet.balance || 0);
   const pendingWithdraw = parseFloat(wallet.pendingWithdrawal || 0);
-  const inGame          = Math.max(0, parseFloat(wallet.reserved || 0) - pendingWithdraw);
+  const inGame = Math.max(0, parseFloat(wallet.reserved || 0) - pendingWithdraw);
 
   const Card = ({ label, value, cls, note }) => (
-    <div className={`wp-balance-card ${cls}`}>
+    <div className={`wallet-balance-card wp-balance-card ${cls} fx-card`}>
       <span className="wp-card-label">{label}</span>
       <span className="wp-card-value">{value.toLocaleString('es-AR')} cr</span>
       {note && <span className="wp-card-note">{note}</span>}
@@ -61,14 +83,24 @@ function BalanceView({ wallet }) {
   );
 
   return (
-    <div className="wp-balance-view">
-      <Card label="Saldo disponible"      value={available}       cls="available" note="1 crédito = $1 ARS" />
-      {inGame > 0 && (
-        <Card label="En juego / bloqueado" value={inGame}          cls="ingame"    note="Liberado al terminar la partida" />
-      )}
-      {pendingWithdraw > 0 && (
-        <Card label="Pendiente de retiro"  value={pendingWithdraw} cls="pending-w" note="El admin procesará tu solicitud pronto" />
-      )}
+    <div className="wallet-balance-grid wp-balance-view">
+      <Card label="Saldo disponible" value={available} cls="available" note="1 crédito = $1 ARS" />
+      <Card
+        label="Créditos en juego / bloqueados"
+        value={inGame}
+        cls="ingame"
+        note={inGame > 0 ? 'Se liberan al terminar la partida o la operación.' : 'Sin fondos retenidos en partidas.'}
+      />
+      <Card
+        label="Pendiente de retiro"
+        value={pendingWithdraw}
+        cls="pending-w"
+        note={
+          pendingWithdraw > 0
+            ? 'Reservado hasta que se procese o canceles el retiro.'
+            : 'Sin retiros pendientes.'
+        }
+      />
     </div>
   );
 }
@@ -76,54 +108,61 @@ function BalanceView({ wallet }) {
 // ── History tab ───────────────────────────────────────────────────────────────
 function HistoryView({ transactions, loading, onCancelWithdraw }) {
   if (loading) return <p className="wp-loading">Cargando...</p>;
-  if (!transactions.length) return <p className="wp-empty">Sin transacciones aún.</p>;
+  if (!transactions.length) return <p className="wp-empty">Sin movimientos aún.</p>;
 
   return (
-    <div className="wp-tx-list">
-      {transactions.map(tx => {
-        const meta   = TX_META[tx.type] || { label: tx.type, icon: '💸', sign: +1 };
+    <div className="wp-tx-list wallet-history-list">
+      {transactions.map((tx) => {
+        const meta = TX_META[tx.type] || { label: tx.type, Icon: Coins, sign: +1 };
         const amount = parseFloat(tx.amount || 0);
+        const TxTypeIcon = meta.Icon;
 
-        let displayAmt, amtColor;
+        let displayAmt;
+        let rowMod = 'wallet-history-item--neutral';
         if (meta.sign === +1) {
           displayAmt = `+${amount.toLocaleString('es-AR')}`;
-          amtColor   = '#4ade80';
+          rowMod = 'wallet-history-item--positive';
         } else if (meta.sign === -1) {
           displayAmt = `−${amount.toLocaleString('es-AR')}`;
-          amtColor   = '#f87171';
+          rowMod = 'wallet-history-item--negative';
         } else {
-          // bet_loss: money was already removed at bet_lock time
           displayAmt = `−${amount.toLocaleString('es-AR')}`;
-          amtColor   = '#f87171';
+          rowMod = 'wallet-history-item--negative';
         }
 
-        if (tx.type === 'withdrawal' && STATUS_COLOR[tx.status]) {
-          amtColor = STATUS_COLOR[tx.status];
-        }
+        const st = tx.status ? STATUS_META[tx.status] : null;
+        const StatusIcon = st?.Icon;
 
         return (
-          <div key={tx.id} className="wp-tx-row">
-            <span className="wp-tx-icon">{meta.icon}</span>
+          <div key={tx.id} className={`wp-tx-row wallet-history-item ${rowMod}`}>
+            <span className="wp-tx-icon" aria-hidden>
+              <TxTypeIcon className="wp-tx-type-icon" size={22} strokeWidth={2} />
+            </span>
             <div className="wp-tx-info">
               <span className="wp-tx-label">{meta.label}</span>
-              {tx.status && tx.status !== 'completed' && (
-                <span className="wp-tx-status" style={{ color: STATUS_COLOR[tx.status] || '#94a3b8' }}>
-                  {tx.status === 'pending' ? 'pendiente' : tx.status === 'cancelled' ? 'cancelado' : tx.status}
+              {st && StatusIcon && (
+                <span className={`fx-badge fx-badge--muted wp-tx-status ${st.colorClass}`}>
+                  <StatusIcon className="wp-tx-status-icon" size={12} strokeWidth={2.5} aria-hidden />
+                  {st.label}
                 </span>
               )}
               <span className="wp-tx-date">{fmtDate(tx.created_at)}</span>
             </div>
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
-              <span className="wp-tx-amount" style={{ color: amtColor }}>
+            <div className="wallet-history-item-amounts">
+              <span
+                className={`wp-tx-amount wallet-tx-amount${
+                  rowMod === 'wallet-history-item--positive' ? ' wallet-tx-amount--plus' : ' wallet-tx-amount--minus'
+                }`}
+              >
                 {displayAmt} cr
               </span>
               {tx.type === 'withdrawal' && tx.status === 'pending' && (
                 <button
-                  className="btn btn-ghost btn-sm"
-                  style={{ fontSize: 11, padding: '2px 8px', color: '#f87171', borderColor: '#f87171' }}
+                  type="button"
+                  className="btn btn-ghost btn-sm wallet-cancel-withdraw"
                   onClick={() => onCancelWithdraw(tx.id)}
                 >
-                  Cancelar
+                  Cancelar retiro
                 </button>
               )}
             </div>
@@ -134,75 +173,41 @@ function HistoryView({ transactions, loading, onCancelWithdraw }) {
   );
 }
 
-// ── Deposit tab — Telegram flow ───────────────────────────────────────────────
+// ── Deposit tab — Telegram (manual cajero, sin monto en app) ───────────────────
 function DepositForm({ user }) {
-  const PRESETS = [1000, 2500, 5000, 10000];
-  const [amount, setAmount] = useState('');
-
-  const telegramMsg = `Hola, quiero cargar créditos en TrucoFX.\nUsuario: ${user?.username || ''}\nID: ${user?.id || ''}\nMonto: $${amount || '___'} ARS`;
-  const telegramUrl = `https://t.me/TrucoFX?text=${encodeURIComponent(telegramMsg)}`;
+  const telegramMsg = `Hola, quiero cargar créditos en TrucoFX. Mi usuario es: ${user?.username || ''}.`;
+  const telegramUrl = 'https://t.me/TrucoFX';
 
   const copyMsg = () => {
     navigator.clipboard.writeText(telegramMsg).then(() => toast.success('Mensaje copiado'));
   };
 
   return (
-    <div className="wp-deposit-telegram">
+    <div className="wallet-action-card wp-deposit-telegram fx-card">
       <div className="wp-tg-header">
-        <span className="wp-tg-icon">✈️</span>
+        <span className="wp-tg-icon" aria-hidden>
+          ✈️
+        </span>
         <div>
-          <p className="wp-tg-title">Depositar por Telegram</p>
-          <p className="wp-tg-sub">Contactá a @TrucoFX para coordinar la carga</p>
+          <p className="wp-tg-title">Cargar saldo</p>
+          <p className="wp-tg-sub">Para cargar créditos, escribinos por Telegram.</p>
         </div>
       </div>
 
       <p className="wp-tg-instructions">
-        Elegí un monto, copiá el mensaje y envialo a <strong>@TrucoFX</strong> en Telegram.
-        Un administrador acreditará los créditos manualmente.
+        Un administrador te indicará los pasos y acreditará el saldo manualmente.
+      </p>
+      <p className="wp-tg-instructions wp-tg-instructions--muted">
+        No hay carga automática dentro de la app.
       </p>
 
-      <div className="wp-preset-amounts">
-        {PRESETS.map(p => (
-          <button
-            key={p}
-            type="button"
-            className={`wp-preset-btn${amount === String(p) ? ' active' : ''}`}
-            onClick={() => setAmount(String(p))}
-          >
-            ${p.toLocaleString('es-AR')}
-          </button>
-        ))}
-      </div>
-
-      <div className="form-group" style={{ marginTop: 8 }}>
-        <label>Otro monto</label>
-        <input
-          type="number"
-          className="form-input"
-          min="100"
-          step="100"
-          value={PRESETS.includes(Number(amount)) ? '' : amount}
-          onChange={e => setAmount(e.target.value)}
-          placeholder="Ej: 7500"
-        />
-      </div>
-
-      <div className="wp-tg-msg-preview">
-        <pre>{telegramMsg}</pre>
-      </div>
-
-      <div className="wp-tg-actions">
-        <button type="button" className="btn btn-ghost" onClick={copyMsg}>
-          📋 Copiar mensaje
-        </button>
-        <a
-          href={telegramUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="btn btn-primary"
-        >
-          ✈️ Abrir Telegram
+      <div className="wp-tg-actions wp-tg-actions--stack">
+        <a href={telegramUrl} target="_blank" rel="noopener noreferrer" className="btn btn-primary btn-block">
+          Abrir Telegram
         </a>
+        <button type="button" className="btn btn-secondary btn-block" onClick={copyMsg}>
+          Copiar mensaje
+        </button>
       </div>
     </div>
   );
@@ -238,18 +243,16 @@ function WithdrawForm({ wallet, onSuccess }) {
   };
 
   return (
-    <form className="wp-form" onSubmit={handleSubmit}>
+    <form className="wp-form wallet-action-card fx-card" onSubmit={handleSubmit}>
       <div className="wp-withdraw-info">
         <div className="wp-wi-row">
           <span>Disponible</span>
-          <strong style={{ color: '#4ade80' }}>{available.toLocaleString('es-AR')} cr</strong>
+          <strong className="wallet-amount-available">{available.toLocaleString('es-AR')} cr</strong>
         </div>
         {wallet?.pendingWithdrawal > 0 && (
           <div className="wp-wi-row">
-            <span>Ya en retiro</span>
-            <strong style={{ color: '#f59e0b' }}>
-              {parseFloat(wallet.pendingWithdrawal).toLocaleString('es-AR')} cr
-            </strong>
+            <span>Reservado para retiros</span>
+            <strong className="wallet-amount-pending">{parseFloat(wallet.pendingWithdrawal).toLocaleString('es-AR')} cr</strong>
           </div>
         )}
       </div>
@@ -287,21 +290,21 @@ function WithdrawForm({ wallet, onSuccess }) {
           required
         />
       </div>
-      <button type="submit" className="btn btn-danger" disabled={loading || available <= 0}>
-        {loading ? 'Enviando...' : 'Solicitar retiro'}
+      <button type="submit" className="btn btn-primary" disabled={loading || available <= 0}>
+        {loading ? 'Enviando…' : 'Solicitar retiro'}
       </button>
-      <p style={{ fontSize: 11, color: '#6b7280', marginTop: 8 }}>
-        El saldo se descuenta inmediatamente y queda como "Pendiente de retiro".
-        Podés cancelarlo desde el Historial.
+      <p className="wp-form-note wallet-withdraw-note">
+        Al solicitar un retiro, el monto se descuenta de tu saldo disponible y queda reservado como pendiente. Podés cancelar un
+        retiro pendiente desde el historial y el saldo vuelve a tu cuenta.
       </p>
     </form>
   );
 }
 
 // ── Main component ────────────────────────────────────────────────────────────
-export default function WalletPanel({ onClose }) {
+export default function WalletPanel({ onClose, initialTab = 'balance' }) {
   const { user } = useAuth();
-  const [tab,          setTab]          = useState('balance');
+  const [tab,          setTab]          = useState(initialTab);
   const [wallet,       setWallet]       = useState(null);
   const [transactions, setTransactions] = useState([]);
   const [txLoading,    setTxLoading]    = useState(false);
@@ -338,6 +341,10 @@ export default function WalletPanel({ onClose }) {
 
   useEffect(() => { loadWallet(); }, [loadWallet]);
   useEffect(() => {
+    setTab(initialTab);
+  }, [initialTab]);
+
+  useEffect(() => {
     if (tab === 'history') loadHistory();
   }, [tab, loadHistory]);
 
@@ -350,18 +357,23 @@ export default function WalletPanel({ onClose }) {
       onClick={(e) => e.target === e.currentTarget && onClose()}
     >
       <motion.div
-        className="modal-panel wp-panel"
+        className="modal-panel wp-panel wallet-panel wallet-panel--solid"
         initial={{ scale: 0.92, opacity: 0 }}
         animate={{ scale: 1, opacity: 1 }}
         exit={{ scale: 0.92, opacity: 0 }}
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="modal-header">
-          <h2>💰 Mi billetera</h2>
-          <button className="btn-close" onClick={onClose}>✕</button>
+        <div className="modal-header wallet-panel-header">
+          <div className="wallet-panel-headings">
+            <h2 className="wallet-panel-title">Wallet</h2>
+            <p className="wallet-panel-subtitle">Tus créditos TrucoFX</p>
+          </div>
+          <button type="button" className="btn-close" onClick={onClose} aria-label="Cerrar">
+            ✕
+          </button>
         </div>
 
-        <nav className="wp-tabs">
+        <nav className="wp-tabs wallet-tabs" aria-label="Secciones de wallet">
           {TABS.map(t => (
             <button
               key={t.id}
@@ -373,7 +385,7 @@ export default function WalletPanel({ onClose }) {
           ))}
         </nav>
 
-        <div className="wp-body">
+        <div className="wp-body wallet-panel-body">
           <AnimatePresence mode="wait">
             {tab === 'balance' && (
               <motion.div key="balance" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>

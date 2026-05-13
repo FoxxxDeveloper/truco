@@ -60,7 +60,7 @@ export default function EnvidoResultModal({ event, onClose }) {
   return (
     <div className="envido-overlay" onClick={onClose}>
       <motion.div
-        className="envido-modal"
+        className="envido-modal fx-card game-modal"
         initial={{ scale: 0.7, opacity: 0, y: -40 }}
         animate={{ scale: 1, opacity: 1, y: 0 }}
         exit={{ scale: 0.85, opacity: 0, y: 20 }}

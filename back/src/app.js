@@ -25,6 +25,7 @@ const verificationRoutes = require('./routes/verification');
 const usersRoutes        = require('./routes/users');
 const tournamentRoutes   = require('./routes/tournaments');
 const BattleService      = require('./services/battleService');
+const { startTournamentScheduler, stopTournamentScheduler } = require('./services/tournamentScheduler');
 
 const app    = express();
 const server = http.createServer(app);
@@ -103,6 +104,17 @@ const io = new Server(server, {
 });
 
 setupSocketIO(io);
+startTournamentScheduler(io);
+
+function shutdownSchedulers() {
+  try {
+    stopTournamentScheduler();
+  } catch (e) {
+    logger.warn('stopTournamentScheduler: ' + e.message);
+  }
+}
+process.once('SIGINT', shutdownSchedulers);
+process.once('SIGTERM', shutdownSchedulers);
 
 // ── START ─────────────────────────────────────────────────────────
 const PORT = parseInt(process.env.PORT) || 3001;

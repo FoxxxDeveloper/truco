@@ -4,7 +4,7 @@ import Card from './Card';
 export default function PlayerHand({ cards, onPlayCard, isMyTurn, disabled }) {
   return (
     <motion.div
-      className="player-hand"
+      className="player-hand my-hand game-hand-zone"
       initial={{ y: 100, opacity: 0 }}
       animate={{ y: 0, opacity: 1 }}
       transition={{ delay: 0.3 }}

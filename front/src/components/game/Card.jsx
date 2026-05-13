@@ -22,7 +22,7 @@ export default function Card({ card, faceDown = false, onClick, disabled = false
   if (faceDown) {
     return (
       <motion.div
-        className={`card ${small ? 'card-small' : ''}`}
+        className={`card playing-card ${small ? 'card-small' : ''}`}
         initial={{ scale: 0, rotateY: 180 }}
         animate={{ scale: 1, rotateY: 0 }}
         transition={{ type: 'spring', stiffness: 200, damping: 20 }}
@@ -34,10 +34,10 @@ export default function Card({ card, faceDown = false, onClick, disabled = false
 
   return (
     <motion.button
-      className={`card card-face ${played ? 'card-played' : ''} ${small ? 'card-small' : ''}`}
+      className={`card playing-card card-face ${played ? 'card-played' : ''} ${small ? 'card-small' : ''}`}
       onClick={!disabled ? onClick : undefined}
       disabled={disabled}
-      whileHover={!disabled ? { y: -14, scale: 1.06 } : {}}
+      whileHover={!disabled ? { y: -10, scale: 1.04 } : {}}
       whileTap={!disabled ? { scale: 0.95 } : {}}
       initial={{ scale: 0, y: 40 }}
       animate={{ scale: 1, y: 0 }}

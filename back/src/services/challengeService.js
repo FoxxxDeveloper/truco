@@ -1,69 +1,166 @@
 /**
- * ChallengeService — Wagered match lifecycle.
+ * ChallengeService — Wagered match lifecycle + retos entre amigos (clásico / competitivo).
  *
  * Flow:
  *   createChallenge  → locks creator funds, creates open challenge
- *   acceptChallenge  → locks opponent funds, challenge → accepted, game starts
- *   cancelChallenge  → refunds creator, challenge → cancelled
- *   expireOldChallenges → refunds expired open challenges (run periodically)
- *   settleChallengeGame → called by game engine on game over
+ *   createClassicFriendChallenge → amount 0, amistoso, sin wallet
+ *   acceptChallenge  → locks opponent funds (si amount > 0), room_id
+ *   cancelChallenge  → refunds creator (si amount > 0)
+ *   rejectChallenge  → invitee rejects; refund creator if había apuesta
+ *   expireOldChallenges → refunds expired open challenges
+ *   settleChallengeGame → legacy helper (juegos por challenge legacy)
  */
 const { v4: uuidv4 } = require('uuid');
 const { withTransaction, query } = require('../config/database');
 const WalletService = require('./walletService');
+const VerificationService = require('./verificationService');
 const logger = require('../config/logger');
 
-const CHALLENGE_TTL_MS = 10 * 60 * 1000; // 10 minutes
-const MIN_BET    = 2500;   // créditos mínimos
-const COMMISSION = 0.10;   // 10% de comisión para la casa
+const CHALLENGE_TTL_MS = 10 * 60 * 1000; // 10 minutes — retos públicos
+const FRIEND_CHALLENGE_TTL_MS = 5 * 60 * 1000; // 5 minutes — retos a un amigo
+const MIN_BET = 2500;
+const COMMISSION = 0.10;
+
+function calcPrizeFromAmount(amount) {
+  const pool = parseFloat(amount) * 2;
+  const commission = parseFloat((pool * COMMISSION).toFixed(2));
+  const prize = parseFloat((pool - commission).toFixed(2));
+  return { prize, commission };
+}
+
+async function assertNoActivePartida(userId) {
+  const rows = await query(
+    `SELECT 1 FROM partidas WHERE (player1_id = ? OR player2_id = ?) AND status = 'active' LIMIT 1`,
+    [userId, userId]
+  );
+  if (rows.length) {
+    throw new Error('No podés retar mientras estás en una partida activa');
+  }
+}
 
 const ChallengeService = {
   /**
-   * Create a new reto.
-   * Atomically locks creator funds and creates the challenge record.
+   * Reto competitivo con apuesta (público o duelo a amigo con is_private + opponentId).
+   * Si friendDuel=true: TTL 5 min, source=friend_challenge, challenged_id=opponentId.
    */
-  async createChallenge({ creatorId, amount, isPrivate = false, opponentId = null, gameConfig = {} }) {
+  async createChallenge({
+    creatorId,
+    amount,
+    isPrivate = false,
+    opponentId = null,
+    gameConfig = {},
+    friendDuel = false,
+  }) {
     const n = parseFloat(amount);
     if (!isFinite(n) || n <= 0) throw new Error('Invalid amount');
     if (n < MIN_BET) throw new Error(`El monto mínimo para apostar es ${MIN_BET} créditos`);
 
+    await assertNoActivePartida(creatorId);
+    await VerificationService.requireVerifiedAdult(creatorId);
+
     const challengeId = uuidv4();
-    const expiresAt   = new Date(Date.now() + CHALLENGE_TTL_MS);
-    const reference   = `challenge:${challengeId}`;
+    const ttl = friendDuel ? FRIEND_CHALLENGE_TTL_MS : CHALLENGE_TTL_MS;
+    const expiresAt = new Date(Date.now() + ttl);
+    const reference = `challenge:${challengeId}`;
+    const { prize } = calcPrizeFromAmount(n);
+
+    const normalizedConfig = {
+      puntosMaximos: Number(gameConfig.puntosMaximos) === 15 ? 15 : 30,
+      florHabilitada: !!gameConfig.florHabilitada,
+      modo: 'apuesta',
+      turnTimeoutSecs: gameConfig.turnTimeoutSecs ?? 30,
+      reconnectGraceSecs: gameConfig.reconnectGraceSecs ?? 60,
+      friendChallengeMode: friendDuel ? 'competitive' : undefined,
+    };
 
     return withTransaction(async (conn) => {
-      // Lock creator's funds (may throw if insufficient)
       const creatorTxId = await WalletService.lockFunds(creatorId, n, reference, conn);
 
-      await conn.execute(
-        `INSERT INTO challenges
-           (id, creator_id, opponent_id, amount, commission_rate, is_private, game_config, creator_tx_id, expires_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          challengeId,
-          creatorId,
-          opponentId || null,
-          n,
-          COMMISSION,
-          isPrivate ? 1 : 0,
-          JSON.stringify(gameConfig),
-          creatorTxId,
-          expiresAt,
-        ]
-      );
+      if (friendDuel && opponentId) {
+        const challenged = parseInt(opponentId, 10);
+        await conn.execute(
+          `INSERT INTO challenges
+             (id, creator_id, opponent_id, challenged_id, amount, commission_rate, is_private,
+              game_config, creator_tx_id, expires_at, source, invite_type, prize_amount)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'friend_challenge', 'friend_duel', ?)`,
+          [
+            challengeId,
+            creatorId,
+            challenged,
+            challenged,
+            n,
+            COMMISSION,
+            1,
+            JSON.stringify(normalizedConfig),
+            creatorTxId,
+            expiresAt,
+            prize,
+          ]
+        );
+      } else {
+        await conn.execute(
+          `INSERT INTO challenges
+             (id, creator_id, opponent_id, amount, commission_rate, is_private, game_config, creator_tx_id, expires_at, prize_amount)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            challengeId,
+            creatorId,
+            opponentId || null,
+            n,
+            COMMISSION,
+            isPrivate ? 1 : 0,
+            JSON.stringify(normalizedConfig),
+            creatorTxId,
+            expiresAt,
+            prize,
+          ]
+        );
+      }
 
       return { challengeId, amount: n, expiresAt };
     });
   },
 
   /**
-   * Accept an open challenge.
-   * Atomically locks opponent's funds, creates a room, updates challenge status.
-   * Returns everything needed to start the game.
+   * Partida amistosa 1v1 entre amigos — sin apuesta ni movimientos de wallet.
    */
+  async createClassicFriendChallenge({ creatorId, challengedId, gameConfig = {} }) {
+    const Friend = require('../models/Friend');
+    const cid = parseInt(challengedId, 10);
+    if (!Number.isFinite(cid) || cid <= 0) throw new Error('Destinatario inválido');
+    if (Number(creatorId) === cid) throw new Error('No podés retarte a vos mismo');
+    const ok = await Friend.areFriends(creatorId, cid);
+    if (!ok) throw new Error('Solo podés retar a amigos');
+
+    await assertNoActivePartida(creatorId);
+    await assertNoActivePartida(cid);
+
+    const challengeId = uuidv4();
+    const expiresAt = new Date(Date.now() + FRIEND_CHALLENGE_TTL_MS);
+    const cfg = {
+      puntosMaximos: Number(gameConfig.puntosMaximos) === 15 ? 15 : 30,
+      florHabilitada: !!gameConfig.florHabilitada,
+      modo: 'casual',
+      friendChallengeMode: 'classic',
+      turnTimeoutSecs: gameConfig.turnTimeoutSecs ?? 30,
+      reconnectGraceSecs: gameConfig.reconnectGraceSecs ?? 60,
+    };
+
+    await withTransaction(async (conn) => {
+      await conn.execute(
+        `INSERT INTO challenges
+           (id, creator_id, opponent_id, challenged_id, amount, commission_rate, is_private,
+            game_config, creator_tx_id, expires_at, status, source, invite_type, prize_amount)
+         VALUES (?, ?, ?, ?, 0, 0, 1, ?, NULL, ?, 'open', 'friend_challenge', 'friend_duel', 0)`,
+        [challengeId, creatorId, cid, cid, JSON.stringify(cfg), expiresAt]
+      );
+    });
+
+    return { challengeId, expiresAt };
+  },
+
   async acceptChallenge({ challengeId, opponentId }) {
     return withTransaction(async (conn) => {
-      // Fetch and lock challenge row
       const [rows] = await conn.execute(
         'SELECT * FROM challenges WHERE id = ? FOR UPDATE',
         [challengeId]
@@ -73,17 +170,28 @@ const ChallengeService = {
 
       if (ch.status !== 'open') throw new Error(`Challenge is already ${ch.status}`);
       if (new Date() > new Date(ch.expires_at)) throw new Error('Challenge has expired');
-      if (ch.creator_id === opponentId)  throw new Error('Cannot accept your own challenge');
-      if (ch.opponent_id && ch.opponent_id !== opponentId) {
+      if (ch.creator_id === opponentId) throw new Error('Cannot accept your own challenge');
+      if (ch.opponent_id && Number(ch.opponent_id) !== Number(opponentId)) {
         throw new Error('This challenge is for a specific player');
       }
+      if (ch.challenged_id && Number(ch.challenged_id) !== Number(opponentId)) {
+        throw new Error('Este reto no es para vos');
+      }
 
-      const amount    = parseFloat(ch.amount);
-      const roomId    = uuidv4();
+      await assertNoActivePartida(opponentId);
+
+      const amount = parseFloat(ch.amount);
+      if (amount > 0) {
+        await VerificationService.requireVerifiedAdult(opponentId);
+      }
+
+      const roomId = uuidv4();
       const reference = `challenge:${challengeId}`;
 
-      // Lock opponent funds
-      const opponentTxId = await WalletService.lockFunds(opponentId, amount, reference, conn);
+      let opponentTxId = null;
+      if (amount > 0) {
+        opponentTxId = await WalletService.lockFunds(opponentId, amount, reference, conn);
+      }
 
       await conn.execute(
         `UPDATE challenges
@@ -93,27 +201,23 @@ const ChallengeService = {
       );
 
       return {
+        battleId: challengeId,
         roomId,
         amount,
-        creatorId:      ch.creator_id,
+        creatorId: ch.creator_id,
         opponentId,
         commissionRate: parseFloat(ch.commission_rate),
-        gameConfig:     typeof ch.game_config === 'string' ? JSON.parse(ch.game_config) : (ch.game_config || {}),
+        gameConfig: typeof ch.game_config === 'string' ? JSON.parse(ch.game_config) : (ch.game_config || {}),
       };
     });
   },
 
-  /**
-   * Cancel an open challenge (only creator, only while open).
-   * Refunds creator funds.
-   */
   async cancelChallenge(challengeId, userId) {
-    // First verify ownership outside transaction for a clear error message
     const [rows] = await query('SELECT * FROM challenges WHERE id = ?', [challengeId]);
     if (!rows || !rows.length) throw new Error('Challenge not found');
     const ch = rows[0];
-    if (ch.creator_id !== userId)  throw new Error('Only the creator can cancel this challenge');
-    if (ch.status !== 'open')      throw new Error(`Cannot cancel — challenge is ${ch.status}`);
+    if (ch.creator_id !== userId) throw new Error('Only the creator can cancel this challenge');
+    if (ch.status !== 'open') throw new Error(`Cannot cancel — challenge is ${ch.status}`);
 
     await withTransaction(async (conn) => {
       const [locked] = await conn.execute(
@@ -127,14 +231,43 @@ const ChallengeService = {
       );
     });
 
-    // Refund outside the lock to avoid long tx (lockFunds doesn't need the challenge lock)
-    await WalletService.refundLocked(userId, parseFloat(ch.amount), `challenge_cancelled:${challengeId}`);
+    const amt = parseFloat(ch.amount);
+    if (amt > 0) {
+      await WalletService.refundLocked(userId, amt, `challenge_cancelled:${challengeId}`);
+    }
   },
 
   /**
-   * Expire open challenges past their deadline and refund creators.
-   * Safe to call repeatedly (idempotent via status check).
+   * El invitado rechaza un reto abierto (no aplica al creador — usa cancel).
    */
+  async rejectChallenge(challengeId, userId) {
+    const [rows] = await query('SELECT * FROM challenges WHERE id = ?', [challengeId]);
+    if (!rows || !rows.length) throw new Error('Challenge not found');
+    const ch = rows[0];
+    if (ch.status !== 'open') throw new Error(`No se puede rechazar — estado ${ch.status}`);
+    const invitee = ch.opponent_id != null ? Number(ch.opponent_id) : null;
+    const challenged = ch.challenged_id != null ? Number(ch.challenged_id) : null;
+    const okUser = (invitee && invitee === Number(userId)) || (challenged && challenged === Number(userId));
+    if (!okUser) throw new Error('No podés rechazar este reto');
+
+    await withTransaction(async (conn) => {
+      const [locked] = await conn.execute(
+        "SELECT status FROM challenges WHERE id = ? FOR UPDATE", [challengeId]
+      );
+      if (!locked.length || locked[0].status !== 'open') {
+        throw new Error('El reto ya no está pendiente');
+      }
+      await conn.execute(
+        "UPDATE challenges SET status = 'rejected' WHERE id = ?", [challengeId]
+      );
+    });
+
+    const amt = parseFloat(ch.amount);
+    if (amt > 0) {
+      await WalletService.refundLocked(ch.creator_id, amt, `challenge_rejected:${challengeId}`);
+    }
+  },
+
   async expireOldChallenges() {
     const expired = await query(
       "SELECT id, creator_id, amount FROM challenges WHERE status = 'open' AND expires_at < NOW()"
@@ -142,7 +275,6 @@ const ChallengeService = {
     let count = 0;
     for (const ch of expired) {
       try {
-        // Try to flip status atomically
         const changed = await withTransaction(async (conn) => {
           const [row] = await conn.execute(
             "SELECT status FROM challenges WHERE id = ? FOR UPDATE", [ch.id]
@@ -155,9 +287,12 @@ const ChallengeService = {
         });
 
         if (changed) {
-          await WalletService.refundLocked(
-            ch.creator_id, parseFloat(ch.amount), `challenge_expired:${ch.id}`
-          );
+          const amt = parseFloat(ch.amount);
+          if (amt > 0) {
+            await WalletService.refundLocked(
+              ch.creator_id, amt, `challenge_expired:${ch.id}`
+            );
+          }
           count++;
         }
       } catch (err) {
@@ -167,26 +302,44 @@ const ChallengeService = {
     return count;
   },
 
-  /**
-   * Settle the wallet after a wagered game finishes.
-   * Returns settlement info or null if this room has no associated challenge.
-   */
+  /** Retos pendientes donde el usuario es el invitado (oponente designado). */
+  async listPendingFriendForUser(userId) {
+    return query(
+      `SELECT c.*, u.username AS creator_username, u.avatar AS creator_avatar
+       FROM challenges c
+       JOIN usuarios u ON u.id = c.creator_id
+       WHERE c.opponent_id = ? AND c.status = 'open' AND c.expires_at > NOW()
+         AND (c.source = 'friend_challenge' OR c.invite_type = 'friend_duel')
+       ORDER BY c.created_at DESC LIMIT 10`,
+      [userId]
+    );
+  },
+
   async settleChallengeGame({ roomId, winnerId }) {
     const rows = await query(
-      "SELECT * FROM challenges WHERE room_id = ? AND status = 'accepted'",
+      "SELECT * FROM challenges WHERE room_id = ? AND status IN ('accepted','active')",
       [roomId]
     );
-    if (!rows.length) return null; // not a wagered game — nothing to do
+    if (!rows.length) return null;
 
     const ch = rows[0];
+    const bet = parseFloat(ch.amount);
     const loserId = ch.creator_id === winnerId ? ch.opponent_id : ch.creator_id;
+
+    if (bet <= 0) {
+      await query(
+        "UPDATE challenges SET status = 'finished', winner_id = ? WHERE id = ?",
+        [winnerId, ch.id]
+      );
+      return { prize: 0, commission: 0, casual: true };
+    }
 
     const result = await WalletService.settleGame({
       winnerId,
       loserId,
-      betAmount:      parseFloat(ch.amount),
+      betAmount: bet,
       commissionRate: parseFloat(ch.commission_rate),
-      challengeId:    ch.id,
+      challengeId: ch.id,
     });
 
     await query(
@@ -194,10 +347,9 @@ const ChallengeService = {
       [winnerId, ch.id]
     );
 
-    return result; // { prize, commission }
+    return result;
   },
 
-  /** Get open (public) challenges, optionally by amount range */
   async listOpen({ minAmount = 0, maxAmount = 999999, limit = 20 } = {}) {
     const safeLimit = Math.min(Math.max(parseInt(limit) || 20, 1), 50);
     return query(
@@ -208,6 +360,7 @@ const ChallengeService = {
        JOIN usuarios u ON u.id = c.creator_id
        LEFT JOIN ranking r ON r.user_id = c.creator_id
        WHERE c.status = 'open' AND c.is_private = 0
+         AND c.source = 'public_room'
          AND c.amount BETWEEN ? AND ? AND c.expires_at > NOW()
        ORDER BY c.created_at DESC LIMIT ${safeLimit}`,
       [minAmount, maxAmount]

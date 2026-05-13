@@ -44,11 +44,7 @@ export const profileApi = {
   getMe:        ()          => api.get('/profile/me'),
   getUser:      (username)  => api.get(`/profile/${encodeURIComponent(username)}`),
   update:       (body)      => api.put('/profile', body),
-  uploadAvatar: (file)      => {
-    const fd = new FormData();
-    fd.append('avatar', file);
-    return api.post('/profile/avatar', fd, { headers: { 'Content-Type': 'multipart/form-data' } });
-  },
+  setAvatarChoice: (body)   => api.put('/profile/avatar-choice', body),
 };
 
 // ── Users (public profiles by ID) ────────────────────────────────
@@ -68,8 +64,11 @@ export const walletApi = {
 // ── Challenges ────────────────────────────────────────────────────
 export const challengeApi = {
   list:   ()        => api.get('/challenges'),
-  create: (body)    => api.post('/challenges', body),
+  create: (body)   => api.post('/challenges', body),
+  createFriendClassic: (body) => api.post('/challenges/friend/classic', body),
+  getFriendPending: () => api.get('/challenges/friend/pending'),
   accept: (id)      => api.post(`/challenges/${id}/accept`),
+  reject: (id)      => api.post(`/challenges/${id}/reject`),
   cancel: (id)      => api.delete(`/challenges/${id}`),
 };
 
@@ -133,10 +132,12 @@ export const tournamentApi = {
   getAll:     ()                      => api.get('/tournaments'),
   getById:    (id)                    => api.get(`/tournaments/${id}`),
   getBracket: (id)                    => api.get(`/tournaments/${id}/bracket`),
+  getStandings: (id)                  => api.get(`/tournaments/${id}/standings`),
   register:   (id)                    => api.post(`/tournaments/${id}/register`),
   unregister: (id)                    => api.delete(`/tournaments/${id}/register`),
   checkin:    (id)                    => api.post(`/tournaments/${id}/checkin`),
   ready:      (tournamentId, matchId) => api.post(`/tournaments/${tournamentId}/matches/${matchId}/ready`),
+  unready:    (tournamentId, matchId) => api.post(`/tournaments/${tournamentId}/matches/${matchId}/unready`),
 };
 
 // ── Admin tournaments (JWT admin) ─────────────────────────────────
