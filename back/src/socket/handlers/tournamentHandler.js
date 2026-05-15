@@ -21,6 +21,7 @@ const gameSession       = require('../../services/gameSession');
 const Game              = require('../../models/Game');
 const { query }         = require('../../config/database');
 const logger            = require('../../config/logger');
+const NotificationService = require('../../services/notificationService');
 
 // Importado de gameHandler después de que gameHandler ya se cargó
 // (circular-safe porque sólo se usa en runtime, no en require-time)
@@ -164,6 +165,63 @@ function registerTournamentHandlers(io, socket, user) {
         socket,
         _isUserError(err.message) ? err.message : 'Error al cancelar listo'
       );
+    }
+  });
+
+  // ── Tournament chat (room tournament-chat:<id>) ───────────────────────────
+  socket.on('tournament:chat:join', async (payload) => {
+    try {
+      const tournamentId = Number((payload || {}).tournamentId);
+      if (!tournamentId) {
+        return socket.emit('tournament:chat:error', { error: 'tournamentId requerido' });
+      }
+      const acc = await TournamentService.canAccessTournamentChat(tournamentId, user.id, user.role);
+      if (!acc.ok) {
+        if (acc.reason === 'expired') {
+          return socket.emit('tournament:chat:error', {
+            code:   'CHAT_EXPIRED',
+            error:  'El chat de este torneo ya finalizó.',
+          });
+        }
+        return socket.emit('tournament:chat:error', { error: 'Sin acceso al chat de torneo' });
+      }
+      socket.join(`tournament-chat:${tournamentId}`);
+      socket.emit('tournament:chat:joined', { tournamentId });
+    } catch (err) {
+      logger.error(`tournament:chat:join user=${user.id}: ${err.message}`);
+      socket.emit('tournament:chat:error', { error: 'Error al unirse al chat' });
+    }
+  });
+
+  socket.on('tournament:chat:leave', (payload) => {
+    const tournamentId = Number((payload || {}).tournamentId);
+    if (tournamentId) socket.leave(`tournament-chat:${tournamentId}`);
+  });
+
+  socket.on('tournament:chat:message', async (payload) => {
+    try {
+      const tournamentId = Number((payload || {}).tournamentId);
+      const raw = payload?.message ?? payload?.text ?? '';
+      const msg = await TournamentService.createTournamentChatMessage(
+        tournamentId,
+        user.id,
+        user.role,
+        raw
+      );
+      const out = { ...msg, tournamentId };
+      NotificationService.emitToRoom(`tournament-chat:${tournamentId}`, 'tournament:chat:message', out);
+    } catch (err) {
+      if (err.code === 'expired') {
+        return socket.emit('tournament:chat:error', {
+          code:   'CHAT_EXPIRED',
+          error:  'El chat de este torneo ya finalizó.',
+        });
+      }
+      if (err.code === 'empty') {
+        return socket.emit('tournament:chat:error', { error: 'El mensaje no puede estar vacío' });
+      }
+      logger.error(`tournament:chat:message user=${user.id}: ${err.message}`);
+      socket.emit('tournament:chat:error', { error: 'No se pudo enviar el mensaje' });
     }
   });
 }

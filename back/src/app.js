@@ -6,6 +6,7 @@ const cors = require('cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
 const rateLimit = require('express-rate-limit');
+const { isProduction } = require('./config/rateLimitEnv');
 
 const logger         = require('./config/logger');
 const { testConnection } = require('./config/database');
@@ -18,6 +19,7 @@ const walletRoutes       = require('./routes/wallet');
 const challengeRoutes    = require('./routes/challenge');
 const battlesRoutes      = require('./routes/battles');
 const profileRoutes      = require('./routes/profile');
+const authMiddleware     = require('./middleware/auth');
 const socialRoutes       = require('./routes/social');
 const telegramRoutes     = require('./routes/telegram');
 const adminRoutes        = require('./routes/admin');
@@ -25,6 +27,8 @@ const verificationRoutes = require('./routes/verification');
 const usersRoutes        = require('./routes/users');
 const tournamentRoutes   = require('./routes/tournaments');
 const BattleService      = require('./services/battleService');
+const staleGameCleanup   = require('./services/staleGameCleanup');
+const gameHandlerModule  = require('./socket/handlers/gameHandler');
 const { startTournamentScheduler, stopTournamentScheduler } = require('./services/tournamentScheduler');
 
 const app    = express();
@@ -65,12 +69,15 @@ app.use(morgan('combined', {
   stream: { write: (msg) => logger.info(msg.trim()) },
 }));
 
-// ── GLOBAL RATE LIMIT ─────────────────────────────────────────────
+// ── GLOBAL RATE LIMIT (todas las rutas /api/* salvo skip) ─────────
+// En desarrollo: mucho más permisivo (HMR, Strict Mode, muchas pestañas).
+// En producción: tope razonable por IP para absorber picos sin bloquear uso normal.
 app.use(rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 300,
+  max: isProduction ? 500 : 12000,
   standardHeaders: true,
   legacyHeaders: false,
+  skip: (req) => req.path === '/api/health' || req.originalUrl === '/api/health',
 }));
 
 // ── ROUTES ────────────────────────────────────────────────────────
@@ -80,6 +87,7 @@ app.use('/api/wallet',       walletRoutes);
 app.use('/api/challenges',   challengeRoutes);
 app.use('/api/battles',      battlesRoutes);
 app.use('/api/profile',      profileRoutes);
+app.get('/api/me/matches', authMiddleware, profileRoutes.matchHistoryHandler);
 app.use('/api/social',       socialRoutes);
 app.use('/api/telegram',     telegramRoutes);
 app.use('/api/admin',        adminRoutes);
@@ -103,8 +111,15 @@ const io = new Server(server, {
   pingInterval: 25000,
 });
 
+app.set('io', io);
+
 setupSocketIO(io);
 startTournamentScheduler(io);
+
+staleGameCleanup.setGameLifecycleHooks({
+  finishBothDisconnected: gameHandlerModule.finishBothDisconnectedForPublic,
+  finishAbandonWin: gameHandlerModule.finishAbandonForPublic,
+});
 
 function shutdownSchedulers() {
   try {
@@ -129,6 +144,15 @@ async function start() {
   setInterval(() => {
     BattleService.expireOld().catch(err => logger.error('Expire battles cron: ' + err.message));
   }, 2 * 60 * 1000);
+
+  staleGameCleanup.resolveExpiredDisconnectedGames(io).catch(err =>
+    logger.error('Stale games cold start: ' + err.message)
+  );
+  setInterval(() => {
+    staleGameCleanup.resolveExpiredDisconnectedGames(io).catch(err =>
+      logger.error('Stale games cron: ' + err.message)
+    );
+  }, 60 * 1000);
 
   server.listen(PORT, () => {
     logger.info(`Truco server running on port ${PORT} [${process.env.NODE_ENV || 'development'}]`);

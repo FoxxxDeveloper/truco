@@ -14,6 +14,7 @@ const { v4: uuidv4 } = require('uuid');
 const { withTransaction, query } = require('../config/database');
 const WalletService = require('./walletService');
 const VerificationService = require('./verificationService');
+const { getActiveGameForUser } = require('../utils/activeGame');
 const logger = require('../config/logger');
 
 const CHALLENGE_TTL_MS = 10 * 60 * 1000; // 10 minutes — retos públicos
@@ -29,11 +30,16 @@ function calcPrizeFromAmount(amount) {
 }
 
 async function assertNoActivePartida(userId) {
-  const rows = await query(
-    `SELECT 1 FROM partidas WHERE (player1_id = ? OR player2_id = ?) AND status = 'active' LIMIT 1`,
-    [userId, userId]
-  );
-  if (rows.length) {
+  const active = await getActiveGameForUser(userId);
+  if (active) {
+    logger.warn('active game check blocked user', {
+      userId,
+      roomId: active.room_id,
+      state: active.state,
+      status: active.status,
+      winner_id: active.winner_id,
+      finished_at: active.finished_at,
+    });
     throw new Error('No podés retar mientras estás en una partida activa');
   }
 }
@@ -213,7 +219,7 @@ const ChallengeService = {
   },
 
   async cancelChallenge(challengeId, userId) {
-    const [rows] = await query('SELECT * FROM challenges WHERE id = ?', [challengeId]);
+    const rows = await query('SELECT * FROM challenges WHERE id = ?', [challengeId]);
     if (!rows || !rows.length) throw new Error('Challenge not found');
     const ch = rows[0];
     if (ch.creator_id !== userId) throw new Error('Only the creator can cancel this challenge');
@@ -241,7 +247,7 @@ const ChallengeService = {
    * El invitado rechaza un reto abierto (no aplica al creador — usa cancel).
    */
   async rejectChallenge(challengeId, userId) {
-    const [rows] = await query('SELECT * FROM challenges WHERE id = ?', [challengeId]);
+    const rows = await query('SELECT * FROM challenges WHERE id = ?', [challengeId]);
     if (!rows || !rows.length) throw new Error('Challenge not found');
     const ch = rows[0];
     if (ch.status !== 'open') throw new Error(`No se puede rechazar — estado ${ch.status}`);
@@ -265,6 +271,21 @@ const ChallengeService = {
     const amt = parseFloat(ch.amount);
     if (amt > 0) {
       await WalletService.refundLocked(ch.creator_id, amt, `challenge_rejected:${challengeId}`);
+    }
+
+    try {
+      const NotificationService = require('./notificationService');
+      NotificationService.emitToUser(ch.creator_id, 'friend_challenge:updated', {
+        challengeId,
+        status: 'rejected',
+        toastFor: 'creator',
+      });
+      NotificationService.emitToUser(Number(userId), 'friend_challenge:updated', {
+        challengeId,
+        status: 'rejected',
+      });
+    } catch (_) {
+      /* ignore */
     }
   },
 
@@ -304,14 +325,39 @@ const ChallengeService = {
 
   /** Retos pendientes donde el usuario es el invitado (oponente designado). */
   async listPendingFriendForUser(userId) {
+    const uid = parseInt(userId, 10);
     return query(
       `SELECT c.*, u.username AS creator_username, u.avatar AS creator_avatar
        FROM challenges c
        JOIN usuarios u ON u.id = c.creator_id
-       WHERE c.opponent_id = ? AND c.status = 'open' AND c.expires_at > NOW()
+       WHERE c.status = 'open' AND c.expires_at > NOW()
          AND (c.source = 'friend_challenge' OR c.invite_type = 'friend_duel')
+         AND (c.opponent_id = ? OR c.challenged_id = ?)
        ORDER BY c.created_at DESC LIMIT 10`,
-      [userId]
+      [uid, uid]
+    );
+  },
+
+  /**
+   * Retos entre dos amigos (historial reciente de la conversación).
+   */
+  async listFriendChallengesBetweenUsers(userId, peerId) {
+    const uid = parseInt(userId, 10);
+    const pid = parseInt(peerId, 10);
+    if (!Number.isFinite(uid) || !Number.isFinite(pid)) return [];
+    return query(
+      `SELECT c.*,
+              cr.username AS creator_username, cr.avatar AS creator_avatar
+       FROM challenges c
+       JOIN usuarios cr ON cr.id = c.creator_id
+       WHERE (c.source = 'friend_challenge' OR c.invite_type = 'friend_duel')
+         AND (
+           (c.creator_id = ? AND (c.challenged_id = ? OR c.opponent_id = ?))
+           OR (c.creator_id = ? AND (c.challenged_id = ? OR c.opponent_id = ?))
+         )
+       ORDER BY c.created_at DESC
+       LIMIT 40`,
+      [uid, pid, pid, pid, uid, uid]
     );
   },
 

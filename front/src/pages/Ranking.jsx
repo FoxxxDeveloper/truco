@@ -47,9 +47,10 @@ export default function Ranking() {
   };
 
   return (
-    <div className="ranking-page ranking-page--et4 page-shell">
+    <div className="ranking-page ranking-page--et4 page-container app-page">
       <AppHeader />
 
+      <div className="page-shell">
       <div className="ranking-hero fx-card">
         <div className="ranking-hero-title-row">
           <Trophy className="ranking-hero-icon" size={28} aria-hidden />
@@ -182,6 +183,7 @@ export default function Ranking() {
       <AnimatePresence>
         {viewUserId && <PublicProfileModal userId={viewUserId} onClose={() => setViewUserId(null)} />}
       </AnimatePresence>
+      </div>
     </div>
   );
 }

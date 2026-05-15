@@ -29,6 +29,13 @@ const PRESETS = {
     description:
       'Torneo gratuito de lanzamiento de TrucoFX. Cupo principal de 128 jugadores. Los inscriptos que superen el cupo quedan como suplentes y podrán ingresar si un titular no realiza el check-in.',
     prize_text: '$100.000 ARS al campeón',
+    paid_positions: 1,
+    prize_currency: 'ARS',
+    prize_1: '$100.000',
+    prize_2: '',
+    prize_3: '',
+    prize_4: '',
+    third_place_match: false,
     max_players: 128,
     entry_fee: 0,
     is_paid: false,
@@ -129,6 +136,13 @@ const emptyForm = {
   name: '',
   description: '',
   prize_text: '',
+  paid_positions: 1,
+  prize_currency: '',
+  prize_1: '',
+  prize_2: '',
+  prize_3: '',
+  prize_4: '',
+  third_place_match: false,
   max_players: 128,
   format: 'single_elimination',
   phase: 'general',
@@ -204,10 +218,31 @@ export default function TournamentAdminPanel() {
 
   const openEdit = () => {
     if (!detail) return;
+    let pc = {};
+    let plc = {};
+    try {
+      pc = typeof detail.prize_config === 'string' ? JSON.parse(detail.prize_config || '{}') : (detail.prize_config || {});
+    } catch {
+      pc = {};
+    }
+    try {
+      plc = typeof detail.placement_config === 'string' ? JSON.parse(detail.placement_config || '{}') : (detail.placement_config || {});
+    } catch {
+      plc = {};
+    }
+    const paid = Math.min(4, Math.max(1, Number(pc.paid_positions) || Object.keys(pc.positions || {}).length || 1));
+    const pos = pc.positions || {};
     setForm({
       name: detail.name || '',
       description: detail.description || '',
       prize_text: detail.prize_text || '',
+      paid_positions: paid,
+      prize_currency: pc.currency || '',
+      prize_1: pos['1']?.label || '',
+      prize_2: pos['2']?.label || '',
+      prize_3: pos['3']?.label || '',
+      prize_4: pos['4']?.label || '',
+      third_place_match: !!plc.third_place_match,
       max_players: detail.max_players ?? 64,
       format: detail.format || 'qualifier',
       phase: detail.phase || 'qualifier_a',
@@ -228,10 +263,27 @@ export default function TournamentAdminPanel() {
     setEditOpen(true);
   };
 
+  const buildPrizeConfigPayload = (f) => {
+    const paid = Math.min(4, Math.max(1, parseInt(f.paid_positions, 10) || 1));
+    const positions = {};
+    for (let i = 1; i <= paid; i += 1) {
+      const label = (f[`prize_${i}`] || '').trim();
+      if (label) positions[String(i)] = { label };
+    }
+    if (Object.keys(positions).length === 0) return null;
+    return {
+      currency: (f.prize_currency || '').trim() || null,
+      paid_positions: paid,
+      positions,
+    };
+  };
+
   const toBody = (f) => ({
     name: f.name.trim(),
     description: f.description?.trim() || null,
     prize_text: f.prize_text?.trim() || null,
+    prize_config: buildPrizeConfigPayload(f),
+    placement_config: { third_place_match: !!f.third_place_match },
     max_players: Number(f.max_players),
     format: f.format,
     phase: f.phase,
@@ -423,9 +475,51 @@ export default function TournamentAdminPanel() {
         <textarea className="form-input" rows={2} value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} />
       </label>
       <label>
-        Premio
+        Premio (texto general)
         <input className="form-input" value={form.prize_text} onChange={(e) => setForm((f) => ({ ...f, prize_text: e.target.value }))} />
       </label>
+      <label className="span-2 section-label-like">Premios por posición</label>
+      <label>
+        Puestos premiados
+        <select
+          className="form-input"
+          value={form.paid_positions}
+          onChange={(e) => setForm((f) => ({ ...f, paid_positions: Number(e.target.value) }))}
+        >
+          <option value={1}>1</option>
+          <option value={2}>2</option>
+          <option value={3}>3</option>
+          <option value={4}>4</option>
+        </select>
+      </label>
+      <label>
+        Moneda (opcional, ej. ARS)
+        <input className="form-input" value={form.prize_currency} onChange={(e) => setForm((f) => ({ ...f, prize_currency: e.target.value }))} />
+      </label>
+      {Array.from({ length: form.paid_positions }, (_, i) => i + 1).map((n) => (
+        <label key={n}>
+          {`Premio ${n}° puesto`}
+          <input
+            className="form-input"
+            value={form[`prize_${n}`]}
+            onChange={(e) => setForm((f) => ({ ...f, [`prize_${n}`]: e.target.value }))}
+            placeholder="Ej: $50.000 o 10.000 créditos"
+          />
+        </label>
+      ))}
+      <label className="checkbox-row span-2">
+        <input
+          type="checkbox"
+          checked={form.third_place_match}
+          onChange={(e) => setForm((f) => ({ ...f, third_place_match: e.target.checked }))}
+        />
+        Disputar partido por 3° puesto (define 3° y 4° con un cruce extra entre perdedores de semifinal)
+      </label>
+      {Number(form.paid_positions) >= 3 && !form.third_place_match && (
+        <p className="admin-t-warn span-2">
+          Si premiás 3° o 4° puesto, se recomienda activar el partido por 3° puesto para definir posiciones exactas.
+        </p>
+      )}
       <label>
         Max jugadores
         <input type="number" className="form-input" min={2} max={128} value={form.max_players} onChange={(e) => setForm((f) => ({ ...f, max_players: e.target.value }))} />
@@ -708,9 +802,14 @@ export default function TournamentAdminPanel() {
                 {detailTab === 'bracket' && (
                   <div className="admin-t-panel-card">
                     <p>Vista pública del cuadro (jugadores y espectadores).</p>
-                    <Link to={`/torneos/${detail.id}/bracket`} className="btn btn-outline-gold btn-sm" target="_blank" rel="noreferrer">
-                      <ExternalLink size={14} /> Abrir cuadro en nueva pestaña
-                    </Link>
+                    <div className="admin-cajero-search-row" style={{ flexWrap: 'wrap', gap: 8 }}>
+                      <Link to={`/torneos/${detail.id}/bracket`} className="btn btn-outline-gold btn-sm" target="_blank" rel="noreferrer">
+                        <ExternalLink size={14} /> Abrir cuadro en nueva pestaña
+                      </Link>
+                      <Link to={`/torneos/${detail.id}?tab=positions`} className="btn btn-secondary btn-sm" target="_blank" rel="noreferrer">
+                        Ver posiciones
+                      </Link>
+                    </div>
                   </div>
                 )}
               </>

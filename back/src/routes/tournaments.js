@@ -19,6 +19,7 @@ const express             = require('express');
 const rateLimit           = require('express-rate-limit');
 const authMiddleware      = require('../middleware/auth');
 const TournamentService   = require('../services/tournamentService');
+const NotificationService = require('../services/notificationService');
 const logger              = require('../config/logger');
 
 const router = express.Router();
@@ -86,6 +87,17 @@ function handleRouteError(res, err, context) {
   return res.status(500).json({ error: 'Error interno' });
 }
 
+// ── GET /api/tournaments/chat/available ───────────────────────────────────────
+router.get('/chat/available', async (req, res) => {
+  try {
+    const tournaments = await TournamentService.listTournamentChatsAvailable(req.user.id);
+    return res.json({ tournaments });
+  } catch (err) {
+    logger.error('tournament chat available: ' + err.message);
+    return res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // ── GET /api/tournaments ──────────────────────────────────────────────────────
 router.get('/', async (req, res) => {
   try {
@@ -129,6 +141,46 @@ router.get('/:id/bracket', async (req, res) => {
   } catch (err) {
     if (err.message === 'Torneo no encontrado') return res.status(404).json({ error: err.message });
     return handleRouteError(res, err, 'bracket');
+  }
+});
+
+// ── GET /api/tournaments/:id/messages ─────────────────────────────────────────
+router.get('/:id/messages', async (req, res) => {
+  try {
+    const messages = await TournamentService.getTournamentChatMessages(
+      Number(req.params.id),
+      req.user.id,
+      req.user.role,
+      { limit: req.query.limit, before: req.query.before }
+    );
+    return res.json({ messages });
+  } catch (err) {
+    if (err.code === 'not_found') return res.status(404).json({ error: 'Torneo no encontrado' });
+    if (err.code === 'expired') return res.status(410).json({ error: 'El chat de este torneo ya finalizó.' });
+    if (err.code === 'cancelled') return res.status(403).json({ error: 'Torneo cancelado' });
+    return res.status(403).json({ error: 'No tenés acceso al chat de este torneo' });
+  }
+});
+
+// ── POST /api/tournaments/:id/messages ────────────────────────────────────────
+router.post('/:id/messages', tournamentActionLimit, async (req, res) => {
+  try {
+    const tid = Number(req.params.id);
+    const msg = await TournamentService.createTournamentChatMessage(
+      tid,
+      req.user.id,
+      req.user.role,
+      req.body?.message
+    );
+    const out = { ...msg, tournamentId: tid };
+    NotificationService.emitToRoom(`tournament-chat:${tid}`, 'tournament:chat:message', out);
+    return res.status(201).json({ message: msg });
+  } catch (err) {
+    if (err.code === 'empty') return res.status(400).json({ error: 'El mensaje no puede estar vacío' });
+    if (err.code === 'not_found') return res.status(404).json({ error: 'Torneo no encontrado' });
+    if (err.code === 'expired') return res.status(410).json({ error: 'El chat de este torneo ya finalizó.' });
+    if (err.code === 'cancelled') return res.status(403).json({ error: 'Torneo cancelado' });
+    return res.status(403).json({ error: 'No tenés acceso al chat de este torneo' });
   }
 });
 

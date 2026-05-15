@@ -9,10 +9,57 @@ const Game = {
     return result.insertId;
   },
 
-  async finish({ roomId, winnerId, scoreP1, scoreP2 }) {
+  /**
+   * Partida normal con ganador.
+   * @param {{ roomId, winnerId, scoreP1, scoreP2, finishReason?: string|null }} p
+   */
+  async finish({ roomId, winnerId, scoreP1, scoreP2, finishReason = 'completed' }) {
     await query(
-      'UPDATE partidas SET state = ?, winner_id = ?, score_p1 = ?, score_p2 = ?, finished_at = NOW() WHERE room_id = ?',
-      ['finished', winnerId, scoreP1, scoreP2, roomId]
+      `UPDATE partidas
+       SET state = 'finished',
+           status = 'finished',
+           winner_id = ?,
+           score_p1 = ?,
+           score_p2 = ?,
+           finished_at = NOW(),
+           p1_disconnected_at = NULL,
+           p2_disconnected_at = NULL,
+           p1_reconnect_deadline_at = NULL,
+           p2_reconnect_deadline_at = NULL,
+           requires_admin_resolution = 0,
+           finish_reason = ?
+       WHERE room_id = ?
+         AND winner_id IS NULL
+         AND (finished_at IS NULL OR finished_at = '0000-00-00 00:00:00')`,
+      [winnerId, scoreP1, scoreP2, finishReason || 'completed', roomId]
+    );
+  },
+
+  /**
+   * Cierra sin ganador deportivo (doble desconexión, anulación segura).
+   */
+  async closeWithoutWinner({
+    roomId,
+    status = 'cancelled',
+    finishReason = 'both_disconnected',
+    requiresAdminResolution = false,
+  }) {
+    await query(
+      `UPDATE partidas
+       SET state = 'finished',
+           status = ?,
+           winner_id = NULL,
+           finished_at = NOW(),
+           p1_disconnected_at = NULL,
+           p2_disconnected_at = NULL,
+           p1_reconnect_deadline_at = NULL,
+           p2_reconnect_deadline_at = NULL,
+           finish_reason = ?,
+           requires_admin_resolution = ?
+       WHERE room_id = ?
+         AND winner_id IS NULL
+         AND (finished_at IS NULL OR finished_at = '0000-00-00 00:00:00')`,
+      [status, finishReason, requiresAdminResolution ? 1 : 0, roomId]
     );
   },
 

@@ -16,6 +16,10 @@ import ReconnectOverlay from '../components/game/ReconnectOverlay';
 import TurnTimer     from '../components/game/TurnTimer';
 import EnvidoResultModal from '../components/game/EnvidoResultModal';
 import toast from 'react-hot-toast';
+import { Volume2, VolumeX } from 'lucide-react';
+import { useGameSounds } from '../hooks/useGameSounds';
+import { getSoundEnabled, toggleSound } from '../services/soundManager';
+
 export default function Game() {
 
   const { user }   = useAuth();
@@ -29,6 +33,7 @@ export default function Game() {
     opponentDisconnected,
   } = useGame();
  const autoReconnectTriedRef = useRef(false);
+ const [soundOn, setSoundOn] = useState(() => getSoundEnabled());
  const [showAbandonConfirm, setShowAbandonConfirm] = useState(false);
  const [envidoResult, setEnvidoResult] = useState(null);
  const [socketLive, setSocketLive] = useState(() => !!getSocket()?.connected);
@@ -83,6 +88,8 @@ export default function Game() {
   return () => clearTimeout(t);
 }, [reconnectingGame, gameState, navigate]);
 
+  useGameSounds(gameState, user);
+
   // Show "abandoned" result in gameOver modal
   useEffect(() => {
     if (lastEvent?.type === 'abandoned') {
@@ -107,7 +114,9 @@ if (!gameState) {
   );
 }
   const myId       = user.id;
-  const isMyTurn   = gameState.waitingForPlayer === myId;
+  const isMyTurn =
+    gameState.waitingForPlayer != null &&
+    String(gameState.waitingForPlayer) === String(myId);
   const myHand     = gameState.myHand || [];
   const oppCount   = gameState.opponentCardCount ?? 0;
   const inEndRound = gameState.state === 'END_ROUND';
@@ -158,6 +167,18 @@ if (!gameState) {
         </div>
 
         <div className="game-header-aside">
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm game-sound-toggle"
+            title={soundOn ? 'Desactivar sonidos' : 'Activar sonidos'}
+            aria-pressed={soundOn}
+            onClick={() => {
+              toggleSound();
+              setSoundOn(getSoundEnabled());
+            }}
+          >
+            {soundOn ? <Volume2 size={18} aria-hidden /> : <VolumeX size={18} aria-hidden />}
+          </button>
           <span
             className={`game-connection-badge ${socketLive ? 'is-live' : 'is-off'}`}
             title={socketLive ? 'Socket conectado' : 'Sin conexión'}

@@ -45,6 +45,7 @@ export const profileApi = {
   getUser:      (username)  => api.get(`/profile/${encodeURIComponent(username)}`),
   update:       (body)      => api.put('/profile', body),
   setAvatarChoice: (body)   => api.put('/profile/avatar-choice', body),
+  getMatchHistory: (params) => api.get('/profile/me/game-history', { params }),
 };
 
 // ── Users (public profiles by ID) ────────────────────────────────
@@ -67,6 +68,7 @@ export const challengeApi = {
   create: (body)   => api.post('/challenges', body),
   createFriendClassic: (body) => api.post('/challenges/friend/classic', body),
   getFriendPending: () => api.get('/challenges/friend/pending'),
+  getFriendConversation: (peerId) => api.get(`/challenges/friend/conversation/${peerId}`),
   accept: (id)      => api.post(`/challenges/${id}/accept`),
   reject: (id)      => api.post(`/challenges/${id}/reject`),
   cancel: (id)      => api.delete(`/challenges/${id}`),
@@ -140,6 +142,14 @@ export const tournamentApi = {
   unready:    (tournamentId, matchId) => api.post(`/tournaments/${tournamentId}/matches/${matchId}/unready`),
 };
 
+export const tournamentChatApi = {
+  getAvailable: () => api.get('/tournaments/chat/available'),
+  getMessages: (tournamentId, params = {}) =>
+    api.get(`/tournaments/${tournamentId}/messages`, { params }),
+  sendMessage: (tournamentId, message) =>
+    api.post(`/tournaments/${tournamentId}/messages`, { message }),
+};
+
 // ── Admin tournaments (JWT admin) ─────────────────────────────────
 export const adminTournamentApi = {
   create:         (body)       => api.post('/admin/tournaments', body),
@@ -160,6 +170,8 @@ export const adminApi = {
   dashboard:        ()         => api.get('/admin/dashboard'),
   listUsers:        (p = {})   => api.get('/admin/users', { params: p }),
   updateUser:       (id, body) => api.patch(`/admin/users/${id}`, body),
+  resolveAbandonGame: (roomId, body) =>
+    api.post(`/admin/games/${encodeURIComponent(roomId)}/resolve-abandon`, body),
   listTransactions: (p = {})   => api.get('/admin/transactions', { params: p }),
   approveDeposit:   (id)       => api.post(`/admin/transactions/${id}/approve`),
   rejectDeposit:    (id, body) => api.post(`/admin/transactions/${id}/reject`, body),

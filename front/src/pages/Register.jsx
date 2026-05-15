@@ -51,7 +51,11 @@ export default function Register() {
       toast.success('Cuenta creada');
       navigate('/lobby');
     } catch (err) {
-      toast.error(err.response?.data?.error || 'No se pudo registrar');
+      if (err.response?.status === 429) {
+        toast.error('Demasiados intentos. Esperá un momento y volvé a probar.');
+      } else {
+        toast.error(err.response?.data?.error || 'No se pudo registrar');
+      }
     } finally {
       setLoading(false);
     }

@@ -74,6 +74,7 @@ function normalizeMatch(r) {
     round_number:     r.round_number,
     match_number:     r.match_number,
     bracket_position: r.bracket_position,
+    round_type:       r.round_type || 'bracket',
     status:           r.status,
     player1:          r.player1_id
       ? { id: r.player1_id, username: r.p1_username || null, avatar: r.p1_avatar || null }
@@ -97,6 +98,8 @@ function normalizeMatch(r) {
     scheduled_at:     r.scheduled_at,
     started_at:       r.started_at,
     finished_at:      r.finished_at,
+    round_type:       r.round_type || 'bracket',
+    round_label:      r.round_type === 'third_place' ? 'Partido por el 3° puesto' : null,
   };
 }
 
@@ -116,6 +119,139 @@ async function createEvent(connOrNull, tournamentId, type, metadata = null, user
   ];
   if (connOrNull) await connOrNull.execute(sql, p);
   else            await query(sql, p);
+}
+
+function parseJsonField(val, fallback = {}) {
+  if (val == null) return { ...fallback };
+  if (typeof val === 'object') return val;
+  try {
+    const o = JSON.parse(val);
+    return o && typeof o === 'object' ? o : { ...fallback };
+  } catch {
+    return { ...fallback };
+  }
+}
+
+function parsePlacementConfig(tRow) {
+  return parseJsonField(tRow?.placement_config, {});
+}
+
+function parsePrizeConfig(tRow) {
+  return parseJsonField(tRow?.prize_config, {});
+}
+
+/**
+ * Premio para una posición final (1..4). Si no hay prize_config.positions[n]
+ * y n===1, usa prize_text como label del campeón.
+ */
+function prizeForFinalPosition(tournamentRow, finalPosition) {
+  const fp = finalPosition != null ? Number(finalPosition) : null;
+  if (!fp || !Number.isFinite(fp)) {
+    return { prize_label: null, prize_amount: null, prize_currency: null };
+  }
+  const cfg = parsePrizeConfig(tournamentRow);
+  const pos = cfg.positions && typeof cfg.positions === 'object' ? cfg.positions : {};
+  const key = String(fp);
+  const entry = pos[key] || pos[fp];
+  if (entry && (entry.label != null || entry.amount != null)) {
+    return {
+      prize_label: entry.label != null ? String(entry.label) : null,
+      prize_amount: entry.amount != null && entry.amount !== '' ? Number(entry.amount) : null,
+      prize_currency: entry.currency != null ? String(entry.currency) : (cfg.currency || null),
+    };
+  }
+  if (fp === 1 && tournamentRow?.prize_text) {
+    return {
+      prize_label: String(tournamentRow.prize_text).trim(),
+      prize_amount: tournamentRow.prize_amount != null ? Number(tournamentRow.prize_amount) : null,
+      prize_currency: cfg.currency || null,
+    };
+  }
+  return { prize_label: null, prize_amount: null, prize_currency: null };
+}
+
+/** Máxima ronda del bracket principal (excluye third_place, etc.). */
+async function bracketMaxRound(conn, tournamentId) {
+  const [mxRows] = await conn.execute(
+    `SELECT MAX(round_number) AS mx FROM tournament_matches
+     WHERE tournament_id = ? AND COALESCE(round_type, 'bracket') = 'bracket'`,
+    [tournamentId]
+  );
+  return Number(mxRows[0]?.mx || 0);
+}
+
+/**
+ * Tras una semifinal: si aplica, crea el cruce por 3° puesto entre perdedores.
+ */
+async function tryScheduleThirdPlaceMatch(conn, tournamentId, finishedMatch) {
+  if (String(finishedMatch.round_type || 'bracket') !== 'bracket') return;
+
+  const [tRows] = await conn.execute(
+    'SELECT phase, placement_config FROM tournaments WHERE id = ? FOR UPDATE',
+    [tournamentId]
+  );
+  if (!tRows.length) return;
+  const placement = parseJsonField(tRows[0].placement_config, {});
+  if (!placement.third_place_match) return;
+
+  const phase = tRows[0].phase;
+  if (phase === 'qualifier_a' || phase === 'qualifier_b') return;
+
+  const maxR = await bracketMaxRound(conn, tournamentId);
+  if (maxR < 2) return;
+
+  const semiR = maxR - 1;
+  if (Number(finishedMatch.round_number) !== semiR) return;
+
+  const [exists] = await conn.execute(
+    `SELECT id FROM tournament_matches
+     WHERE tournament_id = ? AND round_type = 'third_place' AND status <> 'cancelled'
+     LIMIT 1`,
+    [tournamentId]
+  );
+  if (exists.length) return;
+
+  const [semiMatches] = await conn.execute(
+    `SELECT id, player1_id, player2_id, winner_id, status, match_number
+     FROM tournament_matches
+     WHERE tournament_id = ? AND COALESCE(round_type, 'bracket') = 'bracket' AND round_number = ?
+     ORDER BY match_number ASC`,
+    [tournamentId, semiR]
+  );
+  const done = semiMatches.filter((x) => ['finished', 'walkover'].includes(x.status));
+  if (done.length < 2) return;
+
+  const losers = [];
+  for (const sm of done) {
+    if (!sm.winner_id) return;
+    const lid = Number(sm.player1_id) === Number(sm.winner_id) ? sm.player2_id : sm.player1_id;
+    if (lid) losers.push(Number(lid));
+  }
+  if (losers.length !== 2) return;
+
+  const maxMn = semiMatches.reduce((acc, x) => Math.max(acc, Number(x.match_number) || 0), 0);
+  const nextMn = maxMn + 1;
+  const p1 = losers[0];
+  const p2 = losers[1];
+  const ready = p1 && p2 ? 'ready' : 'pending';
+
+  await conn.execute(
+    `INSERT INTO tournament_matches
+       (tournament_id, round_number, match_number, bracket_position,
+        player1_id, player2_id, status, round_type)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'third_place')`,
+    [tournamentId, maxR, nextMn, 999, p1, p2, ready]
+  );
+  await createEvent(conn, tournamentId, 'third_place_match_scheduled', { players: losers }, null, null);
+}
+
+async function applyThirdPlaceWinnerPlacement(conn, tournamentId, matchRow, winnerId) {
+  await conn.execute(
+    `UPDATE tournament_registrations SET final_position = 3
+     WHERE tournament_id = ? AND user_id = ?
+       AND status NOT IN ('winner','qualified','cancelled','no_show','disqualified')`,
+    [tournamentId, winnerId]
+  );
 }
 
 /** Lanza error si el torneo no existe; devuelve la fila */
@@ -152,6 +288,7 @@ async function getSubstituteCount(conn, tournamentId) {
 async function _advanceWinnerConn(conn, matchId, winnerId) {
   const [rows] = await conn.execute(
     `SELECT tm.next_match_id, tm.next_slot, tm.tournament_id,
+            tm.round_type,
             t.phase
      FROM tournament_matches tm
      JOIN tournaments t ON t.id = tm.tournament_id
@@ -160,7 +297,10 @@ async function _advanceWinnerConn(conn, matchId, winnerId) {
   );
   if (!rows.length) return;
 
-  const { next_match_id, next_slot, tournament_id: tId, phase } = rows[0];
+  const { next_match_id, next_slot, tournament_id: tId, phase, round_type: rt } = rows[0];
+  if (String(rt || 'bracket') === 'third_place') {
+    return;
+  }
   const isQualifier = phase === 'qualifier_a' || phase === 'qualifier_b';
 
   if (!next_match_id) {
@@ -181,7 +321,7 @@ async function _advanceWinnerConn(conn, matchId, winnerId) {
       );
       if (Number(qRows[0].cnt) >= QUALIFY_COUNT) {
         await conn.execute(
-          "UPDATE tournaments SET status = 'finished' WHERE id = ?",
+          "UPDATE tournaments SET status = 'finished', finished_at = COALESCE(finished_at, NOW()) WHERE id = ?",
           [tId]
         );
         await createEvent(conn, tId, 'qualifier_finished', { qualifiedCount: QUALIFY_COUNT });
@@ -189,7 +329,7 @@ async function _advanceWinnerConn(conn, matchId, winnerId) {
     } else {
       // finals / general → campeón
       await conn.execute(
-        `UPDATE tournaments SET status = 'finished', winner_id = ? WHERE id = ?`,
+        `UPDATE tournaments SET status = 'finished', winner_id = ?, finished_at = COALESCE(finished_at, NOW()) WHERE id = ?`,
         [winnerId, tId]
       );
       await conn.execute(
@@ -232,21 +372,35 @@ async function _advanceWinnerConn(conn, matchId, winnerId) {
 async function _markLoserFromFinishedMatch(conn, tournamentId, matchRow, loserId) {
   if (!loserId) return;
 
-  const [tRows] = await conn.execute('SELECT phase FROM tournaments WHERE id = ?', [tournamentId]);
-  const phase   = tRows[0]?.phase || 'general';
-  const isQual  = phase === 'qualifier_a' || phase === 'qualifier_b';
+  if (String(matchRow.round_type || 'bracket') === 'third_place') {
+    await conn.execute(
+      `UPDATE tournament_registrations
+       SET status = 'eliminated', eliminated_round = ?, final_position = 4
+       WHERE tournament_id = ? AND user_id = ?
+         AND status NOT IN ('winner','qualified','cancelled','no_show','disqualified')`,
+      [matchRow.round_number, tournamentId, loserId]
+    );
+    return;
+  }
 
-  const [mxRows] = await conn.execute(
-    'SELECT MAX(round_number) AS mx FROM tournament_matches WHERE tournament_id = ?',
+  const [tRows] = await conn.execute(
+    'SELECT phase, placement_config FROM tournaments WHERE id = ?',
     [tournamentId]
   );
-  const maxR = Number(mxRows[0]?.mx || 0);
-  const r    = Number(matchRow.round_number || 0);
+  const phase = tRows[0]?.phase || 'general';
+  const placement = parseJsonField(tRows[0]?.placement_config, {});
+  const thirdOn = placement.third_place_match === true;
+  const isQual = phase === 'qualifier_a' || phase === 'qualifier_b';
+
+  const maxR = await bracketMaxRound(conn, tournamentId);
+  const r = Number(matchRow.round_number || 0);
 
   let finalPosition = null;
   if (!isQual && maxR > 0) {
     if (r === maxR) finalPosition = 2;
-    else if (maxR > 1 && r === maxR - 1) finalPosition = 3;
+    else if (maxR > 1 && r === maxR - 1) {
+      if (!thirdOn) finalPosition = 3;
+    }
   }
 
   let sql =
@@ -342,6 +496,7 @@ const TournamentService = {
          t.auto_checkin_enabled, t.auto_start_enabled,
          t.checkin_closed_at, t.bracket_generated_at, t.ready_timeout_minutes,
          t.winner_id, t.created_at,
+         t.prize_config, t.placement_config,
          SUM(CASE WHEN tr.status IN ('registered','checked_in') THEN 1 ELSE 0 END) AS titular_count,
          SUM(CASE WHEN tr.status = 'substitute'                  THEN 1 ELSE 0 END) AS substitute_count
        FROM tournaments t
@@ -386,6 +541,7 @@ const TournamentService = {
          t.auto_checkin_enabled, t.auto_start_enabled,
          t.checkin_closed_at, t.bracket_generated_at, t.ready_timeout_minutes,
          t.winner_id, t.created_at, t.updated_at,
+         t.prize_config, t.placement_config,
          u.username AS winner_username, u.avatar AS winner_avatar,
          SUM(CASE WHEN tr.status IN ('registered','checked_in') THEN 1 ELSE 0 END) AS titular_count,
          SUM(CASE WHEN tr.status = 'substitute'                  THEN 1 ELSE 0 END) AS substitute_count
@@ -851,7 +1007,10 @@ const TournamentService = {
          WHERE tournament_id = ? AND user_id IN (${ph})`,
         [tournamentId, ...players]
       );
-      await query("UPDATE tournaments SET status = 'finished', bracket_generated_at = NOW() WHERE id = ?", [tournamentId]);
+      await query(
+        "UPDATE tournaments SET status = 'finished', bracket_generated_at = NOW(), finished_at = COALESCE(finished_at, NOW()) WHERE id = ?",
+        [tournamentId]
+      );
       await createEvent(null, tournamentId, 'bracket_generated',
         { method: 'direct_qualify', playerCount: players.length }, null, adminId);
       return { ok: true, method: 'direct_qualify', qualifiedCount: players.length };
@@ -897,8 +1056,8 @@ const TournamentService = {
           const [res] = await conn.execute(
             `INSERT INTO tournament_matches
                (tournament_id, round_number, match_number, bracket_position,
-                player1_id, player2_id, status)
-             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+                player1_id, player2_id, status, round_type)
+             VALUES (?, ?, ?, ?, ?, ?, ?, 'bracket')`,
             [tournamentId, round, matchNum, matchNum, p1, p2, status]
           );
           idMap[round][matchNum] = res.insertId;
@@ -1114,6 +1273,11 @@ const TournamentService = {
       );
       await _markLoserFromFinishedMatch(conn, tournamentId, m, loserId);
       await _advanceWinnerConn(conn, matchId, winnerId);
+      if (String(m.round_type || 'bracket') === 'third_place') {
+        await applyThirdPlaceWinnerPlacement(conn, tournamentId, m, winnerId);
+      } else {
+        await tryScheduleThirdPlaceMatch(conn, tournamentId, m);
+      }
     });
 
     return { ok: true };
@@ -1157,6 +1321,8 @@ const TournamentService = {
       starts_at            = null,
       checkin_starts_at    = null,
       registration_closes_at = null,
+      prize_config         = null,
+      placement_config     = null,
     } = body || {};
 
     if (!name?.trim()) throw new Error('Nombre obligatorio');
@@ -1193,6 +1359,19 @@ const TournamentService = {
       throw new Error('ready_timeout_minutes debe estar entre 1 y 60');
     }
 
+    const prizeConfigJson =
+      prize_config == null
+        ? null
+        : typeof prize_config === 'string'
+          ? prize_config
+          : JSON.stringify(prize_config);
+    const placementConfigJson =
+      placement_config == null
+        ? null
+        : typeof placement_config === 'string'
+          ? placement_config
+          : JSON.stringify(placement_config);
+
     const result = await query(
       `INSERT INTO tournaments
          (name, description, prize_text, max_players, format, phase,
@@ -1200,8 +1379,9 @@ const TournamentService = {
           entry_fee, prize_amount, is_paid, auto_checkin_enabled, auto_start_enabled,
           ready_timeout_minutes,
           starts_at, checkin_starts_at, registration_closes_at,
+          prize_config, placement_config,
           status, created_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?)`,
       [
         name.trim().substring(0, 120),
         description?.trim() || null,
@@ -1222,6 +1402,8 @@ const TournamentService = {
         starts_at            || null,
         checkin_starts_at    || null,
         registration_closes_at || null,
+        prizeConfigJson,
+        placementConfigJson,
         adminId,
       ]
     );
@@ -1248,10 +1430,27 @@ const TournamentService = {
       'starts_at', 'checkin_starts_at', 'registration_closes_at',
       'entry_fee', 'prize_amount', 'is_paid',
       'auto_checkin_enabled', 'auto_start_enabled', 'ready_timeout_minutes',
+      'prize_config', 'placement_config',
     ];
     const updates = {};
     for (const field of ALLOWED) {
       if (body[field] !== undefined) updates[field] = body[field];
+    }
+    if (updates.prize_config !== undefined) {
+      updates.prize_config =
+        updates.prize_config == null
+          ? null
+          : typeof updates.prize_config === 'string'
+            ? updates.prize_config
+            : JSON.stringify(updates.prize_config);
+    }
+    if (updates.placement_config !== undefined) {
+      updates.placement_config =
+        updates.placement_config == null
+          ? null
+          : typeof updates.placement_config === 'string'
+            ? updates.placement_config
+            : JSON.stringify(updates.placement_config);
     }
     if (Object.keys(updates).length === 0) throw new Error('Nada que actualizar');
 
@@ -1363,17 +1562,20 @@ const TournamentService = {
   },
 
   /**
-   * Posiciones y grupos para la vista "tabla final" (fuente: registrations + torneo).
+   * Posiciones y grupos para la vista "tabla final" (registrations + torneo + partidas del torneo).
    */
   async getStandings(tournamentId) {
     await assertTournamentExists(tournamentId);
 
     const tw = await query(
-      'SELECT id, name, status, winner_id, phase FROM tournaments WHERE id = ?',
+      `SELECT id, name, status, winner_id, phase, prize_text, prize_amount,
+              prize_config, placement_config
+       FROM tournaments WHERE id = ?`,
       [tournamentId]
     );
     if (!tw.length) throw new Error('Torneo no encontrado');
     const tournament = tw[0];
+    const placement = parsePlacementConfig(tournament);
 
     const regs = await query(
       `SELECT tr.user_id AS id, tr.status, tr.final_position, tr.eliminated_round,
@@ -1384,58 +1586,285 @@ const TournamentService = {
       [tournamentId]
     );
 
-    const champion = regs.find(r => r.status === 'winner' || r.id === tournament.winner_id) || null;
-    const runnerUp = regs.find(r => r.final_position === 2 && r.status === 'eliminated') || null;
+    const tmFinished = await query(
+      `SELECT player1_id, player2_id, winner_id, status
+       FROM tournament_matches
+       WHERE tournament_id = ?
+         AND winner_id IS NOT NULL
+         AND status IN ('finished', 'walkover')`,
+      [tournamentId]
+    );
+
+    const statsByUser = {};
+    for (const row of tmFinished) {
+      const w = row.winner_id != null ? Number(row.winner_id) : null;
+      const p1 = row.player1_id != null ? Number(row.player1_id) : null;
+      const p2 = row.player2_id != null ? Number(row.player2_id) : null;
+      for (const pid of [p1, p2]) {
+        if (!pid) continue;
+        if (!statsByUser[pid]) {
+          statsByUser[pid] = { tournament_wins: 0, tournament_losses: 0, matches_played: 0 };
+        }
+        statsByUser[pid].matches_played += 1;
+        if (w === pid) statsByUser[pid].tournament_wins += 1;
+        else statsByUser[pid].tournament_losses += 1;
+      }
+    }
+
+    const lossRows = await query(
+      `SELECT
+         CASE
+           WHEN tm.winner_id = tm.player1_id THEN tm.player2_id
+           WHEN tm.winner_id = tm.player2_id THEN tm.player1_id
+           ELSE NULL
+         END AS loser_id,
+         tm.round_number
+       FROM tournament_matches tm
+       WHERE tm.tournament_id = ?
+         AND tm.status IN ('finished', 'walkover')
+         AND tm.winner_id IS NOT NULL
+         AND tm.player1_id IS NOT NULL
+         AND tm.player2_id IS NOT NULL`,
+      [tournamentId]
+    );
+    const lossRoundByUser = {};
+    for (const row of lossRows) {
+      const lid = row.loser_id != null ? Number(row.loser_id) : null;
+      if (!lid) continue;
+      const rn = Number(row.round_number) || 0;
+      if (!lossRoundByUser[lid] || rn > lossRoundByUser[lid]) {
+        lossRoundByUser[lid] = rn;
+      }
+    }
+
+    const regStatusShort = (s) => {
+      const m = {
+        registered: 'Inscripto',
+        checked_in: 'Check-in',
+        substitute: 'Suplente',
+        cancelled: 'Cancelado',
+      };
+      return m[s] || s;
+    };
+
+    const labelFor = (r) => {
+      if (r.status === 'winner') return 'Campeón';
+      if (r.status === 'qualified') return 'Clasificado';
+      if (r.status === 'no_show') return 'No se presentó';
+      if (r.status === 'disqualified') return 'Descalificado';
+      if (r.status === 'eliminated') {
+        const fp = r.final_position != null ? Number(r.final_position) : null;
+        if (fp === 2) return 'Subcampeón';
+        if (fp === 3 && placement.third_place_match) return 'Tercer puesto';
+        if (fp === 4 && placement.third_place_match) return 'Cuarto puesto';
+        if (fp === 3 || fp === 4) return '3° / 4°';
+        if (r.eliminated_round != null) return `Eliminado (R${r.eliminated_round})`;
+        return 'Eliminado';
+      }
+      if (['registered', 'checked_in', 'substitute', 'cancelled'].includes(r.status)) {
+        return regStatusShort(r.status);
+      }
+      return r.status;
+    };
+
+    const statusLabelRegistration = (r) => {
+      const m = {
+        winner: 'Campeón',
+        eliminated: 'Eliminado',
+        qualified: 'Clasificado',
+        registered: 'Inscripto',
+        checked_in: 'Check-in',
+        substitute: 'Suplente',
+        cancelled: 'Cancelado',
+        no_show: 'No se presentó',
+        disqualified: 'Descalificado',
+      };
+      return m[r.status] || r.status || '—';
+    };
+
+    const tournSt = tournament.status;
+    const positionLabelForRow = (r) => {
+      if (r.status === 'winner') return '1';
+      const fp = r.final_position != null ? Number(r.final_position) : null;
+      if (fp === 2) return '2';
+      if (placement.third_place_match) {
+        if (fp === 3) return '3°';
+        if (fp === 4) return '4°';
+      }
+      if (fp === 3 || fp === 4) return '3°/4°';
+      if (fp != null && fp > 4) return `${fp}°`;
+      if (r.status === 'eliminated') {
+        if (r.eliminated_round != null) return `Ronda ${r.eliminated_round}`;
+        return 'Eliminado';
+      }
+      if (r.status === 'no_show' || r.status === 'disqualified') return '—';
+      if (['registered', 'checked_in', 'substitute'].includes(r.status)) {
+        if (['open', 'checkin', 'started'].includes(tournSt)) return 'En curso';
+      }
+      if (r.status === 'qualified') return '—';
+      return '—';
+    };
+
+    const champion =
+      regs.find((r) => r.status === 'winner')
+      || (tournament.winner_id && regs.find((r) => Number(r.id) === Number(tournament.winner_id)))
+      || null;
+
+    const runnerUp =
+      regs.find((r) => Number(r.final_position) === 2)
+      || regs.find((r) => r.status === 'eliminated' && Number(r.final_position) === 2)
+      || null;
+
     const semi = regs.filter(
-      r => r.status === 'eliminated'
+      (r) => r.status === 'eliminated'
         && r.final_position != null
         && Number(r.final_position) >= 3
         && Number(r.final_position) <= 4
     );
-    const qualified = regs.filter(r => r.status === 'qualified');
-    const noShow = regs.filter(r => r.status === 'no_show');
-    const disqualified = regs.filter(r => r.status === 'disqualified');
+
+    const qualified = regs.filter((r) => r.status === 'qualified');
+    const noShow = regs.filter((r) => r.status === 'no_show');
+    const disqualified = regs.filter((r) => r.status === 'disqualified');
 
     const eliminated = regs.filter(
-      r => r.status === 'eliminated' && r.eliminated_round != null && r.final_position == null
+      (r) => r.status === 'eliminated' && r.eliminated_round != null && r.final_position == null
     );
-    const eliminatedByRound = {};
+    const eliminatedByRoundRaw = {};
     for (const r of eliminated) {
       const k = String(r.eliminated_round);
-      if (!eliminatedByRound[k]) eliminatedByRound[k] = [];
-      eliminatedByRound[k].push(r);
+      if (!eliminatedByRoundRaw[k]) eliminatedByRoundRaw[k] = [];
+      eliminatedByRoundRaw[k].push(r);
     }
 
-    const standingsList = [...regs].filter(r => !['cancelled'].includes(r.status)).sort((a, b) => {
-      const pa = a.final_position != null ? a.final_position : 999;
-      const pb = b.final_position != null ? b.final_position : 999;
+    const standingsList = [...regs].filter((r) => !['cancelled'].includes(r.status)).sort((a, b) => {
+      const isCh = (row) =>
+        row.status === 'winner'
+        || (champion && Number(row.id) === Number(champion.id));
+      const wa = isCh(a) ? 1 : 0;
+      const wb = isCh(b) ? 1 : 0;
+      if (wa !== wb) return wb - wa;
+      const pa = a.final_position != null ? Number(a.final_position) : 999;
+      const pb = b.final_position != null ? Number(b.final_position) : 999;
       if (pa !== pb) return pa - pb;
+      const aggA = statsByUser[Number(a.id)] || { tournament_wins: 0, tournament_losses: 0, matches_played: 0 };
+      const aggB = statsByUser[Number(b.id)] || { tournament_wins: 0, tournament_losses: 0, matches_played: 0 };
+      if (aggB.tournament_wins !== aggA.tournament_wins) return aggB.tournament_wins - aggA.tournament_wins;
+      if (aggA.tournament_losses !== aggB.tournament_losses) return aggA.tournament_losses - aggB.tournament_losses;
+      const ra = lossRoundByUser[Number(a.id)];
+      const rb = lossRoundByUser[Number(b.id)];
+      if (ra != null && rb != null && ra !== rb) return rb - ra;
       return (a.username || '').localeCompare(b.username || '');
     });
 
+    const mapPlayer = (r) => {
+      if (!r) return null;
+      const uid = Number(r.id);
+      const agg = statsByUser[uid] || { tournament_wins: 0, tournament_losses: 0, matches_played: 0 };
+      const isChampion =
+        r.status === 'winner'
+        || (champion && Number(r.id) === Number(champion.id))
+        || (tournament.winner_id && Number(r.id) === Number(tournament.winner_id));
+
+      let resultLabel = labelFor(r);
+      let positionLabel = positionLabelForRow(r);
+      let statusLabel = statusLabelRegistration(r);
+
+      const lr = lossRoundByUser[uid];
+      const played = agg.matches_played > 0;
+      const staleReg =
+        played
+        && !isChampion
+        && ['registered', 'checked_in', 'substitute'].includes(r.status)
+        && ['started', 'finished'].includes(tournSt);
+
+      if (staleReg) {
+        if (agg.tournament_losses > 0 && lr != null) {
+          statusLabel = 'Eliminado';
+          resultLabel = r.eliminated_round != null ? `Eliminado (R${r.eliminated_round})` : `Eliminado en ronda ${lr}`;
+          positionLabel = r.final_position != null ? positionLabelForRow(r) : `Ronda ${lr}`;
+        } else if (agg.matches_played > 0) {
+          statusLabel = 'En competencia';
+          resultLabel = 'En competencia';
+          positionLabel = 'En curso';
+        }
+      }
+
+      const isFinal =
+        isChampion
+        || (r.final_position != null && ['eliminated', 'qualified'].includes(r.status))
+        || (staleReg && agg.tournament_losses > 0);
+      const still =
+        ['registered', 'checked_in'].includes(r.status)
+        && ['open', 'checkin', 'started'].includes(tournSt)
+        && agg.tournament_losses === 0;
+
+      const fpNum = r.final_position != null ? Number(r.final_position) : null;
+      const showPrize = fpNum != null && Number.isFinite(fpNum);
+      const pr = showPrize ? prizeForFinalPosition(tournament, fpNum) : { prize_label: null, prize_amount: null, prize_currency: null };
+
+      return {
+        user_id: r.id,
+        id: r.id,
+        username: r.username,
+        avatar: r.avatar,
+        wins: agg.tournament_wins,
+        losses: agg.tournament_losses,
+        tournament_wins: agg.tournament_wins,
+        tournament_losses: agg.tournament_losses,
+        matches_played: agg.matches_played,
+        final_position: r.final_position,
+        eliminated_round: r.eliminated_round ?? lr ?? null,
+        status: r.status,
+        label: resultLabel,
+        result_label: resultLabel,
+        position_label: positionLabel,
+        status_label: statusLabel,
+        is_final_position: isFinal,
+        is_still_competing: still,
+        prize_label: pr.prize_label,
+        prize_amount: pr.prize_amount,
+        prize_currency: pr.prize_currency,
+      };
+    };
+
+    const standingsRows = standingsList.map((r) => mapPlayer(r));
+
+    const eliminatedByRound = {};
+    for (const [k, arr] of Object.entries(eliminatedByRoundRaw)) {
+      eliminatedByRound[k] = arr.map((x) => mapPlayer(x));
+    }
+
+    const groups = {
+      champion: champion ? [mapPlayer(champion)] : [],
+      runner_up: runnerUp ? [mapPlayer(runnerUp)] : [],
+      semifinalists: semi.map((r) => mapPlayer(r)),
+      qualified: qualified.map((r) => mapPlayer(r)),
+      eliminated: eliminated.map((r) => mapPlayer(r)),
+      eliminated_by_round: eliminatedByRound,
+      no_show: noShow.map((r) => mapPlayer(r)),
+      disqualified: disqualified.map((r) => mapPlayer(r)),
+    };
+
     return {
       tournament: {
-        id:        tournament.id,
-        name:      tournament.name,
-        status:    tournament.status,
-        phase:     tournament.phase,
+        id: tournament.id,
+        name: tournament.name,
+        status: tournament.status,
+        phase: tournament.phase,
         winner_id: tournament.winner_id,
+        prize_text: tournament.prize_text,
+        prize_config: parsePrizeConfig(tournament),
+        placement_config: placement,
       },
-      champion:   champion ? { id: champion.id, username: champion.username, avatar: champion.avatar } : null,
-      runner_up:  runnerUp ? { id: runnerUp.id, username: runnerUp.username, avatar: runnerUp.avatar } : null,
-      semifinalists: semi.map(r => ({ id: r.id, username: r.username, avatar: r.avatar, label: '3°/4°' })),
-      qualified: qualified.map(r => ({ id: r.id, username: r.username, avatar: r.avatar })),
+      champion: champion ? { id: champion.id, username: champion.username, avatar: champion.avatar } : null,
+      runner_up: runnerUp ? { id: runnerUp.id, username: runnerUp.username, avatar: runnerUp.avatar } : null,
+      semifinalists: semi.map((r) => ({ id: r.id, username: r.username, avatar: r.avatar, label: '3°/4°' })),
+      qualified: qualified.map((r) => ({ id: r.id, username: r.username, avatar: r.avatar })),
       eliminatedByRound,
-      no_show: noShow.map(r => ({ id: r.id, username: r.username, avatar: r.avatar })),
-      disqualified: disqualified.map(r => ({ id: r.id, username: r.username, avatar: r.avatar })),
-      standingsList: standingsList.map(r => ({
-        id:               r.id,
-        username:         r.username,
-        avatar:           r.avatar,
-        status:           r.status,
-        final_position:   r.final_position,
-        eliminated_round: r.eliminated_round,
-      })),
+      no_show: noShow.map((r) => ({ id: r.id, username: r.username, avatar: r.avatar })),
+      disqualified: disqualified.map((r) => ({ id: r.id, username: r.username, avatar: r.avatar })),
+      standingsList: standingsRows,
+      groups,
     };
   },
 
@@ -1596,7 +2025,8 @@ const TournamentService = {
    */
   async finishMatchFromGame(roomId, winnerId, scores = {}) {
     const rows = await query(
-      `SELECT tm.id, tm.tournament_id, tm.player1_id, tm.player2_id, tm.round_number, tm.next_match_id
+      `SELECT tm.id, tm.tournament_id, tm.player1_id, tm.player2_id, tm.round_number,
+              tm.next_match_id, tm.round_type
        FROM   tournament_matches tm
        WHERE  tm.room_id = ?`,
       [roomId]
@@ -1626,6 +2056,11 @@ const TournamentService = {
         { matchId: m.id, winnerId, loserId, roomId }, winnerId);
       await _markLoserFromFinishedMatch(conn, m.tournament_id, m, loserId);
       await _advanceWinnerConn(conn, m.id, winnerId);
+      if (String(m.round_type || 'bracket') === 'third_place') {
+        await applyThirdPlaceWinnerPlacement(conn, m.tournament_id, m, winnerId);
+      } else {
+        await tryScheduleThirdPlaceMatch(conn, m.tournament_id, m);
+      }
     });
 
     // Determinar si este jugador se convirtió en clasificado o campeón
@@ -1643,6 +2078,172 @@ const TournamentService = {
       loserId,
       qualified:    regStatus === 'qualified',
       champion:     regStatus === 'winner',
+    };
+  },
+
+  _tournamentChatAnchor(t) {
+    if (!t || t.status !== 'finished') return null;
+    return t.finished_at || t.updated_at || null;
+  },
+
+  isTournamentChatExpired(t) {
+    if (!t || t.status !== 'finished') return false;
+    const anchor = this._tournamentChatAnchor(t);
+    if (!anchor) return false;
+    return Date.now() > new Date(anchor).getTime() + 24 * 3600 * 1000;
+  },
+
+  /**
+   * Acceso al chat de torneo: participantes con inscripción válida; admin con mismas
+   * ventanas de tiempo (no cancelado, no expirado +24h post-finish).
+   */
+  async canAccessTournamentChat(tournamentId, userId, userRole = 'user') {
+    const tid = Number(tournamentId);
+    if (!Number.isInteger(tid) || tid <= 0) return { ok: false, reason: 'not_found' };
+
+    const rows = await query(
+      `SELECT id, name, status, finished_at, updated_at FROM tournaments WHERE id = ?`,
+      [tid]
+    );
+    if (!rows.length) return { ok: false, reason: 'not_found' };
+    const t = rows[0];
+
+    if (t.status === 'cancelled') return { ok: false, reason: 'cancelled' };
+    if (this.isTournamentChatExpired(t)) return { ok: false, reason: 'expired' };
+
+    if (userRole === 'admin') {
+      return { ok: true, tournament: t, admin: true };
+    }
+
+    const regs = await query(
+      `SELECT status FROM tournament_registrations WHERE tournament_id = ? AND user_id = ?`,
+      [tid, userId]
+    );
+    if (!regs.length) return { ok: false, reason: 'forbidden' };
+    const st = regs[0].status;
+    if (st === 'cancelled') return { ok: false, reason: 'forbidden' };
+
+    const allowed = new Set([
+      'registered',
+      'checked_in',
+      'substitute',
+      'qualified',
+      'eliminated',
+      'winner',
+      'no_show',
+      'disqualified',
+    ]);
+    if (!allowed.has(st)) return { ok: false, reason: 'forbidden' };
+
+    return { ok: true, tournament: t, registrationStatus: st };
+  },
+
+  async listTournamentChatsAvailable(userId) {
+    const uid = Number(userId);
+    if (!Number.isInteger(uid) || uid <= 0) return [];
+
+    return query(
+      `SELECT DISTINCT t.id, t.name, t.status, t.finished_at, t.updated_at
+       FROM tournaments t
+       INNER JOIN tournament_registrations tr
+         ON tr.tournament_id = t.id AND tr.user_id = ?
+       WHERE tr.status <> 'cancelled'
+         AND t.status <> 'cancelled'
+         AND t.status <> 'draft'
+         AND (
+           t.status IN ('open', 'checkin', 'started')
+           OR (
+             t.status = 'finished'
+             AND DATE_ADD(COALESCE(t.finished_at, t.updated_at), INTERVAL 1 DAY) > NOW()
+           )
+         )
+       ORDER BY
+         CASE t.status
+           WHEN 'started' THEN 1
+           WHEN 'checkin' THEN 2
+           WHEN 'open' THEN 3
+           WHEN 'finished' THEN 4
+           ELSE 5
+         END,
+         t.id DESC
+       LIMIT 50`,
+      [uid]
+    );
+  },
+
+  async getTournamentChatMessages(tournamentId, userId, userRole, { limit = 50, before = null } = {}) {
+    const acc = await this.canAccessTournamentChat(tournamentId, userId, userRole);
+    if (!acc.ok) {
+      const err = new Error(acc.reason || 'forbidden');
+      err.code = acc.reason;
+      throw err;
+    }
+
+    const safeLimit = Math.min(Math.max(parseInt(String(limit), 10) || 50, 1), 100);
+    const bid = before != null ? parseInt(String(before), 10) : null;
+    const useBefore = Number.isInteger(bid) && bid > 0;
+
+    let sql = `
+      SELECT tm.id, tm.tournament_id, tm.message, tm.created_at,
+             u.id AS uid, u.username, u.avatar
+      FROM tournament_messages tm
+      JOIN usuarios u ON u.id = tm.user_id
+      WHERE tm.tournament_id = ? AND tm.deleted_at IS NULL`;
+    const params = [Number(tournamentId)];
+    if (useBefore) {
+      sql += ' AND tm.id < ?';
+      params.push(bid);
+    }
+    sql += ` ORDER BY tm.id DESC LIMIT ${safeLimit}`;
+
+    const rows = await query(sql, params);
+    return rows
+      .reverse()
+      .map((r) => ({
+        id:            r.id,
+        tournament_id: r.tournament_id,
+        text:          r.message,
+        createdAt:     r.created_at,
+        from:          { id: r.uid, username: r.username, avatar: r.avatar || null },
+      }));
+  },
+
+  async createTournamentChatMessage(tournamentId, userId, userRole, rawText) {
+    const acc = await this.canAccessTournamentChat(tournamentId, userId, userRole);
+    if (!acc.ok) {
+      const err = new Error(acc.reason || 'forbidden');
+      err.code = acc.reason;
+      throw err;
+    }
+
+    const text = String(rawText || '').trim().substring(0, 500);
+    if (!text) {
+      const err = new Error('empty');
+      err.code = 'empty';
+      throw err;
+    }
+
+    const ins = await query(
+      `INSERT INTO tournament_messages (tournament_id, user_id, message) VALUES (?, ?, ?)`,
+      [Number(tournamentId), userId, text]
+    );
+    const mid = ins.insertId;
+
+    const rows = await query(
+      `SELECT tm.id, tm.tournament_id, tm.message, tm.created_at,
+              u.id AS uid, u.username, u.avatar
+       FROM tournament_messages tm
+       JOIN usuarios u ON u.id = tm.user_id
+       WHERE tm.id = ?`,
+      [mid]
+    );
+    const r = rows[0];
+    return {
+      id:            r.id,
+      tournament_id: r.tournament_id,
+      text:          r.message,
+      createdAt:     r.created_at,
+      from:          { id: r.uid, username: r.username, avatar: r.avatar || null },
     };
   },
 };

@@ -245,10 +245,34 @@ function _formatMine(b, userId) {
 
 function _formatHistory(b, userId) {
   const formatted = _formatMine(b, userId);
-  if (b.status === 'finished') {
-    formatted.resultText = formatted.iWon
-      ? `Ganaste +${(formatted.prize - formatted.amount).toFixed(0)} créditos`
-      : `Perdiste -${formatted.amount.toFixed(0)} créditos`;
+  formatted.hasCreditMovement = false;
+  formatted.creditsDelta = null;
+  formatted.resultText = null;
+
+  if (b.status !== 'finished') {
+    return formatted;
+  }
+
+  const amount = formatted.amount;
+  const prizeDb = parseFloat(b.prize_amount);
+  const prizeFinal =
+    Number.isFinite(prizeDb) && prizeDb > 0 ? prizeDb : formatted.prize;
+
+  if (!(amount > 0)) {
+    return formatted;
+  }
+
+  const netGain = parseFloat((prizeFinal - amount).toFixed(2));
+
+  if (formatted.iWon) {
+    if (!(netGain > 1e-6)) return formatted;
+    formatted.creditsDelta = netGain;
+    formatted.hasCreditMovement = true;
+    formatted.resultText = `Ganaste +${netGain.toLocaleString('es-AR')} créditos`;
+  } else {
+    formatted.creditsDelta = -amount;
+    formatted.hasCreditMovement = true;
+    formatted.resultText = `Perdiste ${amount.toLocaleString('es-AR')} créditos`;
   }
   return formatted;
 }

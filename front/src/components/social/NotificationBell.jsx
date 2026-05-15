@@ -44,7 +44,10 @@ export default function NotificationBell() {
     } catch {}
   };
 
-  useEffect(() => { if (user) fetchNotifs(); }, [user]);
+  useEffect(() => {
+    if (!user?.id) return;
+    fetchNotifs();
+  }, [user?.id]);
 
   useEffect(() => {
     if (!socket) return;

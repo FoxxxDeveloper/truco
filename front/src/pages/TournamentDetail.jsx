@@ -28,6 +28,17 @@ import wordmarkDarkUrl from '../assets/panoramicooscuro.png';
 
 const MATCH_READY = new Set(['ready', 'waiting_ready']);
 
+function safeParseJson(val) {
+  if (val == null) return {};
+  if (typeof val === 'object') return val;
+  try {
+    const o = JSON.parse(val);
+    return o && typeof o === 'object' ? o : {};
+  } catch {
+    return {};
+  }
+}
+
 function userStatusSummary(myReg, myStatus) {
   if (!myReg) return { label: 'No inscripto', detail: 'Podés inscribirte si el torneo está abierto.' };
   if (myStatus === 'winner') return { label: 'Campeón', detail: 'Felicitaciones.' };
@@ -59,6 +70,7 @@ export default function TournamentDetail() {
   const [section, setSection] = useState('info');
   const [busy, setBusy] = useState(false);
   const [standings, setStandings] = useState(null);
+  const [standingsLoading, setStandingsLoading] = useState(false);
 
   const tid = Number(id);
 
@@ -78,12 +90,15 @@ export default function TournamentDetail() {
 
   const loadStandings = useCallback(async () => {
     if (!tid || Number.isNaN(tid)) return;
+    setStandingsLoading(true);
     try {
       const r = await tournamentApi.getStandings(tid);
       setStandings(r.data?.standings || null);
     } catch (e) {
       toast.error(e.response?.data?.error || 'No se pudieron cargar las posiciones');
       setStandings(null);
+    } finally {
+      setStandingsLoading(false);
     }
   }, [tid]);
 
@@ -267,21 +282,25 @@ export default function TournamentDetail() {
 
   if (loading) {
     return (
-      <div className="tournament-detail page-container tournament-detail--et2 page-shell">
+      <div className="tournament-detail page-container tournament-detail--et2 app-page">
         <AppHeader />
-        <p className="tournaments-loading">Cargando torneo…</p>
+        <div className="page-shell">
+          <p className="tournaments-loading">Cargando torneo…</p>
+        </div>
       </div>
     );
   }
 
   if (!tournament) {
     return (
-      <div className="tournament-detail page-container tournament-detail--et2 page-shell">
+      <div className="tournament-detail page-container tournament-detail--et2 app-page">
         <AppHeader />
-        <button type="button" className="btn btn-ghost btn-sm" onClick={() => navigate('/torneos')}>
-          <ArrowLeft size={18} aria-hidden /> Torneos
-        </button>
-        <p className="tournaments-empty">Torneo no encontrado.</p>
+        <div className="page-shell">
+          <button type="button" className="btn btn-ghost btn-sm" onClick={() => navigate('/torneos')}>
+            <ArrowLeft size={18} aria-hidden /> Torneos
+          </button>
+          <p className="tournaments-empty">Torneo no encontrado.</p>
+        </div>
       </div>
     );
   }
@@ -297,8 +316,9 @@ export default function TournamentDetail() {
   const statusCard = userStatusSummary(myReg, myStatus);
 
   return (
-    <div className="tournament-detail page-container tournament-detail--et2 page-shell">
+    <div className="tournament-detail page-container tournament-detail--et2 app-page">
       <AppHeader />
+      <div className="page-shell">
       <div className="fx-card tournament-hero">
         <div className="tournament-hero-top tournament-hero-top--compact">
           <button type="button" className="btn btn-ghost btn-sm" onClick={() => navigate('/torneos')}>
@@ -450,7 +470,41 @@ export default function TournamentDetail() {
       {section === 'info' && (
         <div className="fx-card tournament-info-panel">
           {tournament.description && <p className="tournament-desc">{tournament.description}</p>}
-          {tournament.prize_text && <p className="tournament-prize-big">{tournament.prize_text}</p>}
+          {tournament.prize_text &&
+            !(tournament.prize_config && Object.keys(safeParseJson(tournament.prize_config).positions || {}).length) && (
+              <p className="tournament-prize-big">{tournament.prize_text}</p>
+            )}
+
+          <p className="section-header">Premios</p>
+          <ul className="tournament-prize-list">
+            {(() => {
+              const pc = safeParseJson(tournament.prize_config);
+              const positions = pc.positions || {};
+              const paid = Math.min(
+                4,
+                Math.max(
+                  1,
+                  Number(pc.paid_positions) || Object.keys(positions).length || 1
+                )
+              );
+              return Array.from({ length: paid }, (_, i) => {
+                const n = i + 1;
+                const lab = positions[String(n)]?.label;
+                const fallback =
+                  n === 1 && !positions['1']?.label && tournament.prize_text ? tournament.prize_text : null;
+                return (
+                  <li key={n}>
+                    {n}° puesto: {lab || fallback || '—'}
+                  </li>
+                );
+              });
+            })()}
+          </ul>
+          <p className="tournament-desc">
+            {safeParseJson(tournament.placement_config).third_place_match
+              ? 'Habrá partido por el 3° puesto.'
+              : 'Sin partido por el 3° puesto.'}
+          </p>
 
           <p className="section-header">Reglas rápidas</p>
           <div className="tournament-rule-grid">
@@ -589,80 +643,176 @@ export default function TournamentDetail() {
         </div>
       )}
 
-      {section === 'positions' && standings && (
-        <div className="fx-card tournament-info-panel">
-          <h3 className="section-header">Tabla final</h3>
-          {standings.champion && (
-            <section className="tournament-pos-block">
-              <h4>Campeón</h4>
-              <p>{standings.champion.username}</p>
-            </section>
+      {section === 'positions' && (
+        <div className="fx-card tournament-info-panel tournament-standings-panel">
+          <h3 className="section-header">Posiciones</h3>
+          {standings?.tournament && ['open', 'checkin', 'started'].includes(standings.tournament.status) && (
+            <p className="tournament-standings-hint">
+              Las posiciones finales se completarán a medida que avance el torneo.
+            </p>
           )}
-          {standings.runner_up && (
-            <section className="tournament-pos-block">
-              <h4>Segundo</h4>
-              <p>{standings.runner_up.username}</p>
-            </section>
-          )}
-          {standings.semifinalists?.length > 0 && (
-            <section className="tournament-pos-block">
-              <h4>Semifinalistas (3°/4°)</h4>
-              <ul>
-                {standings.semifinalists.map((p) => (
-                  <li key={p.id}>{p.username}</li>
-                ))}
-              </ul>
-            </section>
-          )}
-          {standings.qualified?.length > 0 && (
-            <section className="tournament-pos-block">
-              <h4>Clasificados</h4>
-              <ul>
-                {standings.qualified.map((p) => (
-                  <li key={p.id}>{p.username}</li>
-                ))}
-              </ul>
-            </section>
-          )}
-          {Object.keys(standings.eliminatedByRound || {}).length > 0 && (
-            <section className="tournament-pos-block">
-              <h4>Eliminados por ronda</h4>
-              {Object.entries(standings.eliminatedByRound)
-                .sort((a, b) => Number(a[0]) - Number(b[0]))
-                .map(([round, players]) => (
-                  <div key={round} className="tournament-pos-sub">
-                    <strong>Ronda {round}</strong>
-                    <ul>
-                      {players.map((p) => (
-                        <li key={p.id}>{p.username}</li>
+          {standingsLoading && <p className="tournaments-empty">Cargando posiciones…</p>}
+          {!standingsLoading && standings && (
+            <>
+              <div className="tournament-standings-summary">
+                {standings.champion && (
+                  <div className="fx-card tournament-pos-card tournament-pos-card--champ">
+                    <span className="fx-badge fx-badge--gold">Campeón</span>
+                    <div className="tournament-pos-player">
+                      <TrucoAvatar avatar={standings.champion.avatar} username={standings.champion.username} size={40} />
+                      <strong>{standings.champion.username}</strong>
+                    </div>
+                  </div>
+                )}
+                {standings.runner_up && (
+                  <div className="fx-card tournament-pos-card tournament-pos-card--runner">
+                    <span className="fx-badge fx-badge--muted">Subcampeón</span>
+                    <div className="tournament-pos-player">
+                      <TrucoAvatar avatar={standings.runner_up.avatar} username={standings.runner_up.username} size={40} />
+                      <strong>{standings.runner_up.username}</strong>
+                    </div>
+                  </div>
+                )}
+                {standings.semifinalists?.length > 0 && (
+                  <div className="fx-card tournament-pos-card">
+                    <span className="fx-badge fx-badge--muted">3° / 4°</span>
+                    <ul className="tournament-pos-inline-list">
+                      {standings.semifinalists.map((p) => (
+                        <li key={p.id} className="tournament-pos-player">
+                          <TrucoAvatar avatar={p.avatar} username={p.username} size={36} />
+                          {p.username}
+                        </li>
                       ))}
                     </ul>
                   </div>
-                ))}
-            </section>
+                )}
+              </div>
+
+              {standings.qualified?.length > 0 && (
+                <section className="tournament-pos-block">
+                  <h4>Clasificados</h4>
+                  <ul className="tournament-pos-inline-list">
+                    {standings.qualified.map((p) => (
+                      <li key={p.id} className="tournament-pos-player">
+                        <TrucoAvatar avatar={p.avatar} username={p.username} size={32} />
+                        {p.username}
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              )}
+
+              {Object.keys(standings.eliminatedByRound || {}).length > 0 && (
+                <section className="tournament-pos-block">
+                  <h4>Eliminados por ronda</h4>
+                  {Object.entries(standings.eliminatedByRound)
+                    .sort((a, b) => Number(a[0]) - Number(b[0]))
+                    .map(([round, players]) => (
+                      <div key={round} className="tournament-pos-sub">
+                        <strong>Ronda {round}</strong>
+                        <ul className="tournament-pos-inline-list">
+                          {players.map((p) => (
+                            <li key={p.id} className="tournament-pos-player">
+                              <TrucoAvatar avatar={p.avatar} username={p.username} size={32} />
+                              {p.username}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    ))}
+                </section>
+              )}
+
+              {standings.no_show?.length > 0 && (
+                <section className="tournament-pos-block">
+                  <h4>No show</h4>
+                  <ul className="tournament-pos-inline-list">
+                    {standings.no_show.map((p) => (
+                      <li key={p.id} className="tournament-pos-player">
+                        <TrucoAvatar avatar={p.avatar} username={p.username} size={32} />
+                        {p.username}
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              )}
+
+              {standings.disqualified?.length > 0 && (
+                <section className="tournament-pos-block">
+                  <h4>Descalificados</h4>
+                  <ul className="tournament-pos-inline-list">
+                    {standings.disqualified.map((p) => (
+                      <li key={p.id} className="tournament-pos-player">
+                        <TrucoAvatar avatar={p.avatar} username={p.username} size={32} />
+                        {p.username}
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              )}
+
+              {standings.standingsList?.length > 0 && (
+                <div className="admin-table-wrap tournament-standings-table-wrap">
+                  <table className="admin-table admin-table--compact tournament-standings-table">
+                    <thead>
+                      <tr>
+                        <th>Posición</th>
+                        <th>Jugador</th>
+                        <th>Estado</th>
+                        <th>Ronda elim.</th>
+                        <th>Partidas</th>
+                        <th>W/L torneo</th>
+                        <th>Resultado</th>
+                        <th>Premio</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {standings.standingsList.map((row) => (
+                        <tr key={row.user_id ?? row.id}>
+                          <td className="admin-table-muted tournament-standings-pos">
+                            {row.position_label ?? '—'}
+                          </td>
+                          <td>
+                            <div className="tournament-pos-player">
+                              <TrucoAvatar avatar={row.avatar} username={row.username} size={32} />
+                              <span className="admin-table-strong">{row.username}</span>
+                            </div>
+                          </td>
+                          <td>
+                            <span className="fx-badge fx-badge--muted">{row.status_label ?? row.status}</span>
+                          </td>
+                          <td className="admin-table-muted">{row.eliminated_round ?? '—'}</td>
+                          <td className="admin-table-muted">{row.matches_played ?? 0}</td>
+                          <td className="admin-table-muted">
+                            {(row.wins ?? 0)} / {(row.losses ?? 0)}
+                          </td>
+                          <td>{row.result_label ?? row.label}</td>
+                          <td className="admin-table-muted tournament-standings-prize">{row.prize_label ?? '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {!standings.champion &&
+                !standings.runner_up &&
+                !(standings.standingsList?.length > 0) &&
+                !(standings.semifinalists?.length > 0) &&
+                !(standings.qualified?.length > 0) &&
+                Object.keys(standings.eliminatedByRound || {}).length === 0 &&
+                !(standings.no_show?.length > 0) &&
+                !(standings.disqualified?.length > 0) && (
+                  <p className="tournament-desc">Las posiciones aparecerán cuando avance el torneo.</p>
+                )}
+            </>
           )}
-          {standings.no_show?.length > 0 && (
-            <section className="tournament-pos-block">
-              <h4>Ausentes</h4>
-              <ul>
-                {standings.no_show.map((p) => (
-                  <li key={p.id}>{p.username}</li>
-                ))}
-              </ul>
-            </section>
-          )}
-          {standings.disqualified?.length > 0 && (
-            <section className="tournament-pos-block">
-              <h4>Descalificados</h4>
-              <ul>
-                {standings.disqualified.map((p) => (
-                  <li key={p.id}>{p.username}</li>
-                ))}
-              </ul>
-            </section>
+          {!standingsLoading && !standings && (
+            <p className="tournaments-empty">No se pudieron cargar las posiciones.</p>
           )}
         </div>
       )}
+      </div>
     </div>
   );
 }

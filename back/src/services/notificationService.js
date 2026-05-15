@@ -115,6 +115,12 @@ const NotificationService = {
       _io.to(sid).emit(event, payload);
     }
   },
+
+  /** Broadcast to a Socket.IO room (e.g. tournament chat). */
+  emitToRoom(room, event, payload) {
+    if (!_io || !room) return;
+    _io.to(String(room)).emit(event, payload);
+  },
 };
 
 module.exports = NotificationService;

@@ -175,21 +175,49 @@ function MyBattleCard({ battle, onCancel, loading }) {
 
 // ── History card ──────────────────────────────────────────────────────────────
 function HistoryCard({ battle }) {
-  const won = battle.iWon;
+  const finished = battle.status === 'finished';
+  const won = finished && battle.iWon;
+  const lost = finished && battle.winnerId != null && !battle.iWon;
+  const inconclusive = finished && battle.winnerId == null;
+
+  const badgeLabel =
+    battle.status === 'finished'
+      ? inconclusive
+        ? 'Sin resultado'
+        : won
+          ? 'Victoria'
+          : 'Derrota'
+      : battle.status === 'cancelled'
+        ? 'Cancelada'
+        : battle.status === 'expired'
+          ? 'Expirada'
+          : battle.status === 'refunded'
+            ? 'Reembolsada'
+            : battle.status === 'open'
+              ? 'Abierta'
+              : battle.status || '—';
+
+  const badgeTone = won ? 'success' : lost ? 'danger' : 'muted';
+
+  const creditLine =
+    battle.hasCreditMovement && battle.resultText
+      ? battle.resultText
+      : finished
+        ? 'Sin movimiento de créditos'
+        : '';
+
   return (
-    <div className={`battle-card battle-history battle-card--et3 fx-card ${won ? 'won' : 'lost'}`}>
+    <div className={`battle-card battle-history battle-card--et3 fx-card ${won ? 'won' : lost ? 'lost' : ''}`}>
       <div className="battle-card-header">
-        <span className={`result-badge ${won ? 'won' : 'lost'}`}>
-          {won ? '🏆 Victoria' : '💀 Derrota'}
-        </span>
+        <span className={`result-badge fx-badge fx-badge--${badgeTone}`}>{badgeLabel}</span>
         <span className="battle-rival">vs {battle.rival || '—'}</span>
         <span className="history-date">{new Date(battle.createdAt).toLocaleDateString('es-AR')}</span>
       </div>
-      <div className="battle-amounts">
-        <span className={`result-amount ${won ? 'gain' : 'loss'}`}>
-          {battle.resultText || (won ? `+${battle.netGain.toLocaleString('es-AR')} cr` : `-${battle.amount.toLocaleString('es-AR')} cr`)}
-        </span>
-      </div>
+      {finished && (
+        <div className="battle-amounts">
+          <span className={`result-amount ${won ? 'gain' : lost ? 'loss' : ''}`}>{creditLine}</span>
+        </div>
+      )}
     </div>
   );
 }
@@ -469,9 +497,10 @@ export default function Battles() {
   };
 
   return (
-    <div className="battles-page battle-page page-shell battle-page--et3">
+    <div className="battles-page battle-page page-container app-page battle-page--et3">
       <AppHeader />
 
+      <div className="page-shell battles-page-shell">
       <header className="battle-hero fx-card battle-hero--premium">
         <div className="battle-hero-top battle-hero-top--compact">
           <div className="battle-hero-meta">
@@ -627,6 +656,7 @@ export default function Battles() {
           )}
         </AnimatePresence>
       </main>
+      </div>
     </div>
   );
 }

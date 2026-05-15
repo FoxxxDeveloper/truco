@@ -5,17 +5,29 @@ const Ranking      = require('../models/Ranking');
 const WalletService = require('../services/walletService');
 const rateLimit    = require('express-rate-limit');
 const logger       = require('../config/logger');
+const { isProduction } = require('../config/rateLimitEnv');
 
 const router = express.Router();
 
-const authLimiter = rateLimit({
+/** Login y registro NO comparten contador (antes un mismo limiter agotaba intentos mezclados). */
+const registerLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 20,
-  message: { error: 'Too many requests, try again later' },
+  max: isProduction ? 12 : 300,
+  message: { error: 'Demasiados intentos de registro. Probá más tarde.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: isProduction ? 30 : 400,
+  message: { error: 'Demasiados intentos de inicio de sesión. Probá más tarde.' },
+  standardHeaders: true,
+  legacyHeaders: false,
 });
 
 // POST /api/auth/register
-router.post('/register', authLimiter, async (req, res) => {
+router.post('/register', registerLimiter, async (req, res) => {
   try {
     const { username, email, password } = req.body;
 
@@ -60,7 +72,7 @@ router.post('/register', authLimiter, async (req, res) => {
 
 // POST /api/auth/login
 // POST /api/auth/login
-router.post('/login', authLimiter, async (req, res) => {
+router.post('/login', loginLimiter, async (req, res) => {
   try {
     const { email, password } = req.body;
 

@@ -1,138 +1,121 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { AnimatePresence, motion } from 'framer-motion';
 import toast from 'react-hot-toast';
 import { useAuth } from '../../context/AuthContext';
 import { getSocket } from '../../services/socket';
 import { challengeApi } from '../../services/api';
 
 /**
- * Escucha retos de amigo (socket + GET pending) y muestra modal aceptar/rechazar.
- * Montado una vez en App (rutas protegidas siguen teniendo acceso vía token).
+ * Retos de amigo: toast compacto + "Ver" (abre chat privado en el lobby).
+ * Aceptar / rechazar se hace desde la card en el chat o el modal "Ver reto".
  */
 export default function FriendChallengeListener() {
   const { user } = useAuth();
   const navigate = useNavigate();
-  const [incoming, setIncoming] = useState(null);
+  const shownIncoming = useRef(new Set());
 
-  const applyPayload = useCallback((p) => {
-    if (!p?.challengeId) return;
-    setIncoming((cur) => (cur?.challengeId === p.challengeId ? cur : { ...p }));
-  }, []);
+  const openChatWithCreator = useCallback(
+    (creatorId, creatorUsername) => {
+      navigate('/lobby', {
+        state: {
+          openPrivateFriend: {
+            id: Number(creatorId),
+            username: creatorUsername || 'Jugador',
+            avatar: null,
+            openChallengeModal: false,
+          },
+        },
+      });
+    },
+    [navigate]
+  );
 
-  const loadPending = useCallback(async () => {
-    if (!user?.id) return;
-    try {
-      const res = await challengeApi.getFriendPending();
-      const list = res.data?.challenges || [];
-      if (list.length) {
-        const c = list[0];
-        const gc = typeof c.game_config === 'string' ? JSON.parse(c.game_config) : (c.game_config || {});
-        applyPayload({
-          challengeId: c.id,
-          creatorId: c.creator_id,
-          creatorUsername: c.creator_username,
-          kind: parseFloat(c.amount) > 0 ? 'competitive' : 'classic',
-          amount: parseFloat(c.amount) || 0,
-          puntosMaximos: gc.puntosMaximos ?? 30,
-          florHabilitada: !!gc.florHabilitada,
-          expiresAt: c.expires_at,
-        });
-      }
-    } catch {
-      /* ignore */
-    }
-  }, [user?.id, applyPayload]);
+  const pushIncomingToast = useCallback(
+    (p) => {
+      if (!p?.challengeId || !p?.creatorId) return;
+      if (shownIncoming.current.has(p.challengeId)) return;
+      shownIncoming.current.add(p.challengeId);
+      const name = p.creatorUsername || 'Un jugador';
+      toast.custom(
+        (t) => (
+          <div className="friend-challenge-toast fx-card">
+            <p className="friend-challenge-toast-text">
+              <strong>{name}</strong> te envió un reto
+            </p>
+            <div className="friend-challenge-toast-actions">
+              <button type="button" className="btn btn-ghost btn-sm" onClick={() => toast.dismiss(t)}>
+                Cerrar
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary btn-sm"
+                onClick={() => {
+                  toast.dismiss(t);
+                  openChatWithCreator(p.creatorId, p.creatorUsername);
+                }}
+              >
+                Ver
+              </button>
+            </div>
+          </div>
+        ),
+        { duration: 14000, id: `fc-${p.challengeId}` }
+      );
+    },
+    [openChatWithCreator]
+  );
 
   useEffect(() => {
     if (!user?.id) return;
-    loadPending();
-    const t = setInterval(loadPending, 60000);
-    return () => clearInterval(t);
-  }, [user?.id, loadPending]);
+
+    let cancelled = false;
+
+    const run = async () => {
+      try {
+        const res = await challengeApi.getFriendPending();
+        if (cancelled) return;
+        const list = res.data?.challenges || [];
+        for (const c of list) {
+          if (Number(c.creator_id) === Number(user.id)) continue;
+          pushIncomingToast({
+            challengeId: c.id,
+            creatorId: c.creator_id,
+            creatorUsername: c.creator_username,
+          });
+        }
+      } catch {
+        /* ignore */
+      }
+    };
+
+    run();
+    const t = setInterval(run, 120000);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
+  }, [user?.id, pushIncomingToast]);
 
   useEffect(() => {
     const socket = getSocket();
     if (!socket || !user?.id) return;
-    const onRecv = (p) => applyPayload(p);
+    const onRecv = (p) => {
+      if (Number(p?.creatorId) === Number(user.id)) return;
+      pushIncomingToast(p);
+    };
+    const onUpd = (p) => {
+      if (p?.status === 'rejected' && p?.toastFor === 'creator') {
+        toast('Un reto que enviaste fue rechazado', { duration: 4000 });
+      }
+    };
     socket.on('friend_challenge:received', onRecv);
-    return () => socket.off('friend_challenge:received', onRecv);
-  }, [user?.id, applyPayload]);
-
-  const accept = async () => {
-    if (!incoming?.challengeId) return;
-    try {
-      const res = await challengeApi.accept(incoming.challengeId);
-      const battleId = res.data?.battleId || res.data?.challengeId || incoming.challengeId;
-      const sock = getSocket();
-      sock?.emit('battle:startGame', { battleId });
-      toast.success('Reto aceptado');
-      setIncoming(null);
-      navigate('/game');
-    } catch (e) {
-      toast.error(e.response?.data?.error || 'No se pudo aceptar');
-    }
-  };
-
-  const reject = async () => {
-    if (!incoming?.challengeId) return;
-    try {
-      await challengeApi.reject(incoming.challengeId);
-      toast.success('Reto rechazado');
-      setIncoming(null);
-    } catch (e) {
-      toast.error(e.response?.data?.error || 'No se pudo rechazar');
-    }
-  };
+    socket.on('friend_challenge:updated', onUpd);
+    return () => {
+      socket.off('friend_challenge:received', onRecv);
+      socket.off('friend_challenge:updated', onUpd);
+    };
+  }, [user?.id, pushIncomingToast]);
 
   if (!user) return null;
-
-  return (
-    <AnimatePresence>
-      {incoming && (
-        <motion.div
-          className="modal-overlay friend-incoming-overlay"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-        >
-          <motion.div
-            className="modal-panel friend-incoming-panel fx-card"
-            initial={{ scale: 0.94, opacity: 0 }}
-            animate={{ scale: 1, opacity: 1 }}
-            exit={{ scale: 0.94, opacity: 0 }}
-          >
-            <h3 className="friend-incoming-title">
-              {incoming.creatorUsername || 'Un jugador'} te retó
-            </h3>
-            <ul className="friend-incoming-list">
-              <li>
-                <strong>Tipo</strong> {incoming.kind === 'classic' ? 'Clásico (amistoso)' : 'Competitivo'}
-              </li>
-              <li>
-                <strong>Puntos</strong> {incoming.puntosMaximos}
-              </li>
-              <li>
-                <strong>Flor</strong> {incoming.florHabilitada ? 'Sí' : 'No'}
-              </li>
-              {incoming.kind === 'competitive' && (
-                <li>
-                  <strong>Monto</strong> {incoming.amount?.toLocaleString?.('es-AR')} cr
-                </li>
-              )}
-            </ul>
-            <p className="friend-incoming-exp">Tenés unos minutos para responder antes de que expire.</p>
-            <div className="friend-incoming-actions">
-              <button type="button" className="btn btn-ghost" onClick={reject}>
-                Rechazar
-              </button>
-              <button type="button" className="btn btn-primary" onClick={accept}>
-                Aceptar
-              </button>
-            </div>
-          </motion.div>
-        </motion.div>
-      )}
-    </AnimatePresence>
-  );
+  return null;
 }

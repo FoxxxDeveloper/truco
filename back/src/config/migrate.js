@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS usuarios (
   username            VARCHAR(50)  NOT NULL UNIQUE,
   email               VARCHAR(120) NOT NULL UNIQUE,
   password            VARCHAR(255) NOT NULL,
-  avatar              VARCHAR(255) DEFAULT NULL,
+  avatar              TEXT         DEFAULT NULL,
   bio                 VARCHAR(500) DEFAULT NULL,
   role                ENUM('user','admin') NOT NULL DEFAULT 'user',
   status              ENUM('active','banned','suspended') NOT NULL DEFAULT 'active',
@@ -57,6 +57,10 @@ CREATE TABLE IF NOT EXISTS partidas (
   score_p2            INT          NOT NULL DEFAULT 0,
   p1_disconnected_at  DATETIME     DEFAULT NULL,
   p2_disconnected_at  DATETIME     DEFAULT NULL,
+  p1_reconnect_deadline_at DATETIME DEFAULT NULL,
+  p2_reconnect_deadline_at DATETIME DEFAULT NULL,
+  finish_reason       VARCHAR(80) DEFAULT NULL,
+  requires_admin_resolution TINYINT(1) NOT NULL DEFAULT 0,
   started_at          DATETIME     DEFAULT NULL,
   finished_at         DATETIME     DEFAULT NULL,
   created_at          DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -504,14 +508,18 @@ async function safeAlter(conn, description, sql) {
 
 async function runAdditiveMigrations(conn) {
   // ─── usuarios ─────────────────────────────────────────────
-  await addColumnIfMissing(conn, 'usuarios', 'avatar', 'avatar VARCHAR(255) DEFAULT NULL');
+  await addColumnIfMissing(conn, 'usuarios', 'avatar', 'avatar TEXT DEFAULT NULL');
   await addColumnIfMissing(conn, 'usuarios', 'bio', 'bio VARCHAR(500) DEFAULT NULL');
   await addColumnIfMissing(conn, 'usuarios', 'role', "role ENUM('user','admin') NOT NULL DEFAULT 'user'");
   await addColumnIfMissing(conn, 'usuarios', 'status', "status ENUM('active','banned','suspended') NOT NULL DEFAULT 'active'");
   await addColumnIfMissing(conn, 'usuarios', 'telegram_user_id', 'telegram_user_id BIGINT DEFAULT NULL');
   await addColumnIfMissing(conn, 'usuarios', 'telegram_linked_at', 'telegram_linked_at DATETIME DEFAULT NULL');
 
-  // ─── ranking ─────────────────────────────────────────────
+  await safeAlter(
+    conn,
+    'usuarios.avatar TEXT for avataaars payloads',
+    'ALTER TABLE `usuarios` MODIFY COLUMN `avatar` TEXT DEFAULT NULL'
+  );
   await addColumnIfMissing(conn, 'ranking', 'draws', 'draws INT NOT NULL DEFAULT 0');
 
   // ─── partidas ────────────────────────────────────────────
@@ -519,6 +527,15 @@ async function runAdditiveMigrations(conn) {
   await addColumnIfMissing(conn, 'partidas', 'challenge_id', 'challenge_id VARCHAR(36) DEFAULT NULL');
   await addColumnIfMissing(conn, 'partidas', 'p1_disconnected_at', 'p1_disconnected_at DATETIME DEFAULT NULL');
   await addColumnIfMissing(conn, 'partidas', 'p2_disconnected_at', 'p2_disconnected_at DATETIME DEFAULT NULL');
+  await addColumnIfMissing(conn, 'partidas', 'p1_reconnect_deadline_at', 'p1_reconnect_deadline_at DATETIME DEFAULT NULL');
+  await addColumnIfMissing(conn, 'partidas', 'p2_reconnect_deadline_at', 'p2_reconnect_deadline_at DATETIME DEFAULT NULL');
+  await addColumnIfMissing(conn, 'partidas', 'finish_reason', 'finish_reason VARCHAR(80) DEFAULT NULL');
+  await addColumnIfMissing(
+    conn,
+    'partidas',
+    'requires_admin_resolution',
+    'requires_admin_resolution TINYINT(1) NOT NULL DEFAULT 0'
+  );
 
   // ─── wallet ──────────────────────────────────────────────
   await addColumnIfMissing(conn, 'wallet', 'reserved', 'reserved DECIMAL(15,2) NOT NULL DEFAULT 0.00');
@@ -598,6 +615,7 @@ async function runAdditiveMigrations(conn) {
   await addColumnIfMissing(conn, 'challenges', 'commission_amount', 'commission_amount DECIMAL(15,2) DEFAULT NULL');
   await addColumnIfMissing(conn, 'challenges', 'source', "source ENUM('public_room','private_room','friend_challenge') NOT NULL DEFAULT 'public_room'");
   await addColumnIfMissing(conn, 'challenges', 'invite_type', "invite_type ENUM('public','friend_duel') NOT NULL DEFAULT 'public'");
+  await addColumnIfMissing(conn, 'challenges', 'game_config', 'game_config JSON DEFAULT NULL');
   await addColumnIfMissing(conn, 'challenges', 'invite_code', 'invite_code VARCHAR(32) DEFAULT NULL');
   await addColumnIfMissing(conn, 'challenges', 'accepted_at', 'accepted_at DATETIME DEFAULT NULL');
   await addColumnIfMissing(conn, 'challenges', 'started_at', 'started_at DATETIME DEFAULT NULL');
@@ -679,6 +697,9 @@ async function runAdditiveMigrations(conn) {
     await addColumnIfMissing(conn, 'tournaments', 'checkin_closed_at', 'checkin_closed_at DATETIME DEFAULT NULL');
     await addColumnIfMissing(conn, 'tournaments', 'bracket_generated_at', 'bracket_generated_at DATETIME DEFAULT NULL');
     await addColumnIfMissing(conn, 'tournaments', 'ready_timeout_minutes', 'ready_timeout_minutes INT NOT NULL DEFAULT 5');
+    await addColumnIfMissing(conn, 'tournaments', 'prize_config', 'prize_config JSON DEFAULT NULL');
+    await addColumnIfMissing(conn, 'tournaments', 'placement_config', 'placement_config JSON DEFAULT NULL');
+    await addColumnIfMissing(conn, 'tournaments', 'finished_at', 'finished_at DATETIME DEFAULT NULL');
   }
 
   if (await tableExists(conn, 'tournament_registrations')) {
@@ -704,7 +725,28 @@ async function runAdditiveMigrations(conn) {
     await addColumnIfMissing(conn, 'tournament_matches', 'player1_ready_at', 'player1_ready_at DATETIME DEFAULT NULL');
     await addColumnIfMissing(conn, 'tournament_matches', 'player2_ready_at', 'player2_ready_at DATETIME DEFAULT NULL');
     await addColumnIfMissing(conn, 'tournament_matches', 'ready_cancelled_by', 'ready_cancelled_by INT DEFAULT NULL');
+    await addColumnIfMissing(
+      conn,
+      'tournament_matches',
+      'round_type',
+      "round_type VARCHAR(24) NOT NULL DEFAULT 'bracket'"
+    );
   }
+
+  await runStatements(conn, `
+CREATE TABLE IF NOT EXISTS tournament_messages (
+  id              INT AUTO_INCREMENT PRIMARY KEY,
+  tournament_id   INT NOT NULL,
+  user_id         INT NOT NULL,
+  message         TEXT NOT NULL,
+  created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  deleted_at      DATETIME DEFAULT NULL,
+  INDEX idx_tournament_messages_tournament_created (tournament_id, created_at),
+  INDEX idx_tournament_messages_user (user_id),
+  FOREIGN KEY (tournament_id) REFERENCES tournaments(id) ON DELETE CASCADE,
+  FOREIGN KEY (user_id)       REFERENCES usuarios(id)    ON DELETE CASCADE
+) ENGINE=InnoDB;
+  `);
 
   // Optional: tournament_standings (for future use / reporting)
   await runStatements(conn, `

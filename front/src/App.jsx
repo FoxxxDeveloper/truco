@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { Toaster } from 'react-hot-toast';
 import { AuthProvider } from './context/AuthContext';
+import { ChatShellProvider } from './context/ChatShellContext';
 import { GameProvider } from './context/GameContext';
 import ProtectedRoute from './components/ProtectedRoute';
 import Login from './pages/Login';
@@ -16,6 +17,7 @@ import VerificationPage from './pages/VerificationPage';
 import TournamentsPage from './pages/TournamentsPage';
 import TournamentDetail from './pages/TournamentDetail';
 import TournamentBracket from './pages/TournamentBracket';
+import MatchHistoryPage from './pages/MatchHistoryPage';
 import NotFound from './pages/NotFound';
 
 function App() {
@@ -38,6 +40,7 @@ function App() {
             }}
           />
 
+          <ChatShellProvider>
           <Routes>
             <Route path="/" element={<Navigate to="/lobby" replace />} />
             <Route path="/login" element={<Login />} />
@@ -133,8 +136,18 @@ function App() {
               }
             />
 
+            <Route
+              path="/partidas"
+              element={
+                <ProtectedRoute>
+                  <MatchHistoryPage />
+                </ProtectedRoute>
+              }
+            />
+
             <Route path="*" element={<NotFound />} />
           </Routes>
+          </ChatShellProvider>
         </BrowserRouter>
       </GameProvider>
     </AuthProvider>

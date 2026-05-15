@@ -6,7 +6,11 @@ import { profileApi, rankingApi } from '../services/api';
 import AppHeader from '../components/layout/AppHeader';
 import TrucoAvatar from '../components/avatar/TrucoAvatar';
 import { useAuth } from '../context/AuthContext';
-import { generateAvatarOptions, isTrucoAvatar } from '../utils/avatar';
+import {
+  encodeAvatarConfig,
+  generateRandomAvataaarsConfig,
+  isStorableTrucoFxAvatar,
+} from '../utils/avatar';
 
 function StatCard({ label, value, mod = '' }) {
   return (
@@ -15,6 +19,11 @@ function StatCard({ label, value, mod = '' }) {
       <span className="profile-stat-value">{value}</span>
     </div>
   );
+}
+
+function randomAvatarString(username) {
+  const cfg = generateRandomAvataaarsConfig(username, `${Date.now()}_${Math.random().toString(36).slice(2)}`);
+  return encodeAvatarConfig(cfg);
 }
 
 export default function ProfilePage() {
@@ -28,10 +37,9 @@ export default function ProfilePage() {
   const [editing, setEditing] = useState(false);
   const [editBio, setEditBio] = useState('');
   const [saving, setSaving] = useState(false);
-  const [savingAvatar, setSavingAvatar] = useState(false);
 
-  const [avatarOptions, setAvatarOptions] = useState([]);
-  const [selectedCandidate, setSelectedCandidate] = useState(null);
+  const [originalAvatar, setOriginalAvatar] = useState(null);
+  const [selectedAvatar, setSelectedAvatar] = useState(null);
 
   useEffect(() => {
     Promise.all([profileApi.getMe(), rankingApi.getMe().catch(() => null)])
@@ -46,39 +54,59 @@ export default function ProfilePage() {
 
   useEffect(() => {
     if (!editing || !profile?.username) return;
-    const opts = generateAvatarOptions(profile.username, 8, Date.now());
-    setAvatarOptions(opts);
-    if (isTrucoAvatar(profile.avatar)) {
-      setSelectedCandidate(profile.avatar);
-    } else {
-      setSelectedCandidate(opts[0] ?? null);
+    let initialPick = isStorableTrucoFxAvatar(profile.avatar) ? profile.avatar : null;
+    if (!initialPick) {
+      initialPick = randomAvatarString(profile.username);
     }
+    setOriginalAvatar(initialPick);
+    setSelectedAvatar(initialPick);
   }, [editing, profile?.username]);
 
-  const regenerateAvatarOptions = () => {
+  const generateNextAvatar = () => {
     if (!profile?.username) return;
-    const opts = generateAvatarOptions(profile.username, 8, Date.now());
-    setAvatarOptions(opts);
-    setSelectedCandidate(opts[0] ?? null);
+    const next = randomAvatarString(profile.username);
+    if (next) setSelectedAvatar(next);
   };
 
-  const handleSaveBio = async () => {
+  const bioChanged = editBio.trim() !== (profile?.bio || '').trim();
+  const avatarChanged =
+    Boolean(selectedAvatar)
+    && isStorableTrucoFxAvatar(selectedAvatar)
+    && selectedAvatar !== originalAvatar;
+  const hasChanges = bioChanged || avatarChanged;
+
+  const handleSaveProfile = async () => {
     if (editBio.length > 500) {
       toast.error('La bio no puede superar 500 caracteres');
       return;
     }
+    if (!hasChanges) {
+      setEditing(false);
+      return;
+    }
+    if (avatarChanged && (!selectedAvatar || !isStorableTrucoFxAvatar(selectedAvatar))) {
+      toast.error('Generá un avatar con el botón antes de guardar');
+      return;
+    }
     setSaving(true);
     try {
-      if (editBio.trim() === (profile.bio || '').trim()) {
-        setEditing(false);
-        return;
+      if (bioChanged) {
+        await profileApi.update({ bio: editBio.trim() });
       }
-      const res = await profileApi.update({ bio: editBio.trim() });
-      if (res.data.ok) {
-        setProfile((prev) => ({ ...prev, bio: editBio.trim() }));
-        toast.success('Perfil actualizado');
-        setEditing(false);
+      if (avatarChanged) {
+        await profileApi.setAvatarChoice({ avatar: selectedAvatar });
       }
+      const nextAvatar = avatarChanged ? selectedAvatar : profile.avatar;
+      setProfile((prev) => ({
+        ...prev,
+        bio: editBio.trim(),
+        avatar: nextAvatar,
+      }));
+      if (avatarChanged) {
+        updateUser({ avatar: nextAvatar });
+      }
+      toast.success('Perfil actualizado');
+      setEditing(false);
     } catch (err) {
       toast.error(err.response?.data?.error || 'Error al guardar');
     } finally {
@@ -86,42 +114,27 @@ export default function ProfilePage() {
     }
   };
 
-  const handleSaveAvatar = async () => {
-    if (!selectedCandidate || !isTrucoAvatar(selectedCandidate)) {
-      toast.error('Elegí un avatar de la grilla');
-      return;
-    }
-    setSavingAvatar(true);
-    try {
-      const res = await profileApi.setAvatarChoice({ avatar: selectedCandidate });
-      const next = res.data?.avatar ?? selectedCandidate;
-      setProfile((prev) => ({ ...prev, avatar: next }));
-      updateUser({ avatar: next });
-      toast.success('Avatar guardado');
-    } catch (err) {
-      toast.error(err.response?.data?.error || 'No se pudo guardar el avatar');
-    } finally {
-      setSavingAvatar(false);
-    }
-  };
-
   if (loading) {
     return (
-      <div className="loading-screen profile-page profile-page--et5 page-shell">
+      <div className="profile-page profile-page--et5 page-container app-page">
         <AppHeader />
-        <div className="spinner" />
+        <div className="page-shell profile-page-shell--loading">
+          <div className="spinner" />
+        </div>
       </div>
     );
   }
 
   if (!profile) {
     return (
-      <div className="profile-page profile-page--et5 page-shell profile-empty">
+      <div className="profile-page profile-page--et5 page-container app-page profile-empty">
         <AppHeader />
-        <p>No se pudo cargar el perfil.</p>
-        <button type="button" className="btn btn-secondary" onClick={() => navigate('/lobby')}>
-          Volver al lobby
-        </button>
+        <div className="page-shell">
+          <p>No se pudo cargar el perfil.</p>
+          <button type="button" className="btn btn-secondary" onClick={() => navigate('/lobby')}>
+            Volver al lobby
+          </button>
+        </div>
       </div>
     );
   }
@@ -130,8 +143,9 @@ export default function ProfilePage() {
   const winrate = total > 0 ? Math.round((profile.wins / total) * 100) : 0;
 
   return (
-    <div className="profile-page profile-page--et5 page-shell">
+    <div className="profile-page profile-page--et5 page-container app-page">
       <AppHeader />
+      <div className="page-shell">
       <header className="profile-page-header profile-page-header--et5 profile-page-header--compact">
         <button type="button" className="btn btn-ghost btn-sm" onClick={() => navigate('/lobby')}>
           ← Volver al lobby
@@ -144,15 +158,27 @@ export default function ProfilePage() {
         animate={{ opacity: 1, y: 0 }}
       >
         <div className="profile-hero-main">
-          <div className="profile-avatar-column">
+          <div className="profile-avatar-column profile-hero-avatar-block">
             <div className="profile-avatar-wrap profile-avatar-wrap--et5">
-              <TrucoAvatar avatar={profile.avatar} username={profile.username} size={112} className="profile-avatar-lg" />
+              <TrucoAvatar
+                avatar={editing ? (selectedAvatar ?? profile.avatar) : profile.avatar}
+                username={profile.username}
+                size={editing ? 120 : 112}
+                className="profile-avatar-lg"
+              />
             </div>
             {!editing ? (
               <button type="button" className="btn btn-gold btn-sm profile-edit-trigger" onClick={() => setEditing(true)}>
                 Editar perfil
               </button>
-            ) : null}
+            ) : (
+              <>
+                <button type="button" className="btn btn-secondary btn-sm profile-avatar-random-btn" onClick={generateNextAvatar}>
+                  Generar otros
+                </button>
+                <p className="profile-avatar-save-hint">Se guarda al tocar Guardar cambios</p>
+              </>
+            )}
           </div>
 
           <div className="profile-hero-info">
@@ -160,6 +186,11 @@ export default function ProfilePage() {
               <h1 className="profile-username">{profile.username}</h1>
               {rank && <span className="fx-badge fx-badge--gold">ELO {rank.elo}</span>}
               {rank?.rank != null && <span className="fx-badge fx-badge--muted">Puesto #{rank.rank}</span>}
+            </div>
+            <div className="profile-history-actions">
+              <button type="button" className="btn btn-secondary btn-sm" onClick={() => navigate('/partidas')}>
+                Historial de partidas
+              </button>
             </div>
 
             {!editing ? (
@@ -170,45 +201,14 @@ export default function ProfilePage() {
               </p>
             ) : (
               <div className="profile-edit-fields">
-                <div className="profile-photo-block fx-card profile-photo-card profile-trucofx-avatar-card">
+                <div className="profile-avatar-section fx-card profile-photo-card profile-trucofx-avatar-card">
                   <h3 className="section-header profile-photo-title">Avatar TrucoFX</h3>
-                  <p className="profile-photo-lead">Elegí un avatar inspirado en el Truco Argentino.</p>
-                  <p className="profile-field-hint">Podés generar otro hasta encontrar uno que te guste.</p>
+                  <p className="profile-photo-lead">Generá un avatar para tu perfil.</p>
+                  <p className="profile-field-hint">Podés generar otros hasta encontrar uno que te guste.</p>
                   <p className="profile-field-hint">Por seguridad, no usamos fotos ni links externos.</p>
-
-                  <div className="profile-trucofx-actions">
-                    <button type="button" className="btn btn-secondary btn-sm" onClick={regenerateAvatarOptions}>
-                      Generar otro
-                    </button>
-                    <button
-                      type="button"
-                      className="btn btn-gold btn-sm"
-                      onClick={handleSaveAvatar}
-                      disabled={savingAvatar || !selectedCandidate}
-                    >
-                      {savingAvatar ? 'Guardando…' : 'Guardar avatar'}
-                    </button>
-                  </div>
-
-                  <p className="profile-sublabel">Opciones</p>
-                  <div className="profile-preset-grid">
-                    {avatarOptions.map((opt) => {
-                      const active = selectedCandidate === opt;
-                      return (
-                        <button
-                          key={opt}
-                          type="button"
-                          className={`profile-preset-btn${active ? ' profile-preset-btn--active' : ''}`.trim()}
-                          onClick={() => setSelectedCandidate(opt)}
-                          title={opt}
-                        >
-                          <span className="profile-preset-icon profile-preset-icon--truco">
-                            <TrucoAvatar avatar={opt} username={profile.username} size={48} />
-                          </span>
-                        </button>
-                      );
-                    })}
-                  </div>
+                  <p className="profile-field-hint profile-avatar-section-inline-hint">
+                    El cambio se ve en tu foto de la izquierda; usá el botón debajo del avatar.
+                  </p>
                 </div>
 
                 <div className="form-group">
@@ -227,7 +227,7 @@ export default function ProfilePage() {
                 </div>
 
                 <div className="profile-edit-actions">
-                  <button type="button" className="btn btn-primary" onClick={handleSaveBio} disabled={saving}>
+                  <button type="button" className="btn btn-primary" onClick={handleSaveProfile} disabled={saving || !hasChanges}>
                     {saving ? 'Guardando…' : 'Guardar cambios'}
                   </button>
                   <button
@@ -236,6 +236,7 @@ export default function ProfilePage() {
                     onClick={() => {
                       setEditing(false);
                       setEditBio(profile.bio || '');
+                      setSelectedAvatar(originalAvatar ?? profile.avatar);
                     }}
                   >
                     Cancelar
@@ -289,6 +290,7 @@ export default function ProfilePage() {
           </div>
         </dl>
       </motion.section>
+      </div>
     </div>
   );
 }

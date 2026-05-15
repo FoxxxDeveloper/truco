@@ -2,7 +2,7 @@
  * AppHeader — barra global TrucoFX (marca | nav compacto | saldo + menú usuario).
  */
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate, Link, useLocation } from 'react-router-dom';
 import { AnimatePresence } from 'framer-motion';
 import {
   Trophy,
@@ -11,14 +11,15 @@ import {
   BookOpen,
   ChevronDown,
   Coins,
-  Wallet,
   ShieldCheck,
   LogOut,
   Users,
   User,
   Settings,
+  History,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
+import { useChatShell } from '../../context/ChatShellContext';
 import { walletApi, rankingApi, verificationApi } from '../../services/api';
 import BrandNavLockup from '../brand/BrandNavLockup';
 import NotificationBell from '../social/NotificationBell';
@@ -27,13 +28,19 @@ import WalletPanel from '../wallet/WalletPanel';
 import TrucoAvatar from '../avatar/TrucoAvatar';
 
 export default function AppHeader({
-  privateChatUnread = 0,
-  unreadCounts = {},
-  onStartChat,
-  onChallengeFriend,
+  privateChatUnread: propPrivateUnread,
+  unreadCounts: propUnreadCounts,
+  onStartChat: propOnStartChat,
+  onChallengeFriend: propOnChallengeFriend,
 }) {
   const { user, logout } = useAuth();
+  const chat = useChatShell();
+  const privateChatUnread = propPrivateUnread ?? chat.privateChatUnread;
+  const unreadCounts = propUnreadCounts ?? chat.unreadCounts;
+  const onStartChat = propOnStartChat ?? chat.openPrivateChat;
+  const onChallengeFriend = propOnChallengeFriend ?? chat.openChallengeChat;
   const navigate = useNavigate();
+  const location = useLocation();
   const [myElo, setMyElo] = useState(null);
   const [wallet, setWallet] = useState(null);
   const [balanceOpen, setBalanceOpen] = useState(false);
@@ -69,6 +76,25 @@ export default function AppHeader({
     document.addEventListener('mousedown', close);
     return () => document.removeEventListener('mousedown', close);
   }, []);
+
+  useEffect(() => {
+    setBalanceOpen(false);
+    setProfileMenuOpen(false);
+  }, [location.pathname]);
+
+  useEffect(() => {
+    if (!balanceOpen && !profileMenuOpen) return;
+    const closeMenus = () => {
+      setBalanceOpen(false);
+      setProfileMenuOpen(false);
+    };
+    window.addEventListener('scroll', closeMenus, { passive: true });
+    window.addEventListener('resize', closeMenus);
+    return () => {
+      window.removeEventListener('scroll', closeMenus);
+      window.removeEventListener('resize', closeMenus);
+    };
+  }, [balanceOpen, profileMenuOpen]);
 
   const openWalletTab = (tab) => {
     setWalletInitialTab(tab);
@@ -198,6 +224,9 @@ export default function AppHeader({
                   <button type="button" className="app-header-menu-item" role="menuitem" onClick={() => go('/profile')}>
                     <User size={16} aria-hidden /> Perfil
                   </button>
+                  <button type="button" className="app-header-menu-item" role="menuitem" onClick={() => go('/partidas')}>
+                    <History size={16} aria-hidden /> Historial de partidas
+                  </button>
                   <button
                     type="button"
                     className="app-header-menu-item"
@@ -211,15 +240,6 @@ export default function AppHeader({
                     {privateChatUnread > 0 && (
                       <span className="app-header-menu-badge">{privateChatUnread > 99 ? '99+' : privateChatUnread}</span>
                     )}
-                  </button>
-                  <button type="button" className="app-header-menu-item" role="menuitem" onClick={() => openWalletTab('balance')}>
-                    <Wallet size={16} aria-hidden /> Wallet / Saldo
-                  </button>
-                  <button type="button" className="app-header-menu-item" role="menuitem" onClick={() => openWalletTab('deposit')}>
-                    <Coins size={16} aria-hidden /> Cargar saldo
-                  </button>
-                  <button type="button" className="app-header-menu-item" role="menuitem" onClick={() => openWalletTab('withdraw')}>
-                    <Coins size={16} aria-hidden /> Retirar saldo
                   </button>
                   {showVerificationLink && (
                     <button type="button" className="app-header-menu-item" role="menuitem" onClick={() => go('/verification')}>

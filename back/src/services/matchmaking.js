@@ -27,6 +27,7 @@ function normalizeGameOptions(gameOptions = {}) {
     modo: gameOptions.modo === 'ranked' ? 'ranked' : 'casual',
     puntosMaximos: Number(gameOptions.puntosMaximos) === 15 ? 15 : 30,
     florHabilitada: Boolean(gameOptions.florHabilitada),
+    reconnectGraceSecs: 60,
   };
 }
 

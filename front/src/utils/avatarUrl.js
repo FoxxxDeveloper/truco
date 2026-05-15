@@ -4,6 +4,8 @@
 export function resolveAvatarSrc(raw) {
   if (raw == null || raw === '') return null;
   const s = String(raw).trim();
+  if (s.startsWith('avataaars:')) return null;
+  if (s.startsWith('trucofx-avatar:')) return null;
   if (s.startsWith('trucofx:')) return null;
   if (s.startsWith('default:')) return null;
   if (s.startsWith('/uploads/')) {

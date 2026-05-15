@@ -1,11 +1,9 @@
-﻿import { useEffect, useState, useCallback, useMemo } from 'react';
+﻿import { useEffect, useState, useMemo } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { User, Swords, BookOpen, Trophy, BarChart2 } from 'lucide-react';
+import { User, Swords, BookOpen, Trophy, BarChart2, History } from 'lucide-react';
 import { useGame } from '../context/GameContext';
-import { rankingApi, socialApi, tournamentApi } from '../services/api';
-import { getSocket } from '../services/socket';
-import ChatCenter from '../components/chat/ChatCenter';
+import { rankingApi, tournamentApi } from '../services/api';
 import AppHeader from '../components/layout/AppHeader';
 import wordmarkDarkUrl from '../assets/panoramicooscuro.png';
 
@@ -63,9 +61,7 @@ export default function Lobby() {
     modo: 'casual',
   });
 
-  const [unreadCounts, setUnreadCounts] = useState({});
   const [tournaments, setTournaments] = useState([]);
-  const [pendingOpenFriend, setPendingOpenFriend] = useState(null);
 
   const featuredTournament = useMemo(() => pickFeaturedTournament(tournaments), [tournaments]);
 
@@ -78,12 +74,6 @@ export default function Lobby() {
 
   useEffect(() => {
     rankingApi.getMe().then((r) => setMyRank(r.data)).catch(() => {});
-    socialApi
-      .getUnreadSummary()
-      .then((res) => {
-        if (res.data?.unreadByUser) setUnreadCounts(res.data.unreadByUser);
-      })
-      .catch(() => {});
     tournamentApi
       .getAll()
       .then((res) => setTournaments(res.data?.tournaments || []))
@@ -91,34 +81,8 @@ export default function Lobby() {
   }, []);
 
   useEffect(() => {
-    const socket = getSocket();
-    if (!socket) return;
-    const handleMsg = () => {
-      socialApi
-        .getUnreadSummary()
-        .then((res) => {
-          if (res.data?.unreadByUser) setUnreadCounts(res.data.unreadByUser);
-        })
-        .catch(() => {});
-    };
-    socket.on('private:message:received', handleMsg);
-    return () => socket.off('private:message:received', handleMsg);
-  }, []);
-
-  useEffect(() => {
     if ((gameState || roomId) && !gameOver) navigate('/game');
   }, [gameState, roomId, gameOver, navigate]);
-
-  const totalUnread = Object.values(unreadCounts).reduce((s, n) => s + n, 0);
-
-  const clearFriendUnread = useCallback((friendId) => {
-    setUnreadCounts((prev) => {
-      if (!prev[friendId]) return prev;
-      const next = { ...prev };
-      delete next[friendId];
-      return next;
-    });
-  }, []);
 
   const handleJoin = () => joinQueue(gameOptions);
 
@@ -130,13 +94,8 @@ export default function Lobby() {
   const maxP = ft ? Number(ft.max_players ?? ft.maxPlayers ?? 0) : 0;
 
   return (
-    <div className="lobby-page">
-      <AppHeader
-        privateChatUnread={totalUnread}
-        unreadCounts={unreadCounts}
-        onStartChat={(f) => setPendingOpenFriend(f)}
-        onChallengeFriend={(f) => setPendingOpenFriend({ ...f, openChallengeModal: true })}
-      />
+    <div className="lobby-page app-page">
+      <AppHeader />
 
       <div className="page-shell lobby-shell">
         <div className="lobby-grid">
@@ -287,6 +246,10 @@ export default function Lobby() {
             <section className="fx-card lobby-quick-actions">
               <p className="section-header">Accesos rápidos</p>
               <div className="lobby-quick-grid">
+                <button type="button" className="lobby-quick-btn" onClick={() => navigate('/partidas')}>
+                  <History size={16} aria-hidden />
+                  Historial
+                </button>
                 <button type="button" className="lobby-quick-btn" onClick={() => navigate('/ranking')}>
                   <BarChart2 size={16} aria-hidden />
                   Ranking
@@ -312,13 +275,6 @@ export default function Lobby() {
           </aside>
         </div>
       </div>
-
-      <ChatCenter
-        unreadCounts={unreadCounts}
-        onClearUnread={clearFriendUnread}
-        openPrivateFriend={pendingOpenFriend}
-        onConsumedOpenPrivate={() => setPendingOpenFriend(null)}
-      />
     </div>
   );
 }

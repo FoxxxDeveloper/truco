@@ -106,9 +106,11 @@ export default function VerificationPage() {
 
   if (loading) {
     return (
-      <div className="verification-page page-shell">
+      <div className="verification-page page-container app-page">
         <AppHeader />
-        <p className="verification-loading">Cargando…</p>
+        <div className="page-shell">
+          <p className="verification-loading">Cargando…</p>
+        </div>
       </div>
     );
   }
@@ -117,8 +119,9 @@ export default function VerificationPage() {
   const statusInfo = STATUS_META[identity_status] || STATUS_META.unverified;
 
   return (
-    <div className="verification-page page-shell">
+    <div className="verification-page page-container app-page">
       <AppHeader />
+      <div className="page-shell">
       <header className="verification-page-header verification-page-header--compact">
         <button type="button" className="btn btn-ghost btn-sm" onClick={() => navigate(-1)}>
           ← Volver
@@ -330,6 +333,7 @@ export default function VerificationPage() {
             </button>
           </div>
         )}
+      </div>
       </div>
     </div>
   );

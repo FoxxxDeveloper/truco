@@ -119,9 +119,10 @@ export default function TournamentsPage() {
   }, [list, tab]);
 
   return (
-    <div className="tournaments-page page-container tournaments-page--et2 page-shell">
+    <div className="tournaments-page page-container tournaments-page--et2 app-page">
       <AppHeader />
 
+      <div className="page-shell">
       <header className="tournaments-header tournaments-header--compact">
         <div className="tournaments-title-row">
           <Trophy className="tournaments-title-icon" size={26} aria-hidden />
@@ -166,6 +167,7 @@ export default function TournamentsPage() {
           ))}
         </div>
       )}
+      </div>
     </div>
   );
 }

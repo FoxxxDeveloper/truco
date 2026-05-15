@@ -158,7 +158,7 @@ export default function ChallengesBrowser({ onClose }) {
             marginBottom: 20,
           }}
         >
-          <h2 style={{ margin: 0, fontSize: 20, color: '#ffc757' }}>⚔️ Batallas competitivas</h2>
+          <h2 style={{ margin: 0, fontSize: 20, color: '#ffc757' }}>Batallas competitivas</h2>
 
           <button
             onClick={onClose}
@@ -186,7 +186,7 @@ export default function ChallengesBrowser({ onClose }) {
               fontWeight: 700,
             }}
           >
-            💰 Saldo disponible: ${balance.toFixed(2)}
+            Saldo disponible: ${balance.toFixed(2)}
           </div>
         )}
 
@@ -380,7 +380,7 @@ export default function ChallengesBrowser({ onClose }) {
                   fontSize: 15,
                 }}
               >
-                {loading ? 'Creando…' : '⚔️ Publicar reto'}
+                {loading ? 'Creando…' : 'Publicar reto'}
               </button>
             </div>
           )}
@@ -422,7 +422,7 @@ function ChallengeCard({ c, onAccept, onCancel, loading, mine }) {
               fontSize: 18,
             }}
           >
-            💰 ${parseFloat(c.amount).toFixed(2)}
+            ${parseFloat(c.amount).toFixed(2)}
           </div>
 
           <div
@@ -434,7 +434,7 @@ function ChallengeCard({ c, onAccept, onCancel, loading, mine }) {
           >
             {mine ? 'Tu reto' : `por ${c.creator_username}`} ·{' '}
             {c.game_config?.puntosMaximos || 30}pts
-            {c.game_config?.florHabilitada ? ' · con Flor 🌸' : ''}
+            {c.game_config?.florHabilitada ? ' · con flor' : ''}
           </div>
         </div>
 
@@ -467,7 +467,7 @@ function ChallengeCard({ c, onAccept, onCancel, loading, mine }) {
           className="btn btn-raise"
           style={{ width: '100%', fontSize: 14 }}
         >
-          ⚔️ Aceptar reto
+          Aceptar reto
         </button>
       )}
     </div>

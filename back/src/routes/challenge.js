@@ -99,6 +99,22 @@ router.get('/friend/pending', async (req, res) => {
   }
 });
 
+router.get('/friend/conversation/:peerId', async (req, res) => {
+  try {
+    const peerId = parseInt(req.params.peerId, 10);
+    if (!Number.isFinite(peerId) || peerId <= 0) {
+      return res.status(400).json({ error: 'Usuario inválido' });
+    }
+    const ok = await Friend.areFriends(req.user.id, peerId);
+    if (!ok) return res.status(403).json({ error: 'Solo podés ver retos con amigos' });
+    const rows = await ChallengeService.listFriendChallengesBetweenUsers(req.user.id, peerId);
+    return res.json({ challenges: rows });
+  } catch (err) {
+    logger.error('friend conversation challenges: ' + err.message);
+    return res.status(500).json({ error: 'Server error' });
+  }
+});
+
 router.post('/', async (req, res) => {
   try {
     const { amount, isPrivate = false, opponentId = null, gameConfig = {} } = req.body;

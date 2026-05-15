@@ -12,6 +12,7 @@ const VerificationService = require('./verificationService');
 const NotificationService = require('./notificationService');
 const logger = require('../config/logger');
 const { auditLog } = require('../config/logger');
+const { getActiveGameForUser } = require('../utils/activeGame');
 
 const BATTLE_TTL_MS   = 15 * 60 * 1000; // 15 minutos
 const MIN_BET         = 2500;
@@ -24,22 +25,6 @@ function calcPrize(amount) {
   const commission = parseFloat((pool * COMMISSION_RATE).toFixed(2));
   const prize      = parseFloat((pool - commission).toFixed(2));
   return { pool, commission, prize };
-}
-
-/**
- * Checks if a userId has any active game in gameSession (in-memory check is not
- * reliable across processes, so we check the DB `games` table for ongoing games).
- */
-async function hasActiveGame(userId) {
-  const rows = await query(
-    `SELECT id FROM partidas
-     WHERE (player1_id = ? OR player2_id = ?)
-       AND status = 'active'
-       AND challenge_id IS NOT NULL
-     LIMIT 1`,
-    [userId, userId]
-  );
-  return rows.length > 0;
 }
 
 async function hasOpenBattle(userId) {
@@ -72,11 +57,21 @@ const BattleService = {
     }
 
     // Anti-abuse validations
-    const [activeGame, openBattle] = await Promise.all([
-      hasActiveGame(creatorId),
+    const [activeRow, openBattle] = await Promise.all([
+      getActiveGameForUser(creatorId),
       hasOpenBattle(creatorId),
     ]);
-    if (activeGame)  throw new Error('No podés crear una sala mientras estás en una partida activa');
+    if (activeRow) {
+      logger.warn('active game check blocked user (battle create)', {
+        userId: creatorId,
+        roomId: activeRow.room_id,
+        state: activeRow.state,
+        status: activeRow.status,
+        winner_id: activeRow.winner_id,
+        finished_at: activeRow.finished_at,
+      });
+      throw new Error('No podés crear una sala mientras estás en una partida activa');
+    }
     if (openBattle)  throw new Error('Ya tenés una sala abierta. Cancelala antes de crear otra');
 
     const battleId  = uuidv4();
@@ -185,6 +180,19 @@ const BattleService = {
       await VerificationService.requireVerifiedAdult(opponentId);
     } catch (err) {
       throw new Error(err.message); // Re-throw with same message
+    }
+
+    const activeRow = await getActiveGameForUser(opponentId);
+    if (activeRow) {
+      logger.warn('active game check blocked user (battle accept)', {
+        userId: opponentId,
+        roomId: activeRow.room_id,
+        state: activeRow.state,
+        status: activeRow.status,
+        winner_id: activeRow.winner_id,
+        finished_at: activeRow.finished_at,
+      });
+      throw new Error('No podés aceptar una sala mientras estás en una partida activa');
     }
 
     return withTransaction(async (conn) => {
@@ -407,6 +415,37 @@ const BattleService = {
       }
     }
     auditLog('battle_refund', { battleId, reason });
+  },
+
+  /**
+   * Cierra challenge asociada a una partida sin ganador (doble desconexión, etc.).
+   * Con apuesta: refund a ambos. Sin apuesta: cancelled.
+   */
+  async cancelChallengeForRoomNoWinner(roomId, reason = 'both_disconnected') {
+    const rows = await query(
+      "SELECT id, amount, status FROM challenges WHERE room_id = ? AND status IN ('accepted','active')",
+      [roomId]
+    );
+    if (!rows.length) return { ok: true, skipped: true };
+    const b = rows[0];
+    const amt = parseFloat(b.amount);
+    if (amt > 0) {
+      await this.refund(b.id, reason);
+    } else {
+      await withTransaction(async (conn) => {
+        const [locked] = await conn.execute(
+          "SELECT status FROM challenges WHERE id = ? FOR UPDATE",
+          [b.id]
+        );
+        if (!locked.length) return;
+        if (!['accepted', 'active'].includes(locked[0].status)) return;
+        await conn.execute(
+          "UPDATE challenges SET status = 'cancelled', finished_at = NOW() WHERE id = ?",
+          [b.id]
+        );
+      });
+    }
+    return { ok: true, challengeId: b.id };
   },
 
   /**

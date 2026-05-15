@@ -50,10 +50,12 @@ class TrucoGame {
     this.state = STATES.WAITING;
 
     // Game configuration
+    const rs = Number(options.reconnectGraceSecs);
     this.config = {
       puntosMaximos: options.puntosMaximos || 30,
       florHabilitada: options.florHabilitada || false,
       modo: options.modo || 'casual',
+      reconnectGraceSecs: Number.isFinite(rs) ? Math.min(300, Math.max(30, rs)) : 60,
     };
 
     // Scores (global, across all rounds)
@@ -69,7 +71,7 @@ class TrucoGame {
     this.hands = { [this.players[0]]: [], [this.players[1]]: [] };
     this.playedCards = [[], [], []]; // 3 manos, each [{playerId, card}]
     this.currentMano = 0;           // 0, 1, 2
-    this.manoResults = [];          // 'p1' | 'p2' | 'tie'
+    this.manoResults = [];          // winner playerId per mano, or null (parda)
     this.manoFirst = this.manoPlayer;  // playerId who plays first in this mano (for parda tiebreaks)
     this.waitingForPlayer = null;   // playerId whose turn it is
 
@@ -127,6 +129,13 @@ this.pendingTrucoAfterEnvido = null;
    * Play a card from a player's hand.
    */
   playCard(playerId, cardId) {
+    if (
+      this.state === STATES.TRUCO_PENDING ||
+      this.state === STATES.ENVIDO_PENDING ||
+      this.state === STATES.FLOR_PENDING
+    ) {
+      return { ok: false, error: 'Hay una respuesta pendiente.' };
+    }
     if (this.state !== STATES.PLAYER_TURN) {
       return { ok: false, error: 'Not in play phase' };
     }
@@ -167,6 +176,13 @@ this.pendingTrucoAfterEnvido = null;
   announceEnvido(playerId, betType) {
   if (!['envido', 'real_envido', 'falta_envido'].includes(betType)) {
     return { ok: false, error: 'Invalid bet type' };
+  }
+
+  if (
+    this.state === STATES.TRUCO_PENDING &&
+    Number(playerId) === Number(this.trucoPendingBy)
+  ) {
+    return { ok: false, error: 'Hay una respuesta pendiente.' };
   }
 
   if (this.envidoResolved) {
@@ -300,6 +316,12 @@ this.pendingTrucoAfterEnvido = null;
       return { ok: false, error: 'Invalid truco bet' };
     }
     if (this.trucoResolved) return { ok: false, error: 'Truco already resolved' };
+    if (
+      this.state === STATES.TRUCO_PENDING &&
+      Number(playerId) === Number(this.trucoPendingBy)
+    ) {
+      return { ok: false, error: 'Hay una respuesta pendiente.' };
+    }
     if (this.state !== STATES.PLAYER_TURN && this.state !== STATES.TRUCO_PENDING) {
       return { ok: false, error: 'Cannot announce truco now' };
     }
@@ -313,6 +335,10 @@ this.pendingTrucoAfterEnvido = null;
 
     const valid = canBetTruco(betType, this.trucoBetStack, this.trucoPendingBy, playerId);
     if (!valid) return { ok: false, error: 'Invalid truco bet sequence' };
+
+    if (this._cannotTrucoLadderDueToOpeningFourDecisiveMano(playerId)) {
+      return { ok: false, error: 'No podés cantar sobre el 4 en una mano decisiva.' };
+    }
 
     // Cannot call initial Truco on the last mano holding only a 4 (power 14 = lowest)
     if (this.currentMano === 2 && this.trucoBetStack.length === 0 && betType === 'truco') {
@@ -383,7 +409,16 @@ this.waitingForPlayer = this._otherPlayer(playerId);
       return { ok: false, error: 'Cannot fold now' };
     }
     const winner = this._otherPlayer(playerId);
-    const pts = this.trucoAccepted ? getTrucoStake(this.trucoBetStack) : 1;
+    let pts;
+    if (this.trucoAccepted) {
+      pts = getTrucoStake(this.trucoBetStack);
+    } else if (this.state === STATES.TRUCO_PENDING && this.trucoBetStack.length > 0) {
+      pts = getTrucoRejectionStake(this.trucoBetStack);
+    } else if (this._isMazoBeforeAnyCardWithEnvidoAvailable(playerId)) {
+      pts = 2;
+    } else {
+      pts = 1;
+    }
     this.scores[winner] += pts;
     this.trucoResolved = true;
     this.state = STATES.END_ROUND;
@@ -455,6 +490,7 @@ case 'falta_envido':
 
       case 'truco':
         if (this.trucoResolved) return false;
+        if (this._cannotTrucoLadderDueToOpeningFourDecisiveMano(playerId)) return false;
         if (this.state === STATES.TRUCO_PENDING) return playerId !== this.trucoPendingBy;
         return this.state === STATES.PLAYER_TURN && isMyTurn;
 
@@ -507,6 +543,7 @@ case 'falta_envido':
       if (!nextBet) return { ok: false, error: 'Cannot raise further' };
       this.florState.betStack.push(nextBet);
       this.florState.pendingBy = playerId;
+      this.waitingForPlayer = this._otherPlayer(playerId);
       return {
         ok: true,
         event: 'FLOR_RAISED',
@@ -534,6 +571,7 @@ case 'falta_envido':
     }
 
     this.state = STATES.FLOR_PENDING;
+    this.waitingForPlayer = this._otherPlayer(playerId);
     return {
       ok: true,
       event: 'FLOR_ANNOUNCED',
@@ -619,14 +657,128 @@ case 'falta_envido':
    */
   getPlayerView(playerId) {
     const otherPlayer = this._otherPlayer(playerId);
+    const blockedByOpeningFourDecisive = this._cannotTrucoLadderDueToOpeningFourDecisiveMano(playerId);
     return {
       ...this.toJSON(),
       myHand: (this.hands[playerId] || []).map(c => c.toJSON()),
       opponentCardCount: (this.hands[otherPlayer] || []).length,
+      trucoBlockedByOpeningFourDecisiveMano: blockedByOpeningFourDecisive,
+      trucoBlockedByOpeningFourThirdMano: blockedByOpeningFourDecisive,
     };
   }
 
   // ─── Private helpers ──────────────────────────────────────────────
+
+  /**
+   * Mano actual es la que define la ronda (no confundir con “última mano” en abstracto).
+   * Cubre: 2ª tras 1ª parda; 3ª tras dos pardas; 3ª con 1–1 en las dos primeras.
+   */
+  isCurrentManoDecisive() {
+    const r = this.manoResults || [];
+    const cm = this.currentMano;
+    if (cm === 1 && r.length === 1 && r[0] === null) return true;
+    if (cm === 2 && r.length === 2 && r[0] === null && r[1] === null) return true;
+    if (
+      cm === 2 &&
+      r.length === 2 &&
+      r[0] != null &&
+      r[1] != null &&
+      Number(r[0]) !== Number(r[1])
+    ) {
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * En una mano decisiva: exactamente una carta en la mano actual, jugada por quien abrió (manoFirst), y es un 4.
+   */
+  _openingLedWithFourInCurrentDecisiveMano() {
+    if (!this.isCurrentManoDecisive()) return false;
+    const trick = this.playedCards[this.currentMano];
+    if (!trick || trick.length !== 1) return false;
+    const first = trick[0];
+    if (Number(first.playerId) !== Number(this.manoFirst)) return false;
+    const v = first?.card?.value;
+    return Number(v) === 4;
+  }
+
+  /**
+   * El rival del abridor no puede cantar Truco / Retruco / Vale 4 después de ver ese 4
+   * (solo con una carta jugada en la mano decisiva).
+   */
+  _cannotTrucoLadderDueToOpeningFourDecisiveMano(playerId) {
+    if (!this._openingLedWithFourInCurrentDecisiveMano()) return false;
+    const openerId = this.playedCards[this.currentMano][0].playerId;
+    return Number(playerId) !== Number(openerId);
+  }
+
+  /**
+   * Mazo al inicio de la ronda: sin cartas jugadas, sin envido/flor en juego, sin escalera de truco:
+   * el rival cobra 1 por la ronda + 1 por envido no jugado (total 2).
+   */
+  _isMazoBeforeAnyCardWithEnvidoAvailable(playerId) {
+    if (this.currentMano !== 0) return false;
+    if (this._totalCardsPlayedInRound() !== 0) return false;
+    if (this.envidoResolved) return false;
+    if (this.envidoBetStack.length > 0) return false;
+    if (!this.envidoAvailable) return false;
+    if (this.trucoBetStack.length > 0 || this.trucoAccepted) return false;
+    if (this.config.florHabilitada && ((this.florState?.betStack?.length || 0) > 0 || this.florState.resolved)) {
+      return false;
+    }
+    return true;
+  }
+
+  _totalCardsPlayedInRound() {
+    return this.playedCards.reduce((n, mano) => n + mano.length, 0);
+  }
+
+  /**
+   * Resolución central de ganador de ronda según resultados de manos (incluye pardas).
+   * @returns {{ winnerId: number|null, reason: string|null }}
+   */
+  resolveRoundWinnerFromManos() {
+    const r = this.manoResults || [];
+    const [p1, p2] = this.players;
+    const mp = this.manoPlayer;
+
+    const wins = pid => r.filter(x => x === pid).length;
+    const ties = r.filter(x => x === null).length;
+
+    if (r.length === 0 || r.length === 1) {
+      return { winnerId: null, reason: null };
+    }
+
+    if (r.length === 2) {
+      if (wins(p1) === 2) return { winnerId: p1, reason: 'two_wins' };
+      if (wins(p2) === 2) return { winnerId: p2, reason: 'two_wins' };
+      if (ties === 2) return { winnerId: null, reason: null };
+      if (ties === 1) {
+        const w = r.find(x => x !== null);
+        return { winnerId: w, reason: 'first_win_second_parda_or_first_parda_second_win' };
+      }
+      if (wins(p1) === 1 && wins(p2) === 1) return { winnerId: null, reason: null };
+      return { winnerId: null, reason: null };
+    }
+
+    if (r.length === 3) {
+      if (wins(p1) >= 2) return { winnerId: p1, reason: 'two_wins' };
+      if (wins(p2) >= 2) return { winnerId: p2, reason: 'two_wins' };
+      if (wins(p1) > wins(p2)) return { winnerId: p1, reason: 'two_wins' };
+      if (wins(p2) > wins(p1)) return { winnerId: p2, reason: 'two_wins' };
+      if (wins(p1) === 1 && wins(p2) === 1) {
+        if (r[2] === null) return { winnerId: r[0], reason: 'one_each_third_parda_first_winner' };
+        return { winnerId: r[2], reason: 'one_each_third_decided' };
+      }
+      if (ties === 3) return { winnerId: mp, reason: 'three_pardas_mano' };
+      const nonNulls = r.filter(x => x !== null);
+      if (nonNulls.length === 1) return { winnerId: nonNulls[0], reason: 'single_win_among_pardas' };
+      return { winnerId: mp, reason: 'fallback_mano' };
+    }
+
+    return { winnerId: null, reason: null };
+  }
 
   _startRound() {
     this.state = STATES.DEALING;
@@ -659,7 +811,7 @@ case 'falta_envido':
     this.manoResults.push(manoWinner);
 
     const roundResult = this._evaluateRound();
-    if (roundResult) {
+    if (roundResult != null) {
       // Round over
       return this._endRound(roundResult);
     }
@@ -690,49 +842,10 @@ case 'falta_envido':
   /**
    * Evaluates if enough manos have been played to decide a round winner.
    * Returns playerId if decided, null if undecided.
-   *
-   * Rules:
-   *  - Win 2 manos → win round
-   *  - Mano 0 tie + win mano 1 → win round
-   *  - Both manos tie → mano player (player who dealt last) wins
-   *  - Mano 0 win + mano 1 loss + mano 2 → winner of mano 2
    */
   _evaluateRound() {
-    const r = this.manoResults;
-    const [p1, p2] = this.players;
-
-    const wins = (pid) => r.filter(x => x === pid).length;
-    const ties = r.filter(x => x === null).length;
-
-    // After 1st mano
-    if (r.length === 1) {
-      // Can't decide yet
-      return null;
-    }
-
-    // After 2nd mano
-    if (r.length === 2) {
-      if (wins(p1) === 2) return p1;
-      if (wins(p2) === 2) return p2;
-      if (ties === 2) return this.manoPlayer; // both tied → mano player
-      if (ties === 1) {
-        // one tie, one win → winner of non-tied mano wins
-        const winner = r.find(x => x !== null);
-        return winner || null;
-      }
-      // split: one each → play 3rd mano
-      return null;
-    }
-
-    // After 3rd mano
-    if (r.length === 3) {
-      if (wins(p1) > wins(p2)) return p1;
-      if (wins(p2) > wins(p1)) return p2;
-      // all tied or 1-1-1 split → mano player wins
-      return this.manoPlayer;
-    }
-
-    return null;
+    const { winnerId } = this.resolveRoundWinnerFromManos();
+    return winnerId;
   }
 
   _endRound(winnerId) {

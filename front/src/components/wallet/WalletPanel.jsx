@@ -18,6 +18,7 @@ import {
   Percent,
   Lock,
   Settings,
+  ExternalLink,
   Clock,
   CheckCircle,
   XCircle,
@@ -25,8 +26,9 @@ import {
   Coins,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
-import { walletApi } from '../../services/api';
+import { walletApi, verificationApi } from '../../services/api';
 
 const TABS = [
   { id: 'balance', label: 'Saldo' },
@@ -174,19 +176,14 @@ function HistoryView({ transactions, loading, onCancelWithdraw }) {
 }
 
 // ── Deposit tab — Telegram (manual cajero, sin monto en app) ───────────────────
-function DepositForm({ user }) {
-  const telegramMsg = `Hola, quiero cargar créditos en TrucoFX. Mi usuario es: ${user?.username || ''}.`;
+function DepositForm() {
   const telegramUrl = 'https://t.me/TrucoFX';
-
-  const copyMsg = () => {
-    navigator.clipboard.writeText(telegramMsg).then(() => toast.success('Mensaje copiado'));
-  };
 
   return (
     <div className="wallet-action-card wp-deposit-telegram fx-card">
       <div className="wp-tg-header">
         <span className="wp-tg-icon" aria-hidden>
-          ✈️
+          <ExternalLink className="wp-tg-icon-svg" size={28} strokeWidth={2} />
         </span>
         <div>
           <p className="wp-tg-title">Cargar saldo</p>
@@ -201,32 +198,32 @@ function DepositForm({ user }) {
         No hay carga automática dentro de la app.
       </p>
 
-      <div className="wp-tg-actions wp-tg-actions--stack">
-        <a href={telegramUrl} target="_blank" rel="noopener noreferrer" className="btn btn-primary btn-block">
+      <div className="wallet-deposit-actions wp-tg-actions">
+        <a href={telegramUrl} target="_blank" rel="noopener noreferrer" className="btn btn-primary btn-block wp-tg-open-btn">
+          <ExternalLink size={18} aria-hidden className="wp-tg-open-btn-ic" />
           Abrir Telegram
         </a>
-        <button type="button" className="btn btn-secondary btn-block" onClick={copyMsg}>
-          Copiar mensaje
-        </button>
       </div>
     </div>
   );
 }
 
 // ── Withdraw tab ──────────────────────────────────────────────────────────────
-function WithdrawForm({ wallet, onSuccess }) {
-  const [amount,  setAmount]  = useState('');
-  const [method,  setMethod]  = useState('transferencia');
+function WithdrawForm({ wallet, onSuccess, verification }) {
+  const navigate = useNavigate();
+  const [amount, setAmount] = useState('');
+  const [method, setMethod] = useState('transferencia');
   const [details, setDetails] = useState('');
   const [loading, setLoading] = useState(false);
 
   const available = parseFloat(wallet?.balance || 0);
+  const idOk = verification?.identity_status === 'verified' && verification?.age_verified;
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     const n = parseFloat(amount);
-    if (!n || n <= 0)    return toast.error('Monto inválido');
-    if (n > available)   return toast.error(`Saldo insuficiente. Disponible: ${available.toLocaleString('es-AR')} cr`);
+    if (!n || n <= 0) return toast.error('Monto inválido');
+    if (n > available) return toast.error(`Saldo insuficiente. Disponible: ${available.toLocaleString('es-AR')} cr`);
     if (!details.trim()) return toast.error('Ingresá CBU / Alias');
     setLoading(true);
     try {
@@ -257,9 +254,20 @@ function WithdrawForm({ wallet, onSuccess }) {
         )}
       </div>
 
+      {!idOk && (
+        <div className="fx-card admin-alert-pending" style={{ marginBottom: 12, padding: '10px 12px', fontSize: 13 }}>
+          <p style={{ margin: 0 }}>
+            Necesitás verificar tu identidad antes de solicitar retiros.
+          </p>
+          <button type="button" className="btn btn-primary btn-sm" style={{ marginTop: 8 }} onClick={() => navigate('/verification')}>
+            Verificar identidad
+          </button>
+        </div>
+      )}
+
       <div className="form-group">
         <label>Método</label>
-        <select className="form-input" value={method} onChange={e => setMethod(e.target.value)}>
+        <select className="form-input" value={method} onChange={(e) => setMethod(e.target.value)}>
           <option value="transferencia">Transferencia bancaria</option>
           <option value="mercadopago">MercadoPago</option>
           <option value="otro">Otro</option>
@@ -271,7 +279,7 @@ function WithdrawForm({ wallet, onSuccess }) {
           className="form-input"
           rows={2}
           value={details}
-          onChange={e => setDetails(e.target.value)}
+          onChange={(e) => setDetails(e.target.value)}
           placeholder="CBU: 0000... o Alias: nombre.apellido"
           required
         />
@@ -285,17 +293,19 @@ function WithdrawForm({ wallet, onSuccess }) {
           step="100"
           max={available}
           value={amount}
-          onChange={e => setAmount(e.target.value)}
+          onChange={(e) => setAmount(e.target.value)}
           placeholder="Ej: 5000"
           required
         />
       </div>
-      <button type="submit" className="btn btn-primary" disabled={loading || available <= 0}>
+      <button type="submit" className="btn btn-primary" disabled={loading || available <= 0 || !idOk}>
         {loading ? 'Enviando…' : 'Solicitar retiro'}
       </button>
       <p className="wp-form-note wallet-withdraw-note">
-        Al solicitar un retiro, el monto se descuenta de tu saldo disponible y queda reservado como pendiente. Podés cancelar un
-        retiro pendiente desde el historial y el saldo vuelve a tu cuenta.
+        Para retirar créditos por dinero, la cuenta de destino debe estar a tu nombre y coincidir con los datos de identidad verificados. Si no coincide, el retiro puede ser rechazado.
+      </p>
+      <p className="wp-form-note wallet-withdraw-note" style={{ marginTop: 6 }}>
+        Al solicitar un retiro, el monto se descuenta de tu saldo disponible y queda reservado como pendiente. Podés cancelar un retiro pendiente desde el historial y el saldo vuelve a tu cuenta.
       </p>
     </form>
   );
@@ -307,13 +317,25 @@ export default function WalletPanel({ onClose, initialTab = 'balance' }) {
   const [tab,          setTab]          = useState(initialTab);
   const [wallet,       setWallet]       = useState(null);
   const [transactions, setTransactions] = useState([]);
-  const [txLoading,    setTxLoading]    = useState(false);
+  const [txLoading, setTxLoading] = useState(false);
+  const [verification, setVerification] = useState(null);
 
   const loadWallet = useCallback(async () => {
     try {
       const r = await walletApi.getBalance();
       setWallet(r.data);
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  const loadVerification = useCallback(async () => {
+    try {
+      const r = await verificationApi.getStatus();
+      setVerification(r.data);
+    } catch {
+      setVerification(null);
+    }
   }, []);
 
   const loadHistory = useCallback(async () => {
@@ -339,7 +361,9 @@ export default function WalletPanel({ onClose, initialTab = 'balance' }) {
     }
   }, [loadWallet, loadHistory]);
 
-  useEffect(() => { loadWallet(); }, [loadWallet]);
+  useEffect(() => {
+    loadWallet();
+  }, [loadWallet]);
   useEffect(() => {
     setTab(initialTab);
   }, [initialTab]);
@@ -347,6 +371,10 @@ export default function WalletPanel({ onClose, initialTab = 'balance' }) {
   useEffect(() => {
     if (tab === 'history') loadHistory();
   }, [tab, loadHistory]);
+
+  useEffect(() => {
+    if (tab === 'withdraw') loadVerification();
+  }, [tab, loadVerification]);
 
   return (
     <motion.div
@@ -357,7 +385,7 @@ export default function WalletPanel({ onClose, initialTab = 'balance' }) {
       onClick={(e) => e.target === e.currentTarget && onClose()}
     >
       <motion.div
-        className="modal-panel wp-panel wallet-panel wallet-panel--solid"
+        className="modal-panel wp-panel wallet-panel wallet-panel--solid wallet-panel-responsive"
         initial={{ scale: 0.92, opacity: 0 }}
         animate={{ scale: 1, opacity: 1 }}
         exit={{ scale: 0.92, opacity: 0 }}
@@ -403,14 +431,19 @@ export default function WalletPanel({ onClose, initialTab = 'balance' }) {
             )}
             {tab === 'deposit' && (
               <motion.div key="deposit" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-                <DepositForm user={user} />
+                <DepositForm />
               </motion.div>
             )}
             {tab === 'withdraw' && (
               <motion.div key="withdraw" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
                 <WithdrawForm
                   wallet={wallet}
-                  onSuccess={() => { loadWallet(); setTab('history'); }}
+                  verification={verification}
+                  onSuccess={() => {
+                    loadWallet();
+                    loadVerification();
+                    setTab('history');
+                  }}
                 />
               </motion.div>
             )}

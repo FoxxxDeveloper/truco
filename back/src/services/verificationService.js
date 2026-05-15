@@ -70,8 +70,56 @@ const VerificationService = {
       country:               r.country,
       province:              r.province,
       rejection_reason:      r.rejection_reason,
+      reviewed_at:           r.reviewed_at || null,
+      reviewed_by:           r.reviewed_by || null,
       created_at:            r.created_at,
       updated_at:            r.updated_at,
+    };
+  },
+
+  /**
+   * Snapshot enriquecido para admin (incluye revisor). Nunca expone document_number en claro.
+   */
+  async getAdminVerificationSnapshot(userId) {
+    const rows = await query(
+      `SELECT uv.*, a.username AS reviewer_username
+       FROM user_verifications uv
+       LEFT JOIN usuarios a ON a.id = uv.reviewed_by
+       WHERE uv.user_id = ?`,
+      [userId]
+    );
+    if (!rows.length) {
+      return {
+        identity_status: 'unverified',
+        age_verified: false,
+        legal_first_name: null,
+        legal_last_name: null,
+        document_type: null,
+        document_number_masked: null,
+        date_of_birth: null,
+        country: null,
+        province: null,
+        rejection_reason: null,
+        reviewed_at: null,
+        reviewed_by: null,
+        reviewer_username: null,
+      };
+    }
+    const r = rows[0];
+    return {
+      identity_status: r.identity_status,
+      age_verified: !!r.age_verified,
+      legal_first_name: r.legal_first_name,
+      legal_last_name: r.legal_last_name,
+      document_type: r.document_type,
+      document_number_masked: maskDoc(r.document_number),
+      date_of_birth: r.date_of_birth,
+      country: r.country,
+      province: r.province,
+      rejection_reason: r.rejection_reason,
+      reviewed_at: r.reviewed_at,
+      reviewed_by: r.reviewed_by,
+      reviewer_username: r.reviewer_username,
     };
   },
 

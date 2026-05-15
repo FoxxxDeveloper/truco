@@ -51,6 +51,8 @@ export default function ActionButtons({
     trucoResolved,
     config,
     florState,
+    trucoBlockedByOpeningFourDecisiveMano,
+    trucoBlockedByOpeningFourThirdMano,
   } = gameState;
 
   const [showTrucoResponse, setShowTrucoResponse] = useState(false);
@@ -60,6 +62,10 @@ export default function ActionButtons({
   const isPendingTruco = state === 'TRUCO_PENDING';
   const isPendingEnvido = state === 'ENVIDO_PENDING';
   const isPendingFlor = state === 'FLOR_PENDING';
+
+  /** Hay canto/apuesta esperando respuesta: no mostrar acciones normales aunque el estado venga desfasado un tick. */
+  const hasBetResponsePending =
+    isPendingTruco || isPendingEnvido || (isPendingFlor && florHabilitada);
 
   const isMyTrucoTurn = isPendingTruco && Number(trucoPendingBy) !== Number(myId);
   const isMyEnvidoTurn = isPendingEnvido && Number(envidoPendingBy) !== Number(myId);
@@ -74,6 +80,7 @@ export default function ActionButtons({
    * Solo lo puede iniciar quien tiene el turno.
    */
   const canEnvidoOnMyTurn =
+    !hasBetResponsePending &&
     !envidoResolved &&
     envidoAvailable &&
     state === 'PLAYER_TURN' &&
@@ -101,7 +108,13 @@ const canEnvidoAsTrucoResponse =
     canEnvidoOnMyTurn ||
     canEnvidoAsTrucoResponse;
 
+  const blockedTrucoLadderByFour =
+    trucoBlockedByOpeningFourDecisiveMano === true ||
+    trucoBlockedByOpeningFourThirdMano === true;
+
   const canTruco =
+    !blockedTrucoLadderByFour &&
+    !hasBetResponsePending &&
     !trucoResolved &&
     state === 'PLAYER_TURN' &&
     trucoBetStack.length === 0 &&
@@ -109,6 +122,7 @@ const canEnvidoAsTrucoResponse =
 
   // Allow raising (retruco/vale4) while in TRUCO_PENDING if it's our turn to respond
   const canTrucoRaise =
+    !blockedTrucoLadderByFour &&
     !trucoResolved &&
     state === 'TRUCO_PENDING' &&
     isMyTrucoTurn &&
@@ -127,6 +141,7 @@ const canEnvidoAsTrucoResponse =
     myPlayerIndex === 0 ? florState?.p1HasFlor : florState?.p2HasFlor;
 
   const canFlor =
+    !hasBetResponsePending &&
     florHabilitada &&
     !!myHasFlor &&
     !florState?.resolved &&
@@ -160,10 +175,7 @@ const canEnvidoAsTrucoResponse =
     canEnvidoAsTrucoResponse &&
     !showTrucoResponse;
 
-  const shouldShowNormalActions =
-    !isPendingTruco &&
-    !isPendingEnvido &&
-    !isPendingFlor;
+  const shouldShowNormalActions = !hasBetResponsePending;
 
   const shouldShowTrucoResponse =
     isPendingTruco &&

@@ -7,9 +7,12 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "generate:sounds": "node scripts/generate-elevenlabs-sounds.js"
   },
   "dependencies": {
+    "@dicebear/avataaars": "^9.4.2",
+    "@dicebear/core": "^9.4.2",
     "axios": "^1.7.2",
     "framer-motion": "^11.2.10",
     "lucide-react": "^1.14.0",

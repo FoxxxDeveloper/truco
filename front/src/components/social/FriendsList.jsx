@@ -368,7 +368,7 @@ export default function FriendsList({ onClose, onStartChat, onChallengeFriend, u
                         {typeof onChallengeFriend === 'function' && (
                           <button
                             type="button"
-                            className="friend-action-btn friend-action-btn--gold"
+                            className="friend-action-btn friend-action-btn--outline-challenge"
                             onClick={() => onChallengeFriend(f)}
                             disabled={loadingAction}
                             title="Retar"
@@ -379,7 +379,7 @@ export default function FriendsList({ onClose, onStartChat, onChallengeFriend, u
                         )}
                         <button
                           type="button"
-                          className="friend-action-btn friend-action-btn--danger"
+                          className="friend-action-btn friend-action-btn--danger-outline"
                           onClick={() => removeFriend(f.id)}
                           disabled={loadingAction}
                           title="Quitar"

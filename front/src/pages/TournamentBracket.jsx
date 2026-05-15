@@ -54,8 +54,11 @@ export default function TournamentBracket() {
 
   if (loading) {
     return (
-      <div className="tournament-bracket page-container tournament-detail--et2">
-        <p className="tournaments-loading">Cargando cuadro…</p>
+      <div className="tournament-bracket page-container tournament-detail--et2 app-page">
+        <AppHeader />
+        <div className="page-shell">
+          <p className="tournaments-loading">Cargando cuadro…</p>
+        </div>
       </div>
     );
   }
@@ -66,8 +69,9 @@ export default function TournamentBracket() {
   const prizeLine = meta?.prize_text || null;
 
   return (
-    <div className="tournament-bracket page-container tournament-detail--et2 page-shell">
+    <div className="tournament-bracket page-container tournament-detail--et2 app-page">
       <AppHeader />
+      <div className="page-shell">
       <header className="bracket-header--et2 bracket-header--et2-inner">
         <button type="button" className="btn btn-ghost btn-sm" onClick={() => navigate(`/torneos/${tid}`)}>
           <ArrowLeft size={18} aria-hidden /> Torneo
@@ -132,6 +136,7 @@ export default function TournamentBracket() {
       <p className="bracket-footer-link">
         <Link to={`/torneos/${tid}`}>Volver al detalle</Link>
       </p>
+      </div>
     </div>
   );
 }

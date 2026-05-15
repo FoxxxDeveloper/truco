@@ -86,10 +86,19 @@ const SECTIONS = [
         </p>
         <h4>Reglas de pardas</h4>
         <ul>
-          <li>Si la <strong>1ª mano</strong> es parda y alguien gana la 2ª → ese jugador gana la ronda.</li>
-          <li>Si la 1ª y 2ª son pardas → gana el jugador <strong>mano</strong>.</li>
-          <li>Si hay una mano para cada uno → se juega la 3ª.</li>
-          <li>Si la 3ª también empata → gana el jugador <strong>mano</strong>.</li>
+          <li>
+            Si una mano queda <strong>parda</strong>, no siempre se cierra la ronda ahí. Si la primera mano es parda,
+            gana la ronda quien gane la segunda. Si la primera y la segunda son pardas, se juega la tercera.
+          </li>
+          <li>Si las tres manos son pardas, gana el jugador <strong>mano</strong>.</li>
+          <li>
+            Si cada jugador ganó una mano y la tercera queda parda, gana quien ganó la <strong>primera</strong> mano no
+            parda.
+          </li>
+          <li>
+            Si ganaste una mano y la siguiente queda parda, ganás la ronda (no hace falta jugar la tercera salvo que ya
+            hubiera dos pardas antes).
+          </li>
         </ul>
         <p className="rules-tip">
           El jugador <strong>&quot;mano&quot;</strong> alterna cada ronda. Sirve para desempatar envido y pardas.
@@ -211,6 +220,24 @@ const SECTIONS = [
             </tr>
           </tbody>
         </table>
+        <div className="rules-truco-four-rule fx-card">
+          <span className="fx-badge rules-inline-badge">Truco</span>
+          <h4>Regla del 4 en mano decisiva</h4>
+          <p>
+            Si una mano es <strong>decisiva</strong> (define la ronda) y quien la <strong>abre</strong> juega un{' '}
+            <strong>4</strong> (cualquier palo), el rival <strong>no puede</strong> cantar <strong>Truco</strong>,{' '}
+            <strong>Retruco</strong> ni <strong>Vale 4</strong> sobre ese 4. Aplica tanto en la tercera mano con 1–1
+            como en la segunda mano decisiva cuando la primera fue parda.
+          </p>
+          <p className="rules-tip">
+            Solo cuenta el 4 como primera carta de esa mano, jugado por quien abre la mano. Si abre con otra carta,
+            valen los cantos normales.
+          </p>
+          <p>
+            <strong>Ejemplo:</strong> primera mano parda; en la segunda (decisiva) abre el jugador 2 con un 4. El
+            jugador 1 no puede subir la escalera del Truco sobre ese 4.
+          </p>
+        </div>
         <h4>Reglas</h4>
         <ul>
           <li>Solo se puede cantar Truco en tu turno, antes de tirar carta.</li>
@@ -306,9 +333,15 @@ const SECTIONS = [
           En cualquier momento de tu turno podés <strong>irte al mazo</strong> (rendirte en la ronda).
         </p>
         <ul>
-          <li>Sin Truco cantado: el rival gana <strong>1 punto</strong>.</li>
-          <li>Con Truco aceptado: el rival gana el valor aceptado (<strong>2, 3 ó 4 pts</strong>).</li>
-          <li>Ante un Truco pendiente: se trata como &quot;No quiero&quot; el Truco.</li>
+          <li>
+            Si el jugador mano se va al mazo <strong>antes de jugar la primera carta</strong> de la ronda (sin envido
+            cantado ni resuelto, sin escalera de Truco en curso y con el envido todavía disponible), el rival suma{' '}
+            <strong>2 puntos</strong>: uno por el envido no jugado y uno por la ronda. Es la regla habitual del truco,
+            no una variante local.
+          </li>
+          <li>Si ya se jugó al menos una carta, el mazo sin otras apuestas vale <strong>1 punto</strong> para el rival.</li>
+          <li>Con Truco aceptado: el rival cobra el valor aceptado (<strong>2, 3 ó 4 pts</strong>).</li>
+          <li>Ante un Truco pendiente: se cobra como rechazo del Truco según el canto.</li>
         </ul>
       </>
     ),
@@ -352,7 +385,7 @@ export default function RulesPage() {
   const [open, setOpen] = useState('intro');
 
   return (
-    <div className="rules-page rules-page--et6 page-shell">
+    <div className="rules-page rules-page--et6 page-container app-page">
       {user ? (
         <AppHeader />
       ) : (
@@ -370,6 +403,7 @@ export default function RulesPage() {
         </header>
       )}
 
+      <div className="page-shell">
       <h1 className="rules-page-title">Reglas y ayuda</h1>
       <p className="rules-page-lead">Truco Argentino en TrucoFX — referencia rápida para jugar en línea.</p>
 
@@ -403,6 +437,7 @@ export default function RulesPage() {
             ))}
           </AnimatePresence>
         </main>
+      </div>
       </div>
     </div>
   );

@@ -40,7 +40,11 @@ export default function Login() {
       toast.success('Bienvenido');
       navigate('/lobby');
     } catch (err) {
-      toast.error(err.response?.data?.error || 'No se pudo iniciar sesión');
+      if (err.response?.status === 429) {
+        toast.error('Demasiados intentos. Esperá un momento y volvé a probar.');
+      } else {
+        toast.error(err.response?.data?.error || 'No se pudo iniciar sesión');
+      }
     } finally {
       setLoading(false);
     }

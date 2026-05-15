@@ -8,7 +8,8 @@ export default function GameOverModal({ gameOver, myId }) {
   const { clearGame } = useGame();
   if (!gameOver) return null;
 
-  const won = gameOver.winner === myId;
+  const isVoid = gameOver.winner == null && gameOver.reason === 'both_disconnected';
+  const won = !isVoid && gameOver.winner === myId;
   const delta = gameOver.eloDelta?.[myId];
 
   const handleLobby = () => {
@@ -25,18 +26,32 @@ export default function GameOverModal({ gameOver, myId }) {
         exit={{ opacity: 0 }}
       >
         <motion.div
-          className={`fx-card game-modal game-over-modal ${won ? 'game-over-modal--won' : 'game-over-modal--lost'}`}
+          className={`fx-card game-modal game-over-modal ${
+            isVoid ? 'game-over-modal--void' : won ? 'game-over-modal--won' : 'game-over-modal--lost'
+          }`}
           initial={{ scale: 0.5, y: -80, opacity: 0 }}
           animate={{ scale: 1, y: 0, opacity: 1 }}
           exit={{ scale: 0.5, opacity: 0 }}
           transition={{ type: 'spring', stiffness: 300, damping: 25 }}
         >
-          <div className={`game-over-icon ${won ? 'game-over-icon--won' : 'game-over-icon--lost'}`}>
+          <div
+            className={`game-over-icon ${
+              isVoid ? 'game-over-icon--void' : won ? 'game-over-icon--won' : 'game-over-icon--lost'
+            }`}
+          >
             <TrophyIcon size={52} />
           </div>
           <h2 className="game-over-title">
-            {won ? '¡Ganaste!' : '¡Perdiste!'}
+            {isVoid ? 'Partida anulada' : won ? '¡Ganaste!' : '¡Perdiste!'}
           </h2>
+
+          {isVoid && (
+            <p className="game-over-abandon-note">
+              {gameOver.requiresAdminResolution
+                ? 'La partida se cerró sin ganador (doble desconexión). El torneo puede requerir resolución por un administrador.'
+                : 'La partida se cerró sin ganador por doble desconexión.'}
+            </p>
+          )}
 
           {gameOver.reason === 'abandon' && (
             <p className="game-over-abandon-note">
