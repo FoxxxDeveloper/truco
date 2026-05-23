@@ -1,16 +1,28 @@
-import { useState, useRef, useEffect } from 'react';
+import { memo, useState, useRef, useEffect } from 'react';
 import { MessageSquare } from 'lucide-react';
 
 const REACTIONS = ['👍', '👎', '😂', '😤', '🃏', '🔥', '👏', '🤔'];
 
-export default function Chat({ messages, onSend, onReaction, myId }) {
+function Chat({ messages, onSend, onReaction, myId, variant = 'floating' }) {
   const [text, setText]     = useState('');
   const [open, setOpen]     = useState(false);
   const bottomRef           = useRef(null);
+  /** Cantidad de mensajes considerados leídos (hasta la última vez que el panel estuvo abierto) */
+  const [readUpTo, setReadUpTo] = useState(0);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  useEffect(() => {
+    if (open) {
+      setReadUpTo(messages.length);
+    }
+  }, [open, messages.length]);
+
+  useEffect(() => {
+    if (messages.length === 0) setReadUpTo(0);
+  }, [messages.length]);
 
   const handleSend = (e) => {
     e.preventDefault();
@@ -19,13 +31,32 @@ export default function Chat({ messages, onSend, onReaction, myId }) {
     setText('');
   };
 
+  const panelClass =
+    variant === 'header'
+      ? `chat-panel chat-panel--header ${open ? 'chat-open' : ''}`
+      : `chat-panel game-chat-panel chat-panel--floating ${open ? 'chat-open' : ''}`;
+
+  const unreadWhileClosed = open ? 0 : Math.max(0, messages.length - readUpTo);
+
+  const toggle = () => setOpen((o) => !o);
+
   return (
-    <div className={`chat-panel game-chat-panel ${open ? 'chat-open' : ''}`}>
-      <button type="button" className="chat-toggle" onClick={() => setOpen(o => !o)}>
+    <div className={panelClass}>
+      <button
+        type="button"
+        className="chat-toggle"
+        onClick={toggle}
+        aria-expanded={open}
+        aria-label={open ? 'Cerrar chat de partida' : 'Abrir chat de partida'}
+      >
         <span className="chat-toggle-inner">
           <MessageSquare className="chat-toggle-icon" size={18} strokeWidth={2.25} aria-hidden />
           <span className="chat-toggle-label">Chat</span>
-          {messages.length > 0 && <span className="badge">{messages.length}</span>}
+          {unreadWhileClosed > 0 && (
+            <span className="badge" aria-live="polite">
+              {unreadWhileClosed > 99 ? '99+' : unreadWhileClosed}
+            </span>
+          )}
         </span>
       </button>
 
@@ -66,3 +97,5 @@ export default function Chat({ messages, onSend, onReaction, myId }) {
     </div>
   );
 }
+
+export default memo(Chat);

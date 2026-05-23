@@ -30,6 +30,29 @@ async function runTick(io) {
     const now = new Date();
 
     for (const t of active) {
+      if (
+        t.status === 'draft' &&
+        t.registration_opens_at &&
+        new Date(t.registration_opens_at) <= now
+      ) {
+        try {
+          await TournamentService.setTournamentStatus(t.id, null, 'open', {
+            eventTypeOverride: 'registration_auto_opened',
+          });
+          io?.to(`tournament:${t.id}`)?.emit('tournament:updated', {
+            tournamentId: t.id,
+            reason: 'registration_auto_opened',
+          });
+        } catch (_) { /* noop */ }
+      }
+    }
+
+    const activeOpen = await query(
+      `SELECT * FROM tournaments
+       WHERE status IN ('draft','open','checkin','started')`
+    );
+
+    for (const t of activeOpen) {
       if (t.status === 'open' && Number(t.auto_checkin_enabled) === 1 && t.checkin_starts_at) {
         if (new Date(t.checkin_starts_at) <= now) {
           try {
@@ -53,8 +76,8 @@ async function runTick(io) {
     );
 
     for (const t of active2) {
-      if (t.status === 'checkin' && t.registration_closes_at && !t.checkin_closed_at) {
-        if (new Date(t.registration_closes_at) <= now) {
+      if (t.status === 'checkin' && t.starts_at && !t.checkin_closed_at) {
+        if (new Date(t.starts_at) <= now) {
           try {
             await TournamentService.closeCheckinAndPromoteSubstitutes(t.id, null);
             io?.to(`tournament:${t.id}`)?.emit('tournament:updated', { tournamentId: t.id });
@@ -104,8 +127,8 @@ async function runTick(io) {
           cur = (await query('SELECT * FROM tournaments WHERE id = ?', [t.id]))[0];
         }
 
-        if (cur.status === 'checkin' && !cur.checkin_closed_at && cur.registration_closes_at
-            && new Date(cur.registration_closes_at) <= now) {
+        if (cur.status === 'checkin' && !cur.checkin_closed_at && cur.starts_at
+            && new Date(cur.starts_at) <= now) {
           await TournamentService.closeCheckinAndPromoteSubstitutes(cur.id, null).catch(() => {});
           cur = (await query('SELECT * FROM tournaments WHERE id = ?', [t.id]))[0];
         }

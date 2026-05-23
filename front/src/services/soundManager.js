@@ -1,3 +1,5 @@
+import { publicPath } from '../utils/publicPath';
+
 /**
  * Sonidos locales: cantos con voz (variantes m/f + legacy) y efectos UI en /sounds/sfx/.
  * Sin ElevenLabs en runtime.
@@ -15,14 +17,15 @@ export const MAX_VARIANTS_PER_GENDER = 5;
  * Rutas que no deben reproducirse (TTS problemático). Set: playSound nunca las elige.
  * Si regenerás y suenan bien, borrá la entrada manualmente.
  */
-export const BAD_SOUND_FILES = new Set([
+const BAD_SOUND_FILES_RAW = [
   '/sounds/envido-m-1.mp3',
   '/sounds/envido-m-2.mp3',
   '/sounds/falta-envido-m-1.mp3',
   '/sounds/real-envido-f-1.mp3',
   // TTS: "Lo quiero." suena a "no quiero" en esta variante.
   '/sounds/quiero-m-4.mp3',
-]);
+];
+export const BAD_SOUND_FILES = new Set(BAD_SOUND_FILES_RAW.map(publicPath));
 
 /** Para envido / real envido / falta envido: con gender "any", probar primero variantes -f-. */
 const VOICE_KEYS_FEMALE_FIRST = new Set(['envido', 'realEnvido', 'faltaEnvido']);
@@ -41,6 +44,7 @@ const VOICE_CAMEL_KEYS = [
   'contraFlor',
   'sonBuenas',
   'alMazo',
+  'puntosEnMesa',
 ];
 
 /** Keys de efecto corto (un solo archivo bajo /sounds/sfx/). */
@@ -51,6 +55,12 @@ const SFX_CAMEL_KEYS = [
   'manoPerdida',
   'partidaGanada',
   'partidaPerdida',
+  'cardInit',
+  'cardPlay',
+  'cardPlaySelf',
+  'cardPlayOpponent',
+  'victory',
+  'defeat',
 ];
 
 const SFX_KEYS_SET = new Set(SFX_CAMEL_KEYS);
@@ -68,24 +78,35 @@ const SLUG_BY_VOICE_KEY = {
   contraFlor: 'contra-flor',
   sonBuenas: 'son-buenas',
   alMazo: 'al-mazo',
+  puntosEnMesa: 'puntos-en-mesa',
 };
+
+function mapLegacy(paths) {
+  return paths.map(publicPath);
+}
 
 /** Legacy solo para cantos con voz (sin género en el nombre). */
 const LEGACY_VOICE_PATHS = {
-  truco: ['/sounds/truco-1.mp3', '/sounds/truco-2.mp3', '/sounds/truco-3.mp3'],
-  retruco: ['/sounds/retruco-1.mp3', '/sounds/retruco-2.mp3'],
-  valeCuatro: ['/sounds/vale-cuatro-1.mp3', '/sounds/vale-cuatro-2.mp3'],
-  envido: ['/sounds/envido-1.mp3', '/sounds/envido-2.mp3', '/sounds/envido-3.mp3'],
-  realEnvido: ['/sounds/real-envido-1.mp3', '/sounds/real-envido-2.mp3'],
-  faltaEnvido: ['/sounds/falta-envido-1.mp3', '/sounds/falta-envido-2.mp3'],
-  quiero: ['/sounds/quiero-1.mp3', '/sounds/quiero-2.mp3', '/sounds/quiero-3.mp3'],
-  noQuiero: ['/sounds/no-quiero-1.mp3', '/sounds/no-quiero-2.mp3'],
-  flor: ['/sounds/flor-1.mp3'],
-  contraFlor: ['/sounds/contra-flor-1.mp3'],
-  sonBuenas: ['/sounds/son-buenas-1.mp3'],
-  alMazo: ['/sounds/al-mazo-1.mp3'],
+  truco: mapLegacy(['/sounds/truco-1.mp3', '/sounds/truco-2.mp3', '/sounds/truco-3.mp3']),
+  retruco: mapLegacy(['/sounds/retruco-1.mp3', '/sounds/retruco-2.mp3']),
+  valeCuatro: mapLegacy(['/sounds/vale-cuatro-1.mp3', '/sounds/vale-cuatro-2.mp3']),
+  envido: mapLegacy(['/sounds/envido-1.mp3', '/sounds/envido-2.mp3', '/sounds/envido-3.mp3']),
+  realEnvido: mapLegacy(['/sounds/real-envido-1.mp3', '/sounds/real-envido-2.mp3']),
+  faltaEnvido: mapLegacy(['/sounds/falta-envido-1.mp3', '/sounds/falta-envido-2.mp3']),
+  quiero: mapLegacy(['/sounds/quiero-1.mp3', '/sounds/quiero-2.mp3', '/sounds/quiero-3.mp3']),
+  noQuiero: mapLegacy(['/sounds/no-quiero-1.mp3', '/sounds/no-quiero-2.mp3']),
+  flor: mapLegacy(['/sounds/flor-1.mp3']),
+  contraFlor: mapLegacy(['/sounds/contra-flor-1.mp3']),
+  sonBuenas: mapLegacy(['/sounds/son-buenas-1.mp3']),
+  alMazo: mapLegacy(['/sounds/al-mazo-1.mp3']),
+  puntosEnMesa: mapLegacy([
+    '/sounds/puntos-en-mesa-m-1.mp3',
+    '/sounds/puntos-en-mesa-f-1.mp3',
+    '/sounds/puntos-en-mesa-1.mp3',
+  ]),
 };
 
+/** @type {Record<string, string | string[]>} Rutas bajo /sounds/sfx/ (orden = prioridad). */
 const SFX_FILENAME_BY_KEY = {
   notification: 'notification.mp3',
   turno: 'turno.mp3',
@@ -93,13 +114,19 @@ const SFX_FILENAME_BY_KEY = {
   manoPerdida: 'mano-perdida.mp3',
   partidaGanada: 'partida-ganada.mp3',
   partidaPerdida: 'partida-perdida.mp3',
+  cardInit: ['card-init.ogg', 'card-init.mp3'],
+  cardPlaySelf: ['card-play-me.ogg', 'card-play-me.mp3'],
+  cardPlayOpponent: ['card-play-vs.ogg', 'card-play-vs.mp3'],
+  cardPlay: ['card-play-me.ogg', 'card-play-vs.ogg', 'card-play.mp3'],
+  victory: ['victory.mp3', 'victory.ogg'],
+  defeat: ['defeat.mp3', 'defeat.ogg'],
 };
 
 function genderPrefixedPaths(slug) {
   const out = [];
   for (const g of ['m', 'f']) {
     for (let i = 1; i <= MAX_VARIANTS_PER_GENDER; i++) {
-      out.push(`/sounds/${slug}-${g}-${i}.mp3`);
+      out.push(publicPath(`/sounds/${slug}-${g}-${i}.mp3`));
     }
   }
   return out;
@@ -113,10 +140,20 @@ function buildVoicePaths(camelKey) {
   return [...pref, ...leg];
 }
 
+const SFX_FALLBACK_BY_KEY = {
+  victory: ['mano-ganada.mp3', 'partida-ganada.mp3'],
+  defeat: ['mano-perdida.mp3', 'partida-perdida.mp3'],
+};
+
 function buildSfxPaths(camelKey) {
-  const fn = SFX_FILENAME_BY_KEY[camelKey];
-  if (!fn) return [];
-  return [`/sounds/sfx/${fn}`];
+  const primary = SFX_FILENAME_BY_KEY[camelKey];
+  const fallbacks = SFX_FALLBACK_BY_KEY[camelKey] || [];
+  const files = [
+    ...(Array.isArray(primary) ? primary : primary ? [primary] : []),
+    ...fallbacks,
+  ].filter((f, i, arr) => f && arr.indexOf(f) === i);
+  if (!files.length) return [];
+  return files.map((f) => publicPath(`/sounds/sfx/${f}`));
 }
 
 /** @type {Record<string, string[]>} */
@@ -242,21 +279,49 @@ function orderVoiceCandidates(key, urls, gender) {
   return [...fem, ...mas, ...leg];
 }
 
+let voicePreloadScheduled = false;
+
+function cacheAudioUrl(url) {
+  if (audioByUrl.has(url)) return;
+  try {
+    const a = new Audio(url);
+    a.preload = 'auto';
+    a.load();
+    audioByUrl.set(url, a);
+  } catch {
+    /* ignore */
+  }
+}
+
+/** SFX cortos: prioridad al primer gesto (no bloquean UI). */
+function preloadSfxOnly() {
+  for (const key of SFX_CAMEL_KEYS) {
+    const urls = SOUND_MAP[key] || [];
+    for (const url of urls) cacheAudioUrl(url);
+  }
+}
+
+/** Voces: diferidas para no competir con cartas/UI en mobile. */
+function preloadVoiceSounds() {
+  for (const key of VOICE_CAMEL_KEYS) {
+    const urls = SOUND_MAP[key] || [];
+    for (const url of urls) {
+      if (BAD_SOUND_FILES.has(url)) continue;
+      cacheAudioUrl(url);
+    }
+  }
+}
+
 export function preloadSounds() {
   unlockAudio();
-  for (const [key, urls] of Object.entries(SOUND_MAP)) {
-    for (const url of urls) {
-      if (!SFX_KEYS_SET.has(key) && BAD_SOUND_FILES.has(url)) continue;
-      if (audioByUrl.has(url)) continue;
-      try {
-        const a = new Audio(url);
-        a.preload = 'auto';
-        a.load();
-        audioByUrl.set(url, a);
-      } catch {
-        /* ignore */
-      }
-    }
+  preloadSfxOnly();
+  if (voicePreloadScheduled) return;
+  voicePreloadScheduled = true;
+  const runVoice = () => preloadVoiceSounds();
+  if (typeof requestIdleCallback === 'function') {
+    requestIdleCallback(runVoice, { timeout: 4000 });
+  } else {
+    setTimeout(runVoice, 600);
   }
 }
 
@@ -303,15 +368,14 @@ export function playSound(key, opts = {}) {
  * @returns {Promise<boolean>}
  */
 async function tryPlayUrlOnce(url, volume) {
-  let audio = audioByUrl.get(url);
-  if (!audio) {
-    try {
-      audio = new Audio(url);
-      audio.preload = 'auto';
-      audioByUrl.set(url, audio);
-    } catch {
-      return false;
-    }
+  if (!audioByUrl.has(url)) cacheAudioUrl(url);
+
+  let audio;
+  try {
+    audio = new Audio(url);
+    audio.preload = 'auto';
+  } catch {
+    return false;
   }
 
   return new Promise(resolve => {
@@ -335,7 +399,6 @@ async function tryPlayUrlOnce(url, volume) {
 
     try {
       audio.volume = volume;
-      audio.currentTime = 0;
       const p = audio.play();
       if (p && typeof p.catch === 'function') {
         p.catch(() => finish(false));

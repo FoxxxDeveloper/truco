@@ -1,8 +1,19 @@
-import { createContext, useContext, useEffect, useRef, useState, useCallback } from 'react';
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  useCallback,
+  useMemo,
+} from 'react';
 import { getSocket } from '../services/socket';
 import toast from 'react-hot-toast';
 import { toastErrorOnce } from '../utils/toastOnce';
+import { isPerfEnabled, perfMark } from '../utils/perf';
 
+const GamePlayContext = createContext(null);
+const GameChatContext = createContext(null);
 const GameContext = createContext(null);
 
 export function GameProvider({ children }) {
@@ -31,14 +42,12 @@ export function GameProvider({ children }) {
     if (attachedToSocketRef.current === socket) return; // already attached to this exact socket object
     attachedToSocketRef.current = socket;
 socket.on('connect', () => {
-  console.log('FRONT socket connected:', socket.id);
 
   const activeRoom = localStorage.getItem('truco_active_room');
 
   // Only auto-reconnect if we haven't already sent a reconnect for this room
   // (prevents double emit when Game.jsx also calls reconnectGame)
   if (activeRoom && !reconnectSentRef.current) {
-    console.log('FRONT auto reconnect on socket connect:', activeRoom);
     reconnectSentRef.current = true;
     setReconnectingGame(true);
     setRoomId(activeRoom);
@@ -47,10 +56,12 @@ socket.on('connect', () => {
 });
     socket.on('queue:joined',  () => setInQueue(true));
     socket.on('queue:left',    () => setInQueue(false));
+    socket.on('queue:error', ({ error }) => {
+      setInQueue(false);
+      if (error) toast.error(error);
+    });
 
    socket.on('game:start', ({ roomId: rid, opponent: opp, gameState: gs }) => {
-  console.log('FRONT game:start recibido', { roomId: rid, opponent: opp, gameState: gs });
-
   localStorage.setItem('truco_active_room', rid);
   reconnectSentRef.current = false;
 
@@ -64,12 +75,6 @@ socket.on('connect', () => {
   toast.success(`¡Partida iniciada!${opp?.username ? ` vs ${opp.username}` : ''}`);
 });
 socket.on('match:found', ({ roomId: rid, opponent: opp, gameState: gs }) => {
-  console.log('FRONT match:found recibido', {
-    roomId: rid,
-    opponent: opp,
-    gameState: gs,
-  });
-
   setRoomId(rid);
   setOpponent(opp || null);
   setGameState(gs || null);
@@ -81,12 +86,6 @@ socket.on('match:found', ({ roomId: rid, opponent: opp, gameState: gs }) => {
 });
 
 socket.on('matchFound', ({ roomId: rid, opponent: opp, gameState: gs }) => {
-  console.log('FRONT matchFound recibido', {
-    roomId: rid,
-    opponent: opp,
-    gameState: gs,
-  });
-
   setRoomId(rid);
   setOpponent(opp || null);
   setGameState(gs || null);
@@ -96,9 +95,13 @@ socket.on('matchFound', ({ roomId: rid, opponent: opp, gameState: gs }) => {
 
   toast.success(`¡Partida encontrada!${opp?.username ? ` vs ${opp.username}` : ''}`);
 });
-    socket.on('game:state', (gs) => setGameState(gs));
+    socket.on('game:state', (gs) => {
+      if (isPerfEnabled()) perfMark('game_state_recv');
+      setGameState(gs);
+    });
 
     socket.on('game:cardPlayed', (data) => {
+      if (isPerfEnabled()) perfMark('cardPlayed_recv', data);
       setLastEvent({ type: 'CARD_PLAYED', ...data });
     });
 
@@ -166,7 +169,6 @@ socket.on('matchFound', ({ roomId: rid, opponent: opp, gameState: gs }) => {
 });
 
    socket.on('chat:message', (msg) => {
-  console.log('FRONT chat:message recibido', msg);
   setChatMessages(prev => [...prev, msg]);
 });
 
@@ -202,8 +204,6 @@ socket.on('matchFound', ({ roomId: rid, opponent: opp, gameState: gs }) => {
 });
 
    socket.on('game:resume', ({ gameState: gs }) => {
-  console.log('FRONT game:resume recibido', gs);
-
   if (gs?.roomId) {
     localStorage.setItem('truco_active_room', gs.roomId);
     setRoomId(gs.roomId);
@@ -224,42 +224,66 @@ socket.on('matchFound', ({ roomId: rid, opponent: opp, gameState: gs }) => {
     attachListeners();
   }, [attachListeners]);
 
-  // ── Actions ─────────────────────────────────────────────────────
- const joinQueue = (options = {}) => {
-  attachListeners();
+  // ── Actions (estables entre renders; roomId en closure) ─────────
+  const joinQueue = useCallback((options = {}) => {
+    attachListeners();
+    const socket = getSocket();
+    if (!socket) {
+      toast.error('Socket no conectado');
+      return;
+    }
+    const normalizedOptions = {
+      modo: options.modo === 'ranked' ? 'ranked' : 'casual',
+      puntosMaximos: Number(options.puntosMaximos) === 15 ? 15 : 30,
+      florHabilitada: Boolean(options.florHabilitada),
+    };
+    setInQueue(true);
+    socket.emit('queue:join', normalizedOptions);
+  }, [attachListeners]);
 
-  const socket = getSocket();
+  const leaveQueue = useCallback(() => getSocket()?.emit('queue:leave'), []);
+  const playCard = useCallback(
+    (cardId) => {
+      if (isPerfEnabled()) perfMark('playCard_click', { cardId });
+      getSocket()?.emit('game:playCard', { roomId, cardId });
+    },
+    [roomId],
+  );
+  const envido = useCallback(
+    (betType) => getSocket()?.emit('game:envido', { roomId, betType }),
+    [roomId],
+  );
+  const envidoResp = useCallback(
+    (response) => getSocket()?.emit('game:envidoResponse', { roomId, response }),
+    [roomId],
+  );
+  const truco = useCallback(
+    (betType) => getSocket()?.emit('game:truco', { roomId, betType }),
+    [roomId],
+  );
+  const trucoResp = useCallback(
+    (response) => getSocket()?.emit('game:trucoResponse', { roomId, response }),
+    [roomId],
+  );
+  const irseAlMazo = useCallback(
+    () => getSocket()?.emit('game:irseAlMazo', { roomId }),
+    [roomId],
+  );
+  const nextRound = useCallback(
+    () => getSocket()?.emit('game:nextRound', { roomId }),
+    [roomId],
+  );
+  const flor = useCallback(() => getSocket()?.emit('game:flor', { roomId }), [roomId]);
+  const florResp = useCallback(
+    (response) => getSocket()?.emit('game:florResponse', { roomId, response }),
+    [roomId],
+  );
+  const abandonGame = useCallback(
+    () => getSocket()?.emit('game:abandon', { roomId }),
+    [roomId],
+  );
 
-  if (!socket) {
-    toast.error('Socket no conectado');
-    return;
-  }
-
-  const normalizedOptions = {
-    modo: options.modo === 'ranked' ? 'ranked' : 'casual',
-    puntosMaximos: Number(options.puntosMaximos) === 15 ? 15 : 30,
-    florHabilitada: Boolean(options.florHabilitada),
-  };
-
-  console.log('FRONT queue:join', normalizedOptions);
-
-  setInQueue(true);
-  socket.emit('queue:join', normalizedOptions);
-};
-  const leaveQueue  = () => getSocket()?.emit('queue:leave');
-  const playCard    = (cardId)        => getSocket()?.emit('game:playCard',      { roomId, cardId });
-  const envido      = (betType)       => getSocket()?.emit('game:envido',        { roomId, betType });
-  const envidoResp  = (response)      => getSocket()?.emit('game:envidoResponse',{ roomId, response });
-  const truco       = (betType)       => getSocket()?.emit('game:truco',         { roomId, betType });
-  const trucoResp   = (response)      => getSocket()?.emit('game:trucoResponse', { roomId, response });
-  const irseAlMazo  = ()              => getSocket()?.emit('game:irseAlMazo',    { roomId });
-  const nextRound   = ()              => getSocket()?.emit('game:nextRound',     { roomId });
-  const flor        = ()              => getSocket()?.emit('game:flor',          { roomId });
-  const florResp    = (response)      => getSocket()?.emit('game:florResponse',  { roomId, response });
-  const abandonGame = ()              => getSocket()?.emit('game:abandon',       { roomId });
-
-  // Clear all game state (used when navigating away from a finished game)
-  const clearGame = () => {
+  const clearGame = useCallback(() => {
     localStorage.removeItem('truco_active_room');
     reconnectSentRef.current = false;
     setGameState(null);
@@ -270,29 +294,24 @@ socket.on('matchFound', ({ roomId: rid, opponent: opp, gameState: gs }) => {
     setTurnTimer(null);
     setOppDC(null);
     setReconnectingGame(false);
-  };
- const sendMessage = (text) => {
-  const socket = getSocket();
+  }, []);
+  const sendMessage = useCallback((text) => {
+    const socket = getSocket();
+    if (!socket) {
+      toast.error('Socket no conectado');
+      return;
+    }
+    if (!roomId) {
+      toast.error('No hay sala activa');
+      return;
+    }
+    socket.emit('chat:message', { roomId, text });
+  }, [roomId]);
 
-  console.log('FRONT chat:message emit', {
-    roomId,
-    text,
-    socketConnected: socket?.connected,
-  });
-
-  if (!socket) {
-    toast.error('Socket no conectado');
-    return;
-  }
-
-  if (!roomId) {
-    toast.error('No hay sala activa');
-    return;
-  }
-
-  socket.emit('chat:message', { roomId, text });
-};
-  const sendReaction= (reaction)      => getSocket()?.emit('chat:reaction',      { roomId, reaction });
+  const sendReaction = useCallback(
+    (reaction) => getSocket()?.emit('chat:reaction', { roomId, reaction }),
+    [roomId],
+  );
 
   const reconnectGame = useCallback((rid) => {
   if (!rid) {
@@ -303,7 +322,6 @@ socket.on('matchFound', ({ roomId: rid, opponent: opp, gameState: gs }) => {
   const socket = getSocket();
 
   if (!socket) {
-    console.log('FRONT reconnect: socket todavía no existe, reintentando...');
     setReconnectingGame(true);
     setRoomId(rid);
     localStorage.setItem('truco_active_room', rid);
@@ -323,19 +341,15 @@ socket.on('matchFound', ({ roomId: rid, opponent: opp, gameState: gs }) => {
   const emitReconnect = () => {
     // Guard: only send once per session (the connect listener may also fire)
     if (reconnectSentRef.current) {
-      console.log('FRONT reconnect: already sent for this room, skipping duplicate');
       return;
     }
     reconnectSentRef.current = true;
-    console.log('FRONT game:reconnect emit', { roomId: rid, connected: socket.connected, socketId: socket.id });
     socket.emit('game:reconnect', { roomId: rid });
   };
 
   if (socket.connected) {
     emitReconnect();
   } else {
-    console.log('FRONT reconnect: esperando socket connect...');
-
     socket.once('connect', () => {
       attachListeners();
       emitReconnect();
@@ -349,21 +363,94 @@ socket.on('matchFound', ({ roomId: rid, opponent: opp, gameState: gs }) => {
     reconnectGameRef.current = reconnectGame;
   }, [reconnectGame]);
 
+  const playValue = useMemo(
+    () => ({
+      gameState,
+      roomId,
+      opponent,
+      inQueue,
+      gameOver,
+      lastEvent,
+      turnTimer,
+      opponentDisconnected,
+      reconnectingGame,
+      attachListeners,
+      joinQueue,
+      leaveQueue,
+      playCard,
+      envido,
+      envidoResp,
+      truco,
+      trucoResp,
+      flor,
+      florResp,
+      irseAlMazo,
+      nextRound,
+      abandonGame,
+      clearGame,
+      reconnectGame,
+    }),
+    [
+      gameState,
+      roomId,
+      opponent,
+      inQueue,
+      gameOver,
+      lastEvent,
+      turnTimer,
+      opponentDisconnected,
+      reconnectingGame,
+      attachListeners,
+      joinQueue,
+      leaveQueue,
+      playCard,
+      envido,
+      envidoResp,
+      truco,
+      trucoResp,
+      flor,
+      florResp,
+      irseAlMazo,
+      nextRound,
+      abandonGame,
+      clearGame,
+      reconnectGame,
+    ],
+  );
+
+  const chatValue = useMemo(
+    () => ({ chatMessages, sendMessage, sendReaction }),
+    [chatMessages, sendMessage, sendReaction],
+  );
+
+  const mergedValue = useMemo(
+    () => ({ ...playValue, ...chatValue }),
+    [playValue, chatValue],
+  );
+
   return (
- <GameContext.Provider value={{
-  gameState, roomId, opponent, inQueue, gameOver, chatMessages, lastEvent,
-  turnTimer, opponentDisconnected, reconnectingGame,
-  attachListeners,
-  joinQueue, leaveQueue,
-  playCard, envido, envidoResp, truco, trucoResp, flor, florResp,
-  irseAlMazo, nextRound, abandonGame, clearGame,
-  sendMessage, sendReaction, reconnectGame,
-}}>
-      {children}
-    </GameContext.Provider>
+    <GamePlayContext.Provider value={playValue}>
+      <GameChatContext.Provider value={chatValue}>
+        <GameContext.Provider value={mergedValue}>{children}</GameContext.Provider>
+      </GameChatContext.Provider>
+    </GamePlayContext.Provider>
   );
 }
 
+export function useGamePlay() {
+  const ctx = useContext(GamePlayContext);
+  if (!ctx) throw new Error('useGamePlay must be used within GameProvider');
+  return ctx;
+}
+
+export function useGameChat() {
+  const ctx = useContext(GameChatContext);
+  if (!ctx) throw new Error('useGameChat must be used within GameProvider');
+  return ctx;
+}
+
 export function useGame() {
-  return useContext(GameContext);
+  const ctx = useContext(GameContext);
+  if (!ctx) throw new Error('useGame must be used within GameProvider');
+  return ctx;
 }

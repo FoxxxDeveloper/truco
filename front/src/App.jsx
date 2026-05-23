@@ -20,11 +20,13 @@ import TournamentBracket from './pages/TournamentBracket';
 import MatchHistoryPage from './pages/MatchHistoryPage';
 import NotFound from './pages/NotFound';
 
+const routerBasename = (import.meta.env.BASE_URL || '/').replace(/\/$/, '') || undefined;
+
 function App() {
   return (
     <AuthProvider>
       <GameProvider>
-        <BrowserRouter>
+        <BrowserRouter basename={routerBasename}>
           <Toaster
             position="top-center"
             toastOptions={{

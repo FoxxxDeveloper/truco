@@ -38,7 +38,6 @@ export default function ProfilePage() {
   const [editBio, setEditBio] = useState('');
   const [saving, setSaving] = useState(false);
 
-  const [originalAvatar, setOriginalAvatar] = useState(null);
   const [selectedAvatar, setSelectedAvatar] = useState(null);
 
   useEffect(() => {
@@ -52,15 +51,11 @@ export default function ProfilePage() {
       .finally(() => setLoading(false));
   }, []);
 
-  useEffect(() => {
-    if (!editing || !profile?.username) return;
-    let initialPick = isStorableTrucoFxAvatar(profile.avatar) ? profile.avatar : null;
-    if (!initialPick) {
-      initialPick = randomAvatarString(profile.username);
-    }
-    setOriginalAvatar(initialPick);
-    setSelectedAvatar(initialPick);
-  }, [editing, profile?.username]);
+  const openEditProfile = () => {
+    setEditBio(profile.bio || '');
+    setSelectedAvatar(profile.avatar ?? null);
+    setEditing(true);
+  };
 
   const generateNextAvatar = () => {
     if (!profile?.username) return;
@@ -69,10 +64,11 @@ export default function ProfilePage() {
   };
 
   const bioChanged = editBio.trim() !== (profile?.bio || '').trim();
+  const savedAvatar = profile?.avatar ?? '';
   const avatarChanged =
     Boolean(selectedAvatar)
     && isStorableTrucoFxAvatar(selectedAvatar)
-    && selectedAvatar !== originalAvatar;
+    && String(selectedAvatar) !== String(savedAvatar);
   const hasChanges = bioChanged || avatarChanged;
 
   const handleSaveProfile = async () => {
@@ -168,7 +164,7 @@ export default function ProfilePage() {
               />
             </div>
             {!editing ? (
-              <button type="button" className="btn btn-gold btn-sm profile-edit-trigger" onClick={() => setEditing(true)}>
+              <button type="button" className="btn btn-gold btn-sm profile-edit-trigger" onClick={openEditProfile}>
                 Editar perfil
               </button>
             ) : (
@@ -203,8 +199,8 @@ export default function ProfilePage() {
               <div className="profile-edit-fields">
                 <div className="profile-avatar-section fx-card profile-photo-card profile-trucofx-avatar-card">
                   <h3 className="section-header profile-photo-title">Avatar TrucoFX</h3>
-                  <p className="profile-photo-lead">Generá un avatar para tu perfil.</p>
-                  <p className="profile-field-hint">Podés generar otros hasta encontrar uno que te guste.</p>
+                  <p className="profile-photo-lead">Tu avatar actual se mantiene hasta que elijas otro.</p>
+                  <p className="profile-field-hint">Usá &quot;Generar otros&quot; debajo de la foto solo si querés cambiarlo.</p>
                   <p className="profile-field-hint">Por seguridad, no usamos fotos ni links externos.</p>
                   <p className="profile-field-hint profile-avatar-section-inline-hint">
                     El cambio se ve en tu foto de la izquierda; usá el botón debajo del avatar.
@@ -236,7 +232,7 @@ export default function ProfilePage() {
                     onClick={() => {
                       setEditing(false);
                       setEditBio(profile.bio || '');
-                      setSelectedAvatar(originalAvatar ?? profile.avatar);
+                      setSelectedAvatar(profile.avatar ?? null);
                     }}
                   >
                     Cancelar

@@ -21,6 +21,7 @@ import {
   formatDate,
   registrationStatusLabel,
   tournamentStatusLabel,
+  tournamentLifecycleLabel,
 } from '../utils/tournaments';
 import AppHeader from '../components/layout/AppHeader';
 import TrucoAvatar from '../components/avatar/TrucoAvatar';
@@ -40,7 +41,7 @@ function safeParseJson(val) {
 }
 
 function userStatusSummary(myReg, myStatus) {
-  if (!myReg) return { label: 'No inscripto', detail: 'Podés inscribirte si el torneo está abierto.' };
+  if (!myReg) return { label: 'No inscripto', detail: 'Podés inscribirte cuando las inscripciones estén abiertas.' };
   if (myStatus === 'winner') return { label: 'Campeón', detail: 'Felicitaciones.' };
   if (myStatus === 'qualified') return { label: 'Clasificado', detail: 'Pasaste a la siguiente fase.' };
   if (myStatus === 'eliminated') return { label: 'Eliminado', detail: 'Tu participación en el torneo finalizó.' };
@@ -328,7 +329,9 @@ export default function TournamentDetail() {
         <div className="tournament-hero-title">
           <h1>{tournament.name}</h1>
           <div className="tournament-hero-meta">
-            <span className={`tournament-status status-${st}`}>{tournamentStatusLabel(st)}</span>
+            <span className={`tournament-status status-${st}`}>
+              {tournamentLifecycleLabel(tournament)}
+            </span>
             {tournament.prize_text && (
               <span className="fx-badge fx-badge--gold">{tournament.prize_text}</span>
             )}
@@ -349,21 +352,39 @@ export default function TournamentDetail() {
         {statusCard.detail && <p className="tournament-desc tournament-user-status-detail">{statusCard.detail}</p>}
       </div>
 
+      {tournament.lifecycle?.nextMilestoneLabel && (
+        <div className="fx-card tournament-milestone">
+          <Clock size={16} aria-hidden />
+          <span>
+            {tournament.lifecycle.nextMilestoneLabel}
+            {tournament.lifecycle.nextMilestoneAt && (
+              <> — {formatDate(tournament.lifecycle.nextMilestoneAt)}</>
+            )}
+          </span>
+        </div>
+      )}
+
       <div className="tournament-action-bar">
-        {!myReg && st === 'open' && (
+        {!myReg && tournament.lifecycle?.canRegister && (
           <button type="button" className="btn btn-primary" disabled={busy} onClick={handleRegister}>
             Inscribirme
           </button>
+        )}
+        {!myReg && st === 'open' && !tournament.lifecycle?.canRegister && (
+          <span className="fx-badge fx-badge--muted">Inscripciones cerradas por horario</span>
         )}
         {myReg && ['registered', 'substitute'].includes(myStatus) && ['open', 'checkin'].includes(st) && (
           <button type="button" className="btn btn-secondary" disabled={busy} onClick={handleUnregister}>
             Cancelar inscripción
           </button>
         )}
-        {myReg && ['registered', 'substitute'].includes(myStatus) && st === 'checkin' && (
+        {myReg && ['registered', 'substitute'].includes(myStatus) && tournament.lifecycle?.canCheckin && (
           <button type="button" className="btn btn-primary" disabled={busy} onClick={handleCheckin}>
             Hacer check-in
           </button>
+        )}
+        {myReg && ['registered', 'substitute'].includes(myStatus) && st === 'checkin' && !tournament.lifecycle?.canCheckin && (
+          <span className="fx-badge fx-badge--muted">Check-in cerrado o finalizado</span>
         )}
         {myStatus === 'checked_in' && (
           <span className="fx-badge fx-badge--success tournament-checkin-badge">

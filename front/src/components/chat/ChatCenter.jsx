@@ -618,7 +618,9 @@ export default function ChatCenter({
         setGeneralUnread((n) => n + 1);
       }
     };
-    const onGeneralErr = ({ error }) => console.warn('general:error', error);
+    const onGeneralErr = ({ error }) => {
+      if (import.meta.env.DEV) console.warn('general:error', error);
+    };
 
     s.on('general:message', onGeneral);
     s.on('general:error', onGeneralErr);

@@ -48,6 +48,7 @@ const VOICE_KEYS = [
   'contra-flor',
   'son-buenas',
   'al-mazo',
+  'puntos-en-mesa',
 ];
 
 const VOICE_KEYS_SORTED = [...VOICE_KEYS].sort((a, b) => b.length - a.length);
@@ -126,6 +127,7 @@ const PHRASES_BY_KEY = {
     'No hay nada que hacer, al mazo.',
     'Al mazo, seguí.',
   ],
+  'puntos-en-mesa': ['Puntos en mesa.', 'Puntos en mesa, mirá.', 'Te muestro los puntos en mesa.'],
 };
 
 /**

@@ -33,7 +33,14 @@ export default function EnvidoResultModal({ event, onClose }) {
   } = event;
 
   const iWon    = Number(winner) === myId;
-  const rejected = evType === 'ENVIDO_REJECTED';
+  const rejected =
+    evType === 'ENVIDO_REJECTED' ||
+    event.accepted === false ||
+    event.reason === 'rejected' ||
+    event.response === 'reject';
+
+  if (rejected) return null;
+
   const betLabel = buildBetLabel(betStack);
 
   // ── Point reveal logic (only for accepted envido) ─────────────────
@@ -76,28 +83,20 @@ export default function EnvidoResultModal({ event, onClose }) {
         </div>
 
         {/* Point rows */}
-        {rejected ? (
-          <div className="envido-modal-detail">
-            {iWon
-              ? 'El rival no quiso.'
-              : 'No quisiste el envido.'}
+        <div className="envido-modal-rows">
+          <div className={`envido-row ${iWon ? 'winner' : 'loser'}`}>
+            <span className="envido-row-label">Vos</span>
+            <span className="envido-row-pts">
+              {iSaidSonBuenas ? <em>son buenas</em> : myPoints}
+            </span>
           </div>
-        ) : (
-          <div className="envido-modal-rows">
-            <div className={`envido-row ${iWon ? 'winner' : 'loser'}`}>
-              <span className="envido-row-label">Vos</span>
-              <span className="envido-row-pts">
-                {iSaidSonBuenas ? <em>son buenas</em> : myPoints}
-              </span>
-            </div>
-            <div className={`envido-row ${!iWon ? 'winner' : 'loser'}`}>
-              <span className="envido-row-label">Rival</span>
-              <span className="envido-row-pts">
-                {rivalSaidSonBuenas ? <em>son buenas</em> : rivalPoints}
-              </span>
-            </div>
+          <div className={`envido-row ${!iWon ? 'winner' : 'loser'}`}>
+            <span className="envido-row-label">Rival</span>
+            <span className="envido-row-pts">
+              {rivalSaidSonBuenas ? <em>son buenas</em> : rivalPoints}
+            </span>
           </div>
-        )}
+        </div>
 
         {/* Prize */}
         <div className="envido-modal-prize">+{points} pt{points !== 1 ? 's' : ''}</div>

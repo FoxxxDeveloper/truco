@@ -15,6 +15,11 @@ const {
   isValidBetType,
   isValidResponse,
 } = require('../../middleware/errorHandler');
+const {
+  beginAction: perfBeginAction,
+  recordEmit: perfRecordEmit,
+  endAction: perfEndAction,
+} = require('../../utils/socketPerfAudit');
 
 // ── Disconnection state ────────────────────────────────────────────────────────
 // userId → roomId: tracks which active game each player is in
@@ -45,10 +50,48 @@ function _clearBothDcTimers(roomId) {
 // ── Turn timeout state ─────────────────────────────────────────────────────────
 // `${roomId}:turn` → TimeoutHandle
 const turnTimers = new Map();
+/** roomId → token metadata for stale-timeout guard */
+const turnTimerMeta = new Map();
+/** roomId → { handle, token } — evita doble nextRound por timeouts encolados */
+const autoNextRoundTimers = new Map();
 const TURN_TIMEOUT_MS        = 30_000; // 30 s to play a card
 const BET_RESPONSE_TIMEOUT_MS = 20_000; // 20 s to respond to truco/envido
 
 const AUTO_ROUND_DELAY_MS = 2500; // 2.5 s pause before auto-starting next round
+const AUTO_ROUND_DELAY_WITH_ENVIDO_PROOF_MS = 4200; // más tiempo para ver "Puntos en mesa"
+
+function _resetManualAfk(game, userId) {
+  if (game && typeof game.resetAfkStrikes === 'function') game.resetAfkStrikes(userId);
+}
+
+/** Tras timeout automático: incrementa AFK; si llega a 3, hay que cerrar por abandono AFK. */
+function _applyAfkStrike(game, playerId, roomId, reason) {
+  if (!game || typeof game.recordAfkStrike !== 'function') return 0;
+  const { count } = game.recordAfkStrike(playerId);
+  logger.warn('afk action applied', {
+    roomId,
+    playerId,
+    reason,
+    afkCount: count,
+  });
+  return count;
+}
+
+async function _finishAfkAbandon(io, roomId, game, afkPlayerId) {
+  const winnerId = game.players.find(p => Number(p) !== Number(afkPlayerId));
+  if (winnerId == null) return;
+  logger.warn('afk abandon triggered', {
+    roomId,
+    playerId: afkPlayerId,
+    winnerId,
+    afkCount: game.getAfkCount(afkPlayerId),
+  });
+  await _finishGame(io, roomId, game, winnerId, {
+    reason:       'abandon',
+    abandonedBy:  afkPlayerId,
+    finishReason: 'afk_abandon',
+  });
+}
 
 /**
  * After a timeout-driven resolution, mirror the normal socket handlers:
@@ -98,7 +141,7 @@ async function _dispatchAfterGameMutation(io, roomId, game, result, extraEmits =
  * Emits updated game views to both players in a room.
  * Uses per-socket direct delivery (O(n)) instead of fetchSockets O(n²).
  */
-function broadcastGameState(io, roomId, game) {
+function broadcastGameState(io, roomId, game, perfBatchId = null) {
   // Build a map: userId → computed view (avoid computing twice)
   const views = {};
   for (const pid of game.players) {
@@ -106,26 +149,60 @@ function broadcastGameState(io, roomId, game) {
   }
   // Emit to every socket in the room; each socket delivers its own view
   io.in(roomId).fetchSockets().then(sockets => {
+    let sent = 0;
     for (const s of sockets) {
       const pid = s.data?.user?.id;
-      if (pid && views[pid]) s.emit('game:state', views[pid]);
+      if (pid && views[pid]) {
+        s.emit('game:state', views[pid]);
+        sent += 1;
+      }
+    }
+    if (perfBatchId) {
+      perfRecordEmit(perfBatchId, 'game:state', { recipients: sent });
     }
   }).catch(() => {});
+}
+
+function _clearAutoNextRound(roomId) {
+  const meta = autoNextRoundTimers.get(roomId);
+  if (meta?.handle) clearTimeout(meta.handle);
+  autoNextRoundTimers.delete(roomId);
 }
 
 /**
  * Start or reset the turn countdown for a room.
  * On expiry: forfeit active player's turn (fold on truco/envido or auto-irse al mazo).
  */
-function _startTurnTimer(io, roomId, game, timeoutMs = TURN_TIMEOUT_MS) {
+function _startTurnTimer(io, roomId, game, timeoutMs = TURN_TIMEOUT_MS, perfBatchId = null) {
   _clearTurnTimer(roomId);
 
   const timerKey = `${roomId}:turn`;
   const waitingId = game.waitingForPlayer;
   if (!waitingId) return; // nobody waiting, nothing to time
 
+  const timerToken = `${roomId}:${game.state}:${waitingId}:${Date.now()}:${Math.random()
+    .toString(36)
+    .slice(2, 11)}`;
+  turnTimerMeta.set(roomId, {
+    token:     timerToken,
+    phase:     game.state,
+    waitingId,
+  });
+
   const handle = setTimeout(async () => {
     turnTimers.delete(timerKey);
+    const liveMeta = turnTimerMeta.get(roomId);
+    if (!liveMeta || liveMeta.token !== timerToken) {
+      logger.warn('stale timeout ignored', {
+        roomId,
+        token:             timerToken,
+        phase:             liveMeta?.phase,
+        waitingForPlayer:  liveMeta?.waitingId,
+      });
+      return;
+    }
+    turnTimerMeta.delete(roomId);
+
     const currentGame = await gameSession.getGame(roomId);
     if (!currentGame || currentGame.state === 'GAME_OVER') return;
 
@@ -137,11 +214,28 @@ function _startTurnTimer(io, roomId, game, timeoutMs = TURN_TIMEOUT_MS) {
       return;
     }
 
-    // Only forfeit if still the same player's turn / response obligation
-    if (Number(currentGame.waitingForPlayer) !== Number(waitingId)) return;
+    if (Number(currentGame.waitingForPlayer) !== Number(liveMeta.waitingId)) {
+      logger.warn('stale timeout ignored', {
+        roomId,
+        reason:            'waiting_player_mismatch',
+        expected:          liveMeta.waitingId,
+        current:         currentGame.waitingForPlayer,
+      });
+      return;
+    }
+    if (currentGame.state !== liveMeta.phase) {
+      logger.warn('stale timeout ignored', {
+        roomId,
+        reason:     'phase_mismatch',
+        expected:   liveMeta.phase,
+        current:    currentGame.state,
+      });
+      return;
+    }
 
-    logger.info(`Turn timeout for player ${waitingId} in room ${roomId}`);
-    io.to(roomId).emit('game:turnTimeout', { playerId: waitingId });
+    const waitingIdResolved = liveMeta.waitingId;
+    logger.info(`Turn timeout for player ${waitingIdResolved} in room ${roomId}`);
+    io.to(roomId).emit('game:turnTimeout', { playerId: waitingIdResolved });
 
     let result;
     let extraEmits = {};
@@ -149,38 +243,38 @@ function _startTurnTimer(io, roomId, game, timeoutMs = TURN_TIMEOUT_MS) {
 
     try {
       if (currentGame.state === 'TRUCO_PENDING') {
-        result = currentGame.respondTruco(waitingId, 'reject');
+        result = currentGame.respondTruco(waitingIdResolved, 'reject');
         if (result?.ok) {
           extraEmits.trucoResult = {
             ...result,
-            respondedBy: waitingId,
-            reason: 'timeout',
+            respondedBy: waitingIdResolved,
+            reason:      'timeout',
           };
         }
       } else if (currentGame.state === 'ENVIDO_PENDING') {
-        result = currentGame.respondEnvido(waitingId, 'reject');
+        result = currentGame.respondEnvido(waitingIdResolved, 'reject');
         if (result?.ok) {
           extraEmits.envidoResult = {
             ...result,
-            respondedBy: waitingId,
-            reason: 'timeout',
+            respondedBy: waitingIdResolved,
+            reason:      'timeout',
           };
         }
       } else if (currentGame.state === 'FLOR_PENDING') {
-        result = currentGame.respondFlor(waitingId, 'reject');
+        result = currentGame.respondFlor(waitingIdResolved, 'reject');
         if (result?.ok) {
           extraEmits.florResult = {
             ...result,
-            respondedBy: waitingId,
-            reason: 'timeout',
+            respondedBy: waitingIdResolved,
+            reason:      'timeout',
           };
         }
       } else if (currentGame.state === 'PLAYER_TURN') {
-        const hand = currentGame.hands[waitingId];
+        const hand = currentGame.hands[waitingIdResolved];
         if (hand && hand.length > 0) {
-          result = currentGame.playCard(waitingId, hand[0].id);
+          result = currentGame.playCard(waitingIdResolved, hand[0].id);
         } else {
-          result = currentGame.irseAlMazo(waitingId);
+          result = currentGame.irseAlMazo(waitingIdResolved);
         }
       }
     } catch (err) {
@@ -196,13 +290,43 @@ function _startTurnTimer(io, roomId, game, timeoutMs = TURN_TIMEOUT_MS) {
       return;
     }
 
+    const afkReason =
+      phaseBefore === 'TRUCO_PENDING'
+        ? 'truco_response_timeout'
+        : phaseBefore === 'ENVIDO_PENDING'
+          ? 'envido_response_timeout'
+          : phaseBefore === 'FLOR_PENDING'
+            ? 'flor_response_timeout'
+            : (() => {
+                const h = currentGame.hands[waitingIdResolved];
+                if (!h || h.length === 0) return 'irse_al_mazo_timeout';
+                return 'card_play_timeout';
+              })();
+
+    const afkCount = _applyAfkStrike(currentGame, waitingIdResolved, roomId, afkReason);
+
     if (extraEmits.trucoResult || extraEmits.envidoResult || extraEmits.florResult) {
       logger.warn('response timeout resolved', {
         roomId,
-        userId: waitingId,
+        userId:      waitingIdResolved,
         pendingType: phaseBefore,
-        result: result.event || 'ok',
+        result:      result.event || 'ok',
       });
+    }
+
+    if (afkCount >= 3) {
+      await gameSession.saveGame(roomId);
+      if (extraEmits.trucoResult) {
+        io.to(roomId).emit('game:trucoResult', extraEmits.trucoResult);
+      }
+      if (extraEmits.envidoResult) {
+        io.to(roomId).emit('game:envidoResult', extraEmits.envidoResult);
+      }
+      if (extraEmits.florResult) {
+        io.to(roomId).emit('game:florResult', extraEmits.florResult);
+      }
+      await _finishAfkAbandon(io, roomId, currentGame, waitingIdResolved);
+      return;
     }
 
     await _dispatchAfterGameMutation(io, roomId, currentGame, result, extraEmits);
@@ -211,6 +335,9 @@ function _startTurnTimer(io, roomId, game, timeoutMs = TURN_TIMEOUT_MS) {
   turnTimers.set(timerKey, handle);
   // Notify clients how many seconds they have
   io.to(roomId).emit('game:turnTimer', { playerId: waitingId, seconds: Math.floor(timeoutMs / 1000) });
+  if (perfBatchId) {
+    perfRecordEmit(perfBatchId, 'game:turnTimer');
+  }
 }
 
 function _clearTurnTimer(roomId) {
@@ -219,43 +346,65 @@ function _clearTurnTimer(roomId) {
     clearTimeout(turnTimers.get(key));
     turnTimers.delete(key);
   }
+  turnTimerMeta.delete(roomId);
 }
 
 /**
  * After a round ends (game not over), auto-start the next round
  * after AUTO_ROUND_DELAY_MS ms so players can see the result.
  */
+function _autoNextRoundDelayMs(game) {
+  if (game?.envidoProofReveal?.cards?.length) {
+    return AUTO_ROUND_DELAY_WITH_ENVIDO_PROOF_MS;
+  }
+  return AUTO_ROUND_DELAY_MS;
+}
+
 async function _autoNextRound(io, roomId) {
-  return new Promise(resolve => {
-    setTimeout(async () => {
-      try {
-        const game = await gameSession.getGame(roomId);
-        if (!game || game.state === 'GAME_OVER') return resolve();
-        if (game.state !== 'END_ROUND') return resolve();
-
-        const result = game.nextRound();
-        if (!result.ok) {
-          logger.warn('autoNextRound skipped: nextRound returned not ok', {
-            roomId,
-            state: game.state,
-          });
-          return resolve();
-        }
-
-        if (result.gameOver) {
-          await _finishGame(io, roomId, game, result.winner);
-        } else {
-          await gameSession.saveGame(roomId);
-          io.to(roomId).emit('game:newRound', { scores: game.scores });
-          broadcastGameState(io, roomId, game);
-          _startTurnTimer(io, roomId, game);
-        }
-      } catch (err) {
-        logger.error('autoNextRound error: ' + err.message);
+  _clearAutoNextRound(roomId);
+  const gameForDelay = await gameSession.getGame(roomId);
+  const delayMs = _autoNextRoundDelayMs(gameForDelay);
+  const scheduledToken = `${roomId}:autoNext:${Date.now()}:${Math.random()
+    .toString(36)
+    .slice(2, 11)}`;
+  const handle = setTimeout(async () => {
+    try {
+      const meta = autoNextRoundTimers.get(roomId);
+      if (!meta || meta.token !== scheduledToken) {
+        logger.warn('stale autoNextRound ignored', {
+          roomId,
+          token: scheduledToken,
+        });
+        return;
       }
-      resolve();
-    }, AUTO_ROUND_DELAY_MS);
-  });
+      autoNextRoundTimers.delete(roomId);
+
+      const game = await gameSession.getGame(roomId);
+      if (!game || game.state === 'GAME_OVER') return;
+      if (game.state !== 'END_ROUND') return;
+
+      const result = game.nextRound();
+      if (!result.ok) {
+        logger.warn('autoNextRound skipped: nextRound returned not ok', {
+          roomId,
+          state: game.state,
+        });
+        return;
+      }
+
+      if (result.gameOver) {
+        await _finishGame(io, roomId, game, result.winner);
+      } else {
+        await gameSession.saveGame(roomId);
+        io.to(roomId).emit('game:newRound', { scores: game.scores });
+        broadcastGameState(io, roomId, game);
+        _startTurnTimer(io, roomId, game);
+      }
+    } catch (err) {
+      logger.error('autoNextRound error: ' + err.message);
+    }
+  }, delayMs);
+  autoNextRoundTimers.set(roomId, { handle, token: scheduledToken });
 }
 
 /**
@@ -297,6 +446,12 @@ function registerGameHandlers(io, socket, user) {
 
   // ── PLAY CARD ────────────────────────────────────────────────────
   socket.on('game:playCard', async ({ roomId, cardId }) => {
+    try {
+      const { assertPlayerParticipationAllowed } = require('../../utils/adminGuard');
+      assertPlayerParticipationAllowed(user);
+    } catch (err) {
+      return socket.emit('game:error', { error: err.message });
+    }
     if (!isValidRoomId(roomId) || !isValidCardId(cardId)) {
       securityLog('invalid_input', { userId: user.id, event: 'game:playCard', roomId, cardId });
       return socket.emit('game:error', { error: 'Invalid input' });
@@ -313,9 +468,15 @@ function registerGameHandlers(io, socket, user) {
       return socket.emit('game:error', { error: result.error });
     }
 
+    _resetManualAfk(game, user.id);
     _clearTurnTimer(roomId);
-    await gameSession.saveGame(roomId);
 
+    const perfBatch = perfBeginAction(roomId, 'playCard', { cardId, userId: user.id });
+    perfRecordEmit(perfBatch, 'saveGame_before');
+    await gameSession.saveGame(roomId);
+    perfRecordEmit(perfBatch, 'saveGame_after');
+
+    perfRecordEmit(perfBatch, 'game:cardPlayed');
     io.to(roomId).emit('game:cardPlayed', {
       playerId: user.id, cardId,
       event: result.event,
@@ -324,14 +485,18 @@ function registerGameHandlers(io, socket, user) {
     });
 
     if (result.gameOver) {
+      perfRecordEmit(perfBatch, 'game:over');
       await _finishGame(io, roomId, game, result.winner);
+      perfEndAction(perfBatch);
     } else {
-      broadcastGameState(io, roomId, game);
+      broadcastGameState(io, roomId, game, perfBatch);
       if (game.state === 'END_ROUND') {
+        perfRecordEmit(perfBatch, 'autoNextRound');
         _autoNextRound(io, roomId);
       } else {
-        _startTurnTimer(io, roomId, game);
+        _startTurnTimer(io, roomId, game, TURN_TIMEOUT_MS, perfBatch);
       }
+      perfEndAction(perfBatch);
     }
   });
 
@@ -352,6 +517,7 @@ function registerGameHandlers(io, socket, user) {
       return socket.emit('game:error', { error: result.error });
     }
 
+    _resetManualAfk(game, user.id);
     _clearTurnTimer(roomId);
     await gameSession.saveGame(roomId);
     io.to(roomId).emit('game:envidoAnnounced', { by: user.id, betType });
@@ -376,6 +542,7 @@ function registerGameHandlers(io, socket, user) {
       return socket.emit('game:error', { error: result.error });
     }
 
+    _resetManualAfk(game, user.id);
     _clearTurnTimer(roomId);
     await _dispatchAfterGameMutation(io, roomId, game, result, {
       envidoResult: { ...result, respondedBy: user.id },
@@ -399,6 +566,7 @@ function registerGameHandlers(io, socket, user) {
       return socket.emit('game:error', { error: result.error });
     }
 
+    _resetManualAfk(game, user.id);
     _clearTurnTimer(roomId);
     await gameSession.saveGame(roomId);
     io.to(roomId).emit('game:trucoAnnounced', { by: user.id, betType });
@@ -423,10 +591,14 @@ function registerGameHandlers(io, socket, user) {
       return socket.emit('game:error', { error: result.error });
     }
 
+    _resetManualAfk(game, user.id);
     _clearTurnTimer(roomId);
     await _dispatchAfterGameMutation(io, roomId, game, result, {
       trucoResult: { ...result, respondedBy: user.id },
     });
+    if (result.event === 'TRUCO_ANNOUNCED' && response === 'raise') {
+      io.to(roomId).emit('game:trucoAnnounced', { by: user.id, betType: result.betType });
+    }
   });
 
   // ── IRSE AL MAZO ─────────────────────────────────────────────────
@@ -443,6 +615,7 @@ function registerGameHandlers(io, socket, user) {
       return socket.emit('game:error', { error: result.error });
     }
 
+    _resetManualAfk(game, user.id);
     _clearTurnTimer(roomId);
     await gameSession.saveGame(roomId);
     io.to(roomId).emit('game:irseAlMazo', { by: user.id, winner: result.winner, points: result.points });
@@ -473,12 +646,25 @@ function registerGameHandlers(io, socket, user) {
       return socket.emit('game:error', { error: result.error });
     }
 
+    _resetManualAfk(game, user.id);
     _clearTurnTimer(roomId);
     await gameSession.saveGame(roomId);
     io.to(roomId).emit('game:florAnnounced', { by: user.id, event: result.event });
 
     if (result.event === 'FLOR_RESOLVED') {
-      io.to(roomId).emit('game:florResult', { ...result, respondedBy: user.id });
+      const florPayload = {
+        ...result,
+        reason:
+          result.florResultReason ||
+          (result.autoResolved ? 'no_rival_flor' : 'comparison'),
+        response: result.florResponse || null,
+      };
+      if (result.autoResolved) {
+        florPayload.by = user.id;
+      } else {
+        florPayload.respondedBy = user.id;
+      }
+      io.to(roomId).emit('game:florResult', florPayload);
       if (result.gameOver) {
         await _finishGame(io, roomId, game, result.winner);
         return;
@@ -505,6 +691,7 @@ function registerGameHandlers(io, socket, user) {
       return socket.emit('game:error', { error: result.error });
     }
 
+    _resetManualAfk(game, user.id);
     _clearTurnTimer(roomId);
     await _dispatchAfterGameMutation(io, roomId, game, result, {
       florResult: { ...result, respondedBy: user.id },
@@ -759,6 +946,7 @@ async function _handleAbandon(io, roomId, abandonedUserId) {
  */
 async function _finishGameBothDisconnected(io, roomId, game) {
   _clearTurnTimer(roomId);
+  _clearAutoNextRound(roomId);
   _clearBothDcTimers(roomId);
   for (const pid of game.players) untrackUserRoom(pid);
 
@@ -823,6 +1011,7 @@ async function _finishGame(io, roomId, game, winnerId, extraPayload = {}) {
 
   // Clear all timers for this room
   _clearTurnTimer(roomId);
+  _clearAutoNextRound(roomId);
   _clearBothDcTimers(roomId);
   for (const pid of game.players) untrackUserRoom(pid);
 
@@ -834,8 +1023,9 @@ async function _finishGame(io, roomId, game, winnerId, extraPayload = {}) {
 
     // DB: finish game
     const finishReason =
-      extraPayload.reason === 'abandon' ? 'abandon_disconnect' : 'completed';
-    await Game.finish({
+      extraPayload.finishReason ||
+      (extraPayload.reason === 'abandon' ? 'abandon_disconnect' : 'completed');
+    const partidaRowsAffected = await Game.finish({
       roomId,
       winnerId,
       scoreP1: scores[game.players[0]],
@@ -866,31 +1056,50 @@ async function _finishGame(io, roomId, game, winnerId, extraPayload = {}) {
     }
 
     // Single authoritative end event — includes reason/abandonedBy when coming from abandon
-    io.to(roomId).emit('game:over', { winner: winnerId, scores, eloDelta, ...extraPayload });
+    io.to(roomId).emit('game:over', {
+      winner: winnerId,
+      scores,
+      eloDelta,
+      ...extraPayload,
+      finishReason,
+    });
 
     // Notifications
     const [winnerUser, loserUser] = await Promise.all([
       query('SELECT username FROM usuarios WHERE id = ?', [winnerId]),
       query('SELECT username FROM usuarios WHERE id = ?', [loserId]),
     ]);
-    const isAbandon = extraPayload.reason === 'abandon';
+    const isAfkAbandon = finishReason === 'afk_abandon';
+    const isDisconnectAbandon = extraPayload.reason === 'abandon' && !isAfkAbandon;
     await Promise.all([
       NotificationService.create({
         userId:   winnerId,
         type:     'game_result',
-        title:    isAbandon ? '¡Ganaste! (rival abandonó)' : '¡Ganaste la partida!',
-        body:     isAbandon
-          ? `Tu rival no volvió — ganás la partida.`
-          : `Venciste a ${loserUser[0]?.username || 'tu rival'}`,
+        title:    isAfkAbandon
+          ? '¡Ganaste! (rival inactivo)'
+          : isDisconnectAbandon
+            ? '¡Ganaste! (rival abandonó)'
+            : '¡Ganaste la partida!',
+        body:     isAfkAbandon
+          ? `Tu rival acumuló inactividad — ganás la partida.`
+          : isDisconnectAbandon
+            ? `Tu rival no volvió — ganás la partida.`
+            : `Venciste a ${loserUser[0]?.username || 'tu rival'}`,
         metadata: { roomId, result: 'win', eloDelta: eloDelta?.[winnerId] },
       }),
       NotificationService.create({
         userId:   loserId,
         type:     'game_result',
-        title:    isAbandon ? 'Perdiste por abandono' : 'Perdiste la partida',
-        body:     isAbandon
-          ? 'Te desconectaste y tu rival ganó la partida.'
-          : `${winnerUser[0]?.username || 'Tu rival'} te ganó`,
+        title:    isAfkAbandon
+          ? 'Perdiste por inactividad'
+          : isDisconnectAbandon
+            ? 'Perdiste por abandono'
+            : 'Perdiste la partida',
+        body:     isAfkAbandon
+          ? 'Perdiste la partida por inactividad (3 veces sin actuar a tiempo).'
+          : isDisconnectAbandon
+            ? 'Te desconectaste y tu rival ganó la partida.'
+            : `${winnerUser[0]?.username || 'Tu rival'} te ganó`,
         metadata: { roomId, result: 'loss', eloDelta: eloDelta?.[loserId] },
       }),
     ]).catch(() => {});
@@ -899,30 +1108,32 @@ async function _finishGame(io, roomId, game, winnerId, extraPayload = {}) {
     // Modo 'torneo' no actualiza ELO (isRanked === false), ni mueve wallet.
     // finishMatchFromGame devuelve null si el roomId no pertenece a ningún torneo.
     try {
-      const tResult = await TournamentService.finishMatchFromGame(roomId, winnerId, scores);
-      if (tResult) {
-        const tRoom = `tournament:${tResult.tournamentId}`;
+      if (partidaRowsAffected > 0) {
+        const tResult = await TournamentService.finishMatchFromGame(roomId, winnerId, scores);
+        if (tResult?.ok && !tResult.skipped) {
+          const tRoom = `tournament:${tResult.tournamentId}`;
 
-        io.to(tRoom).emit('tournament:matchFinished', {
-          tournamentId: tResult.tournamentId,
-          matchId:      tResult.matchId,
-          winnerId:     tResult.winnerId,
-          loserId:      tResult.loserId,
-        });
-        io.to(tRoom).emit('tournament:updated', { tournamentId: tResult.tournamentId });
+          io.to(tRoom).emit('tournament:matchFinished', {
+            tournamentId: tResult.tournamentId,
+            matchId:      tResult.matchId,
+            winnerId:     tResult.winnerId,
+            loserId:      tResult.loserId,
+          });
+          io.to(tRoom).emit('tournament:updated', { tournamentId: tResult.tournamentId });
 
-        if (tResult.champion) {
-          io.to(tRoom).emit('tournament:champion', {
-            tournamentId: tResult.tournamentId,
-            winnerId:     tResult.winnerId,
-          });
-          logger.info(`Tournament ${tResult.tournamentId}: champion = ${tResult.winnerId}`);
-        } else if (tResult.qualified) {
-          io.to(tRoom).emit('tournament:qualified', {
-            tournamentId: tResult.tournamentId,
-            winnerId:     tResult.winnerId,
-          });
-          logger.info(`Tournament ${tResult.tournamentId}: player ${tResult.winnerId} qualified`);
+          if (tResult.champion) {
+            io.to(tRoom).emit('tournament:champion', {
+              tournamentId: tResult.tournamentId,
+              winnerId:     tResult.winnerId,
+            });
+            logger.info(`Tournament ${tResult.tournamentId}: champion = ${tResult.winnerId}`);
+          } else if (tResult.qualified) {
+            io.to(tRoom).emit('tournament:qualified', {
+              tournamentId: tResult.tournamentId,
+              winnerId:     tResult.winnerId,
+            });
+            logger.info(`Tournament ${tResult.tournamentId}: player ${tResult.winnerId} qualified`);
+          }
         }
       }
     } catch (tErr) {
@@ -932,7 +1143,10 @@ async function _finishGame(io, roomId, game, winnerId, extraPayload = {}) {
 
   } catch (err) {
     logger.error('Error finishing game: ' + err.message);
-    io.to(roomId).emit('game:over', { winner: winnerId, scores, ...extraPayload });
+    const fr =
+      extraPayload.finishReason ||
+      (extraPayload.reason === 'abandon' ? 'abandon_disconnect' : 'completed');
+    io.to(roomId).emit('game:over', { winner: winnerId, scores, ...extraPayload, finishReason: fr });
   }
 
   await gameSession.deleteGame(roomId);

@@ -13,9 +13,15 @@
  *   GAME_OVER      → game finished (30 pts)
  */
 
-const { Deck } = require('./Deck');
+const { Deck, Card } = require('./Deck');
 const { compareCards, getCardPower } = require('./rules/cardHierarchy');
-const { calculateEnvido, canRaiseEnvido, getEnvidoStake } = require('./rules/envido');
+const {
+  calculateEnvido,
+  canRaiseEnvido,
+  getEnvidoStake,
+  getFaltaEnvidoPointsForWinner,
+  getEnvidoProofCards,
+} = require('./rules/envido');
 const {
   getTrucoStake,
   getTrucoRejectionStake,
@@ -27,9 +33,11 @@ const {
   hasFlor,
   calculateFlor,
   getFlorStake,
+  getContraFlorAlRestoPointsForWinner,
   getFlorRejectionStake,
   FLOR_LADDER,
 } = require('./rules/flor');
+const logger = require('../config/logger');
 
 const STATES = {
   WAITING: 'WAITING',
@@ -61,6 +69,9 @@ class TrucoGame {
     // Scores (global, across all rounds)
     this.scores = { [player1Id]: 0, [player2Id]: 0 };
 
+    /** Timeouts automáticos por jugador; 3 en una partida → abandono AFK (claves = players) */
+    this.afkCounts = { [player1Id]: 0, [player2Id]: 0 };
+
     // Per-round state
     this._initRound();
   }
@@ -89,6 +100,8 @@ class TrucoGame {
     this.trucoPendingBy = null;     // who announced last truco bet waiting for response
     this.trucoAccepted = false;
     this.trucoResolved = false;
+    /** Quien respondió Quiero a la última apuesta; puede subir (Retruco/Vale 4) antes de jugar su carta en la mano actual. */
+    this.trucoCanRaiseBy = null;
 // If Envido is sung while Truco is pending, we store the pending Truco here
 // and restore it after Envido is resolved.
 this.pendingTrucoAfterEnvido = null;
@@ -107,6 +120,11 @@ this.pendingTrucoAfterEnvido = null;
       resolved: false,
       winner: null,
     };
+    /** Quien tenía el turno de carta al abrir el canto de Flor (restaurar tras resolver). */
+    this.florOriginalTurnPlayer = null;
+
+    this.envidoTableReveal = null;
+    this.envidoProofReveal = null;
   }
 
   // ─── Public API ───────────────────────────────────────────────────
@@ -178,6 +196,10 @@ this.pendingTrucoAfterEnvido = null;
     return { ok: false, error: 'Invalid bet type' };
   }
 
+  if (this._hasAnyFlorInRound()) {
+    return { ok: false, error: 'Con flor no hay envido.' };
+  }
+
   if (
     this.state === STATES.TRUCO_PENDING &&
     Number(playerId) === Number(this.trucoPendingBy)
@@ -187,6 +209,10 @@ this.pendingTrucoAfterEnvido = null;
 
   if (this.envidoResolved) {
     return { ok: false, error: 'Envido already resolved' };
+  }
+
+  if (this.trucoAccepted && this.state !== STATES.ENVIDO_PENDING) {
+    return { ok: false, error: 'Ya no podés cantar envido después de querer el Truco.' };
   }
 
   if (!this.envidoAvailable) {
@@ -291,6 +317,8 @@ this.pendingTrucoAfterEnvido = null;
       this._restorePendingTrucoAfterEnvidoOrPlayerTurn();
     }
 
+    this.envidoProofReveal = null;
+
   return {
       ok: true,
       event: 'ENVIDO_REJECTED',
@@ -298,6 +326,7 @@ this.pendingTrucoAfterEnvido = null;
       points: rejectionPts,
       betStack: [...this.envidoBetStack],
       accepted: false,
+      reason: 'rejected',
       manoPlayerId: this.manoPlayer,
       scores: { ...this.scores },
       ...gameOverInfo,
@@ -312,6 +341,7 @@ this.pendingTrucoAfterEnvido = null;
    * betType: 'truco' | 'retruco' | 'vale4'
    */
   announceTruco(playerId, betType) {
+    if (betType === 'vale_cuatro') betType = 'vale4';
     if (!TRUCO_LADDER.includes(betType)) {
       return { ok: false, error: 'Invalid truco bet' };
     }
@@ -322,6 +352,46 @@ this.pendingTrucoAfterEnvido = null;
     ) {
       return { ok: false, error: 'Hay una respuesta pendiente.' };
     }
+
+    // Subida posterior al Quiero: solo quien quiso la apuesta vigente; no haber jugado su carta en esta mano.
+    if (
+      this.state === STATES.PLAYER_TURN &&
+      this.trucoAccepted &&
+      !this.trucoPendingBy &&
+      this.trucoBetStack.length > 0
+    ) {
+      const expected = getNextTrucoBet(this.trucoBetStack);
+      if (!expected || betType !== expected) {
+        return { ok: false, error: 'Invalid truco bet sequence' };
+      }
+      if (Number(playerId) !== Number(this.trucoCanRaiseBy)) {
+        return { ok: false, error: 'Solo quien quiso puede subir la apuesta.' };
+      }
+      if (Number(playerId) !== Number(this.waitingForPlayer)) {
+        return { ok: false, error: 'No podés subir hasta que sea tu turno.' };
+      }
+      if (this._playerAlreadyPlayedInCurrentMano(playerId)) {
+        return { ok: false, error: 'No podés cantar después de jugar tu carta.' };
+      }
+      if (this._cannotTrucoLadderDueToOpeningFourDecisiveMano(playerId)) {
+        return { ok: false, error: 'No podés cantar sobre el 4 en una mano decisiva.' };
+      }
+
+      this.trucoBetStack.push(betType);
+      this.trucoPendingBy = playerId;
+      this.trucoAccepted = false;
+      this.trucoCanRaiseBy = null;
+      this.state = STATES.TRUCO_PENDING;
+      this.waitingForPlayer = this._otherPlayer(playerId);
+      return {
+        ok: true,
+        event: 'TRUCO_ANNOUNCED',
+        betType,
+        by: playerId,
+        respondingPlayer: this._otherPlayer(playerId),
+      };
+    }
+
     if (this.state !== STATES.PLAYER_TURN && this.state !== STATES.TRUCO_PENDING) {
       return { ok: false, error: 'Cannot announce truco now' };
     }
@@ -340,6 +410,14 @@ this.pendingTrucoAfterEnvido = null;
       return { ok: false, error: 'No podés cantar sobre el 4 en una mano decisiva.' };
     }
 
+    if (
+      this.state === STATES.TRUCO_PENDING &&
+      Number(playerId) !== Number(this.trucoPendingBy) &&
+      this._playerAlreadyPlayedInCurrentMano(playerId)
+    ) {
+      return { ok: false, error: 'No podés cantar después de jugar tu carta.' };
+    }
+
     // Cannot call initial Truco on the last mano holding only a 4 (power 14 = lowest)
     if (this.currentMano === 2 && this.trucoBetStack.length === 0 && betType === 'truco') {
       const hand = this.hands[playerId];
@@ -348,10 +426,10 @@ this.pendingTrucoAfterEnvido = null;
       }
     }
 
-   this.trucoBetStack.push(betType);
-this.trucoPendingBy = playerId;
-this.state = STATES.TRUCO_PENDING;
-this.waitingForPlayer = this._otherPlayer(playerId);
+    this.trucoBetStack.push(betType);
+    this.trucoPendingBy = playerId;
+    this.state = STATES.TRUCO_PENDING;
+    this.waitingForPlayer = this._otherPlayer(playerId);
     return {
       ok: true,
       event: 'TRUCO_ANNOUNCED',
@@ -362,7 +440,7 @@ this.waitingForPlayer = this._otherPlayer(playerId);
   }
 
   /**
-   * Respond to truco: 'accept' | 'reject' | 'raise' (raise = announce next level)
+   * Respond to truco: 'accept' | 'reject' | 'raise' (raise = accept + next level; rival must respond)
    */
   respondTruco(playerId, response) {
     if (this.state !== STATES.TRUCO_PENDING) {
@@ -373,8 +451,13 @@ this.waitingForPlayer = this._otherPlayer(playerId);
     }
 
     if (response === 'accept') {
+      const announcer = this.trucoPendingBy;
       this.trucoAccepted = true;
+      this.trucoCanRaiseBy = playerId;
+      this.trucoPendingBy = null;
       this.state = STATES.PLAYER_TURN;
+      this.waitingForPlayer = announcer;
+      this.envidoAvailable = false;
       const stake = getTrucoStake(this.trucoBetStack);
       return {
         ok: true,
@@ -387,14 +470,49 @@ this.waitingForPlayer = this._otherPlayer(playerId);
     if (response === 'reject') {
       const pts = getTrucoRejectionStake(this.trucoBetStack);
       this.trucoResolved = true;
+      this.trucoCanRaiseBy = null;
       this.scores[this.trucoPendingBy] += pts;
       this.state = STATES.END_ROUND;
+      this._maybeRevealEnvidoProofOnRoundEnd('truco_rejected');
       return {
         ok: true,
         event: 'TRUCO_REJECTED',
         winner: this.trucoPendingBy,
         points: pts,
         nextState: this._checkGameOver(),
+      };
+    }
+
+    if (response === 'raise') {
+      if (this._playerAlreadyPlayedInCurrentMano(playerId)) {
+        return { ok: false, error: 'No podés subir después de jugar tu carta.' };
+      }
+      if (this._cannotTrucoLadderDueToOpeningFourDecisiveMano(playerId)) {
+        return { ok: false, error: 'No podés cantar sobre el 4 en una mano decisiva.' };
+      }
+      const nextBet = getNextTrucoBet(this.trucoBetStack);
+      if (!nextBet) {
+        const last = this.trucoBetStack[this.trucoBetStack.length - 1];
+        return {
+          ok: false,
+          error:
+            last === 'vale4'
+              ? 'No se puede subir más allá de Vale 4.'
+              : 'No podés subir más',
+        };
+      }
+      this.trucoBetStack.push(nextBet);
+      this.trucoPendingBy = playerId;
+      this.trucoCanRaiseBy = null;
+      this.trucoAccepted = false;
+      this.waitingForPlayer = this._otherPlayer(playerId);
+      this.state = STATES.TRUCO_PENDING;
+      return {
+        ok: true,
+        event: 'TRUCO_ANNOUNCED',
+        betType: nextBet,
+        by: playerId,
+        respondingPlayer: this._otherPlayer(playerId),
       };
     }
 
@@ -422,6 +540,8 @@ this.waitingForPlayer = this._otherPlayer(playerId);
     this.scores[winner] += pts;
     this.trucoResolved = true;
     this.state = STATES.END_ROUND;
+    this._maybeRevealEnvidoProofOnRoundEnd('irse_al_mazo');
+
     return {
       ok: true,
       event: 'IRSE_AL_MAZO',
@@ -466,6 +586,7 @@ this.waitingForPlayer = this._otherPlayer(playerId);
      case 'envido':
 case 'real_envido':
 case 'falta_envido':
+  if (this._hasAnyFlorInRound()) return false;
   if (!this.envidoAvailable || this.envidoResolved) return false;
 
   if (this.state === STATES.ENVIDO_PENDING) {
@@ -482,20 +603,47 @@ case 'falta_envido':
   return (
     this.state === STATES.PLAYER_TURN &&
     isMyTurn &&
+    !this.trucoAccepted &&
     this._canPlayerInitiateEnvido(playerId)
   );
 
       case 'respondEnvido':
-        return this.state === STATES.ENVIDO_PENDING && playerId !== this.envidoPendingBy;
+        return (
+          this.state === STATES.ENVIDO_PENDING &&
+          Number(playerId) !== Number(this.envidoPendingBy)
+        );
 
       case 'truco':
         if (this.trucoResolved) return false;
         if (this._cannotTrucoLadderDueToOpeningFourDecisiveMano(playerId)) return false;
-        if (this.state === STATES.TRUCO_PENDING) return playerId !== this.trucoPendingBy;
-        return this.state === STATES.PLAYER_TURN && isMyTurn;
+        if (this.state === STATES.TRUCO_PENDING) {
+          const n = getNextTrucoBet(this.trucoBetStack);
+          if (!n) return false;
+          if (Number(playerId) === Number(this.trucoPendingBy)) return false;
+          if (this._playerAlreadyPlayedInCurrentMano(playerId)) return false;
+          return true;
+        }
+        if (this.state === STATES.PLAYER_TURN) {
+          if (this.trucoBetStack.length === 0) {
+            return isMyTurn;
+          }
+          if (this.trucoAccepted && !this.trucoPendingBy) {
+            const next = getNextTrucoBet(this.trucoBetStack);
+            if (!next) return false;
+            return (
+              Number(playerId) === Number(this.trucoCanRaiseBy) &&
+              isMyTurn &&
+              !this._playerAlreadyPlayedInCurrentMano(playerId)
+            );
+          }
+        }
+        return false;
 
       case 'respondTruco':
-        return this.state === STATES.TRUCO_PENDING && playerId !== this.trucoPendingBy;
+        return (
+          this.state === STATES.TRUCO_PENDING &&
+          Number(playerId) !== Number(this.trucoPendingBy)
+        );
 
       case 'irseAlMazo':
         return (this.state === STATES.PLAYER_TURN || this.state === STATES.TRUCO_PENDING) && isMyTurn;
@@ -560,16 +708,20 @@ case 'falta_envido':
       return { ok: false, error: 'Not your turn to sing flor' };
     }
 
-    this.florState.betStack.push('flor');
-    this.florState.pendingBy = playerId;
-
-    // If opponent has no flor, announcer wins automatically
     const opponentIdx = idx === 0 ? 1 : 0;
     const opponentHasFlor = opponentIdx === 0 ? this.florState.p1HasFlor : this.florState.p2HasFlor;
+
+    this.florState.betStack.push('flor');
+    this.florOriginalTurnPlayer = playerId;
+
     if (!opponentHasFlor) {
-      return this._resolveFlor(playerId, 3);
+      return this._resolveFlor(playerId, 3, {
+        florResultReason: 'no_rival_flor',
+        autoResolved: true,
+      });
     }
 
+    this.florState.pendingBy = playerId;
     this.state = STATES.FLOR_PENDING;
     this.waitingForPlayer = this._otherPlayer(playerId);
     return {
@@ -600,18 +752,40 @@ case 'falta_envido':
       if (v1 > v2) winner = p1;
       else if (v2 > v1) winner = p2;
       else winner = this.manoPlayer; // tie → mano player
-      const stake = getFlorStake(
-        this.florState.betStack,
-        this.scores[p1],
-        this.scores[p2],
-        this.config.puntosMaximos
-      );
-      return this._resolveFlor(winner, stake, { florPoints: { [p1]: v1, [p2]: v2 } });
+      const stack = this.florState.betStack;
+      const lastBet = stack[stack.length - 1];
+      const stake =
+        lastBet === 'contraflor_al_resto'
+          ? getContraFlorAlRestoPointsForWinner({
+              winnerId: winner,
+              player1Id: p1,
+              player2Id: p2,
+              scoreP1: this.scores[p1],
+              scoreP2: this.scores[p2],
+              pointsToWin: this.config.puntosMaximos,
+            })
+          : getFlorStake(stack);
+      return this._resolveFlor(winner, stake, {
+        florPoints: { [p1]: v1, [p2]: v2 },
+        florResultReason: 'comparison',
+        florResponse: 'accept',
+      });
     }
 
     if (response === 'reject') {
-      const pts = getFlorRejectionStake(this.florState.betStack);
-      return this._resolveFlor(this.florState.pendingBy, pts);
+      const stack = this.florState.betStack;
+      if (stack.length === 1 && stack[0] === 'flor') {
+        return {
+          ok: false,
+          error:
+            'Con ambos jugadores con flor no se rechaza el primer canto: compará o subí a Contraflor.',
+        };
+      }
+      const pts = getFlorRejectionStake(stack);
+      return this._resolveFlor(this.florState.pendingBy, pts, {
+        florResultReason: 'contra_flor_rejected',
+        florResponse: 'reject',
+      });
     }
 
     return { ok: false, error: 'Invalid response — use accept or reject' };
@@ -643,12 +817,266 @@ case 'falta_envido':
       trucoAccepted: this.trucoAccepted,
       trucoResolved: this.trucoResolved,
       trucoPendingBy: this.trucoPendingBy,
+      trucoCanRaiseBy: this.trucoCanRaiseBy,
       pendingTrucoAfterEnvido: this.pendingTrucoAfterEnvido,
       playedCards: this.playedCards.map(mano =>
         mano.map(e => ({ playerId: e.playerId, card: e.card.toJSON() }))
       ),
       config: this.config,
       florState: this.config.florHabilitada ? { ...this.florState } : undefined,
+      florOriginalTurnPlayer: this.config.florHabilitada ? this.florOriginalTurnPlayer : undefined,
+      afkCounts: { ...this.afkCounts },
+      hasAnyFlorInRound: this._hasAnyFlorInRound(),
+      envidoTableReveal: this._publicEnvidoTableReveal(),
+      envidoProofReveal: this.envidoProofReveal ? { ...this.envidoProofReveal } : null,
+    };
+  }
+
+  _afkPlayerKey(playerId) {
+    return this.players.find(p => Number(p) === Number(playerId));
+  }
+
+  /**
+   * Incrementa strike AFK tras una acción automática por timeout (ver gameHandler).
+   * @returns {{ count: number }}
+   */
+  recordAfkStrike(playerId) {
+    const key = this._afkPlayerKey(playerId);
+    if (key == null) return { count: 0 };
+    this.afkCounts[key] = (Number(this.afkCounts[key]) || 0) + 1;
+    return { count: this.afkCounts[key] };
+  }
+
+  /**
+   * Resetea strikes cuando el jugador actúa manualmente vía socket.
+   */
+  resetAfkStrikes(playerId) {
+    const key = this._afkPlayerKey(playerId);
+    if (key != null) this.afkCounts[key] = 0;
+  }
+
+  getAfkCount(playerId) {
+    const key = this._afkPlayerKey(playerId);
+    if (key == null) return 0;
+    return Number(this.afkCounts[key]) || 0;
+  }
+
+  shouldAbandonForAfk(playerId) {
+    return this.getAfkCount(playerId) >= 3;
+  }
+
+  /**
+   * Snapshot completo para Redis (incluye manos — no usar en vistas de jugador).
+   */
+  toPersistenceSnapshot() {
+    const [p0, p1] = this.players;
+    return {
+      ...this.toJSON(),
+      hands: {
+        [p0]: (this.hands[p0] || []).map(c => c.toJSON()),
+        [p1]: (this.hands[p1] || []).map(c => c.toJSON()),
+      },
+    };
+  }
+
+  /**
+   * Rehidrata instancia viva desde Redis (misma clase que memoria).
+   * @param {object} data resultado de toPersistenceSnapshot()
+   */
+  static fromPersistenceSnapshot(data) {
+    const [p1, p2] = data.players || [];
+    if (!data?.roomId || p1 == null || p2 == null) return null;
+    const h = data.hands || {};
+    const ha = h[p1] ?? h[String(p1)];
+    const hb = h[p2] ?? h[String(p2)];
+    if (!Array.isArray(ha) || !Array.isArray(hb)) return null;
+
+    const game = new TrucoGame(data.roomId, p1, p2, data.config || {});
+    game.state = data.state;
+    game.scores = { ...(data.scores || {}) };
+    const ac = data.afkCounts || {};
+    game.afkCounts = {
+      [p1]: Number(ac[p1] ?? ac[String(p1)] ?? 0) || 0,
+      [p2]: Number(ac[p2] ?? ac[String(p2)] ?? 0) || 0,
+    };
+    game.currentMano = data.currentMano ?? 0;
+    game.manoResults = data.manoResults ? [...data.manoResults] : [];
+    game.manoFirst = data.manoFirst;
+    game.manoPlayer = data.manoPlayer;
+    game.waitingForPlayer = data.waitingForPlayer;
+    game.envidoBetStack = data.envidoBetStack ? [...data.envidoBetStack] : [];
+    game.envidoResolved = !!data.envidoResolved;
+    game.envidoWinner = data.envidoWinner;
+    game.envidoAvailable = data.envidoAvailable !== false;
+    game.envidoPendingBy = data.envidoPendingBy;
+    game.envidoOriginalTurnPlayer = data.envidoOriginalTurnPlayer;
+    game.trucoBetStack = data.trucoBetStack ? [...data.trucoBetStack] : [];
+    game.trucoAccepted = !!data.trucoAccepted;
+    game.trucoResolved = !!data.trucoResolved;
+    game.trucoPendingBy = data.trucoPendingBy;
+    game.trucoCanRaiseBy = data.trucoCanRaiseBy;
+    game.pendingTrucoAfterEnvido = data.pendingTrucoAfterEnvido;
+    game.playedCards = (data.playedCards || []).map(mano =>
+      (mano || []).map(e => ({
+        playerId: e.playerId,
+        card: new Card(e.card.value, e.card.suit),
+      }))
+    );
+    game.hands = {
+      [p1]: ha.map(c => new Card(c.value, c.suit)),
+      [p2]: hb.map(c => new Card(c.value, c.suit)),
+    };
+    if (game.config.florHabilitada && data.florState) {
+      game.florState = { ...data.florState };
+    }
+    game.florOriginalTurnPlayer = data.florOriginalTurnPlayer ?? null;
+    game.envidoTableReveal = data.envidoTableReveal || null;
+    game.envidoProofReveal = data.envidoProofReveal || null;
+    return game;
+  }
+
+  /**
+   * UI-oriented action flags (single source of truth for the client).
+   * @param {number|string} playerId
+   */
+  _computePlayerUiActions(playerId) {
+    const pid = Number(playerId);
+    const blockedFour = this._cannotTrucoLadderDueToOpeningFourDecisiveMano(playerId);
+    const pendingTruco = this.state === STATES.TRUCO_PENDING;
+    const pendingEnvido = this.state === STATES.ENVIDO_PENDING;
+    const pendingFlor = this.state === STATES.FLOR_PENDING && !!this.config.florHabilitada;
+
+    const mustRespondTruco =
+      pendingTruco && pid !== Number(this.trucoPendingBy);
+    const waitingOpponentTruco =
+      pendingTruco && pid === Number(this.trucoPendingBy);
+
+    const nextRaiseForResponder = pendingTruco ? getNextTrucoBet(this.trucoBetStack) : null;
+    /** Próximo canto si respondés con subida directa (Truco→Retruco, Retruco→Vale 4); null si ya es Vale 4 pendiente. */
+    const trucoResponseRaiseBet = mustRespondTruco ? nextRaiseForResponder : null;
+    const canRaiseTruco =
+      mustRespondTruco &&
+      !!nextRaiseForResponder &&
+      !blockedFour &&
+      !this._playerAlreadyPlayedInCurrentMano(playerId);
+
+    const mustRespondEnvido =
+      pendingEnvido && pid !== Number(this.envidoPendingBy);
+    const waitingOpponentEnvido =
+      pendingEnvido && pid === Number(this.envidoPendingBy);
+
+    const mustRespondFlor =
+      pendingFlor && pid !== Number(this.florState.pendingBy);
+    const waitingOpponentFlor =
+      pendingFlor && pid === Number(this.florState.pendingBy);
+
+    const florStack = this.florState.betStack || [];
+    const lastFlorBet = florStack[florStack.length - 1];
+    const isInitialBothFlorDispute =
+      florStack.length === 1 && lastFlorBet === 'flor';
+    const canAcceptFlor = mustRespondFlor;
+    const canRejectFlor = mustRespondFlor && !isInitialBothFlorDispute;
+    const canRaiseFlorResponse =
+      mustRespondFlor && florStack.length < FLOR_LADDER.length;
+
+    const canEnvidoBeforeTruco =
+      mustRespondTruco &&
+      !this.envidoResolved &&
+      this.envidoAvailable &&
+      !this.trucoAccepted &&
+      this._canPlayerInitiateEnvido(playerId);
+
+    const isMyCardTurn =
+      this.state === STATES.PLAYER_TURN && Number(this.waitingForPlayer) === pid;
+
+    const canEnvido =
+      this.state === STATES.PLAYER_TURN &&
+      !pendingTruco &&
+      !pendingEnvido &&
+      !pendingFlor &&
+      isMyCardTurn &&
+      !this.envidoResolved &&
+      this.envidoAvailable &&
+      !this.trucoAccepted &&
+      !this.trucoResolved &&
+      this._canPlayerInitiateEnvido(playerId);
+
+    const canTruco =
+      this.state === STATES.PLAYER_TURN &&
+      !pendingTruco &&
+      !pendingEnvido &&
+      !pendingFlor &&
+      isMyCardTurn &&
+      this.trucoBetStack.length === 0 &&
+      !this.trucoResolved &&
+      !blockedFour;
+
+    const nextPostRaise = getNextTrucoBet(this.trucoBetStack);
+    const basePostRaise =
+      !this.trucoResolved &&
+      this.state === STATES.PLAYER_TURN &&
+      this.trucoAccepted &&
+      !pendingTruco &&
+      !this.trucoPendingBy &&
+      pid === Number(this.trucoCanRaiseBy) &&
+      isMyCardTurn &&
+      !this._playerAlreadyPlayedInCurrentMano(playerId) &&
+      !blockedFour;
+    const canRetruco = basePostRaise && nextPostRaise === 'retruco';
+    const canValeCuatro = basePostRaise && nextPostRaise === 'vale4';
+
+    const canPlayCard =
+      this.state === STATES.PLAYER_TURN &&
+      isMyCardTurn &&
+      !pendingTruco &&
+      !pendingEnvido &&
+      !pendingFlor;
+
+    const canMazo =
+      (this.state === STATES.PLAYER_TURN && isMyCardTurn) ||
+      (pendingTruco && mustRespondTruco);
+
+    const idx = this.players.findIndex(p => Number(p) === pid);
+    let canFlor = false;
+    if (
+      this.config.florHabilitada &&
+      !pendingTruco &&
+      !pendingEnvido &&
+      !pendingFlor &&
+      this.state === STATES.PLAYER_TURN &&
+      isMyCardTurn &&
+      !this.florState.resolved
+    ) {
+      const myHasFlor = idx === 0 ? this.florState.p1HasFlor : this.florState.p2HasFlor;
+      canFlor = !!myHasFlor;
+    }
+
+    return {
+      pendingTruco,
+      pendingEnvido,
+      pendingFlor,
+      mustRespondTruco,
+      waitingOpponentTruco,
+      canAcceptTruco: mustRespondTruco,
+      canRejectTruco: mustRespondTruco,
+      canRaiseTruco,
+      trucoResponseRaiseBet,
+      nextTrucoBetForResponder: nextRaiseForResponder,
+      canEnvidoBeforeTruco,
+      mustRespondEnvido,
+      waitingOpponentEnvido,
+      mustRespondFlor,
+      waitingOpponentFlor,
+      canAcceptFlor,
+      canRejectFlor,
+      canRaiseFlorResponse,
+      canPlayCard,
+      canEnvido,
+      canTruco,
+      canRetruco,
+      canValeCuatro,
+      canFlor,
+      canMazo,
     };
   }
 
@@ -658,16 +1086,32 @@ case 'falta_envido':
   getPlayerView(playerId) {
     const otherPlayer = this._otherPlayer(playerId);
     const blockedByOpeningFourDecisive = this._cannotTrucoLadderDueToOpeningFourDecisiveMano(playerId);
+    const ui = this._computePlayerUiActions(playerId);
+    const base = this.toJSON();
     return {
-      ...this.toJSON(),
+      ...base,
+      envidoTableReveal: this._publicEnvidoTableReveal(),
+      envidoProofReveal: this._publicEnvidoProofReveal(playerId),
       myHand: (this.hands[playerId] || []).map(c => c.toJSON()),
       opponentCardCount: (this.hands[otherPlayer] || []).length,
       trucoBlockedByOpeningFourDecisiveMano: blockedByOpeningFourDecisive,
       trucoBlockedByOpeningFourThirdMano: blockedByOpeningFourDecisive,
+      ...ui,
     };
   }
 
   // ─── Private helpers ──────────────────────────────────────────────
+
+  /**
+   * TrucoFX: si la partida tiene Flor habilitada y cualquier jugador tiene Flor en la ronda,
+   * el tanto de Envido no se juega (antes o después de cantarla).
+   */
+  _hasAnyFlorInRound() {
+    return Boolean(
+      this.config.florHabilitada &&
+      (this.florState?.p1HasFlor || this.florState?.p2HasFlor)
+    );
+  }
 
   /**
    * Mano actual es la que define la ronda (no confundir con “última mano” en abstracto).
@@ -787,6 +1231,8 @@ case 'falta_envido':
     this.hands[this.players[0]] = deck.deal(3);
     this.hands[this.players[1]] = deck.deal(3);
 
+    this._assertDealtHandsIntegrity();
+
     // Flor detection
     if (this.config.florHabilitada) {
       this.florState.p1HasFlor = hasFlor(this.hands[this.players[0]]);
@@ -796,6 +1242,20 @@ case 'falta_envido':
     this.state = STATES.PLAYER_TURN;
     this.waitingForPlayer = this.manoPlayer;
     this.manoFirst = this.manoPlayer; // who opens mano 0
+  }
+
+  /** Baraja 40 cartas: 6 cartas repartidas deben ser IDs únicos. */
+  _assertDealtHandsIntegrity() {
+    const a = this.hands[this.players[0]] || [];
+    const b = this.hands[this.players[1]] || [];
+    const ids = [...a, ...b].map(c => (c && c.id) || `${c?.value}_${c?.suit}`);
+    if (ids.length !== 6 || new Set(ids).size !== 6) {
+      logger.error('truco deal integrity: duplicate or missing cards in round hands', {
+        roomId: this.roomId,
+        ids,
+      });
+      throw new Error('INVALID_DEAL_INTEGRITY');
+    }
   }
 
   _resolveMano() {
@@ -853,6 +1313,7 @@ case 'falta_envido':
     this.trucoResolved = true;
     this.scores[winnerId] += trucoStake;
     this.state = STATES.END_ROUND;
+    this._maybeRevealEnvidoProofOnRoundEnd('round_completed');
 
     const gameOverInfo = this._checkGameOver();
     return {
@@ -866,10 +1327,17 @@ case 'falta_envido':
   }
 
   _resolveFlor(winnerId, pts, extra = {}) {
+    const resumeTurn =
+      this.florOriginalTurnPlayer != null
+        ? Number(this.florOriginalTurnPlayer)
+        : Number(winnerId);
+    this.florOriginalTurnPlayer = null;
+    this.florState.pendingBy = null;
     this.florState.resolved = true;
     this.florState.winner = winnerId;
     this.scores[winnerId] += pts;
     this.state = STATES.PLAYER_TURN;
+    this.waitingForPlayer = resumeTurn;
     const gameOverInfo = this._checkGameOver();
     return {
       ok: true,
@@ -877,6 +1345,9 @@ case 'falta_envido':
       winner: winnerId,
       points: pts,
       scores: { ...this.scores },
+      florResultReason: extra.florResultReason || null,
+      florResponse: extra.florResponse || null,
+      autoResolved: !!extra.autoResolved,
       ...extra,
       ...gameOverInfo,
     };
@@ -899,6 +1370,8 @@ _playerAlreadyPlayedInCurrentMano(playerId) {
 }
 
 _canPlayerInitiateEnvido(playerId) {
+  if (this._hasAnyFlorInRound()) return false;
+
   // Envido can only be initiated during the first mano of the round.
   if (this.currentMano !== 0) return false;
 
@@ -955,72 +1428,207 @@ _restorePendingTrucoAfterEnvidoOrPlayerTurn() {
     return getEnvidoStake(withoutLast, 0, 0, this.config.puntosMaximos);
   }
 
+  /**
+   * Cartas del jugador aún en mano + ya jugadas en la ronda (para proof al cerrar).
+   */
+  _collectCardsForEnvidoProof(playerId) {
+    const pid = Number(playerId);
+    const inHand = this.hands[playerId] || this.hands[String(playerId)] || [];
+    const played = (this.playedCards || [])
+      .flat()
+      .filter(p => Number(p.playerId) === pid)
+      .map(p => p.card);
+    const byId = new Map();
+    for (const c of [...inHand, ...played]) {
+      if (!c) continue;
+      const id = c.id || `${c.value}_${c.suit}`;
+      if (!byId.has(id)) byId.set(id, c);
+    }
+    return [...byId.values()];
+  }
+
+  /**
+   * Al terminar la ronda: si hubo Envido aceptado/comparado, mostrar proof del ganador.
+   * No depende de quién se fue al mazo.
+   */
+  _maybeRevealEnvidoProofOnRoundEnd(reason) {
+    const r = this.envidoTableReveal;
+    if (!r?.resolved || !r.winnerId) return;
+    if (r.reason !== 'accepted' && r.wasAccepted !== true) return;
+    if (this.envidoProofReveal?.shown) return;
+
+    const winnerId = r.winnerId;
+    const cards = this._collectCardsForEnvidoProof(winnerId);
+    if (!cards.length) return;
+
+    const wKey = String(winnerId);
+    const pts =
+      r.points?.[wKey] ??
+      r.points?.[winnerId] ??
+      calculateEnvido(cards);
+
+    this.envidoProofReveal = {
+      playerId: winnerId,
+      cards: getEnvidoProofCards(cards).map(c => c.toJSON()),
+      points: pts,
+      label: 'PUNTOS EN MESA',
+      reason,
+      shown: true,
+    };
+  }
+
+  /**
+   * Proof del Envido para la vista del jugador (lado relativo + solo cartas necesarias).
+   */
+  _publicEnvidoProofReveal(viewerId) {
+    const pr = this.envidoProofReveal;
+    if (!pr?.cards?.length) return null;
+    const winnerId = pr.playerId;
+    const { shown: _shown, ...rest } = pr;
+    return {
+      ...rest,
+      winnerId,
+      playerId: winnerId,
+      winnerSide: Number(winnerId) === Number(viewerId) ? 'self' : 'opponent',
+    };
+  }
+
+  /**
+   * Payload público del Envido en mesa: solo tantos, nunca manos ocultas.
+   */
+  _publicEnvidoTableReveal() {
+    const r = this.envidoTableReveal;
+    if (!r) return null;
+    const { cards: _omitCards, ...safe } = r;
+    return { ...safe, showCards: false };
+  }
+
+  /**
+   * Snapshot del Envido resuelto en la ronda (persiste en gameState hasta nextRound).
+   */
+  _persistEnvidoTableReveal({ winnerId, stake, reason, points, shownPoints }) {
+    const p1 = this.players[0];
+    const p2 = this.players[1];
+    const ptsMap = points || {};
+    this.envidoTableReveal = {
+      resolved: true,
+      winnerId,
+      loserId: Number(winnerId) === Number(p1) ? p2 : p1,
+      stake,
+      reason,
+      wasAccepted: reason === 'accepted',
+      showCards: false,
+      points: {
+        [String(p1)]: ptsMap[p1] ?? ptsMap[String(p1)] ?? null,
+        [String(p2)]: ptsMap[p2] ?? ptsMap[String(p2)] ?? null,
+      },
+      shownPoints: shownPoints || {},
+      betStack: [...this.envidoBetStack],
+      manoPlayerId: this.manoPlayer,
+    };
+  }
+
   _resolveEnvido(accepted) {
-  if (!accepted) return this.respondEnvido;
+    if (!accepted) return this.respondEnvido;
 
-  const stake = getEnvidoStake(
-    this.envidoBetStack,
-    this.scores[this.players[0]],
-    this.scores[this.players[1]],
-    this.config.puntosMaximos
-  );
+    const p1 = this.players[0];
+    const p2 = this.players[1];
 
-  const p1 = this.players[0];
-  const p2 = this.players[1];
+    const pts1 = calculateEnvido(this.hands[p1]);
+    const pts2 = calculateEnvido(this.hands[p2]);
+    if (pts1 > 33 || pts2 > 33) {
+      logger.warn('resolveEnvido: computed envido points > 33 (invalid hand)', {
+        roomId: this.roomId,
+        pts1,
+        pts2,
+      });
+    }
 
-  const pts1 = calculateEnvido(this.hands[p1]);
-  const pts2 = calculateEnvido(this.hands[p2]);
+    let winner;
+    if (pts1 > pts2) {
+      winner = p1;
+    } else if (pts2 > pts1) {
+      winner = p2;
+    } else {
+      winner = this.manoPlayer;
+    }
 
-  let winner;
+    const lastBet = this.envidoBetStack[this.envidoBetStack.length - 1];
+    let stake;
+    if (lastBet === 'falta_envido') {
+      stake = getFaltaEnvidoPointsForWinner(
+        winner,
+        p1,
+        p2,
+        this.scores[p1],
+        this.scores[p2],
+        this.config.puntosMaximos
+      );
+    } else {
+      stake = getEnvidoStake(
+        this.envidoBetStack,
+        this.scores[p1],
+        this.scores[p2],
+        this.config.puntosMaximos
+      );
+      if (stake == null) {
+        logger.error('getEnvidoStake returned null for unexpected stack', {
+          roomId: this.roomId,
+          stack: this.envidoBetStack,
+        });
+        stake = 1;
+      }
+    }
 
-  if (pts1 > pts2) {
-    winner = p1;
-  } else if (pts2 > pts1) {
-    winner = p2;
-  } else {
-    winner = this.manoPlayer;
+    this.envidoResolved = true;
+    this.envidoWinner = winner;
+    this.scores[winner] += stake;
+
+    const gameOverInfo = this._checkGameOver();
+
+    if (!gameOverInfo.gameOver) {
+      this._restorePendingTrucoAfterEnvidoOrPlayerTurn();
+    }
+
+    // Argentine Truco reveal rules:
+    // Pie (non-mano) always shows their count first.
+    // Mano only reveals their count if they won; otherwise says "son buenas".
+    const manoId = this.manoPlayer;
+    const pieId = this._otherPlayer(manoId);
+    const manoWon = String(winner) === String(manoId);
+    const allPts = { [p1]: pts1, [p2]: pts2 };
+    const shownPoints = {
+      [String(pieId)]: allPts[pieId],
+      ...(manoWon ? { [String(manoId)]: allPts[manoId] } : {}),
+    };
+    const envidoReveal = {
+      manoPlayerId: manoId,
+      sonBuenas: !manoWon,
+      shownPoints,
+    };
+
+    this._persistEnvidoTableReveal({
+      winnerId: winner,
+      stake,
+      reason: 'accepted',
+      points: allPts,
+      shownPoints,
+    });
+
+    return {
+      ok: true,
+      event: 'ENVIDO_RESOLVED',
+      winner,
+      points: stake,
+      betStack: [...this.envidoBetStack],
+      accepted: true,
+      envidoPoints: { [p1]: pts1, [p2]: pts2 },
+      envidoReveal,
+      envidoTableReveal: this._publicEnvidoTableReveal(),
+      scores: { ...this.scores },
+      ...gameOverInfo,
+    };
   }
-
-  this.envidoResolved = true;
-  this.envidoWinner = winner;
-  this.scores[winner] += stake;
-
-  const gameOverInfo = this._checkGameOver();
-
-  if (!gameOverInfo.gameOver) {
-    this._restorePendingTrucoAfterEnvidoOrPlayerTurn();
-  }
-
-  // Argentine Truco reveal rules:
-  // Pie (non-mano) always shows their count first.
-  // Mano only reveals their count if they won; otherwise says "son buenas".
-  const manoId = this.manoPlayer;
-  const pieId  = this._otherPlayer(manoId);
-  const manoWon = String(winner) === String(manoId);
-  const allPts  = { [p1]: pts1, [p2]: pts2 };
-  const shownPoints = {
-    [String(pieId)]: allPts[pieId],
-    ...(manoWon ? { [String(manoId)]: allPts[manoId] } : {}),
-  };
-  const envidoReveal = {
-    manoPlayerId: manoId,
-    sonBuenas:    !manoWon,
-    shownPoints,
-  };
-
-  return {
-    ok: true,
-    event: 'ENVIDO_RESOLVED',
-    winner,
-    points: stake,
-    betStack: [...this.envidoBetStack],
-    accepted: true,
-    envidoPoints: { [p1]: pts1, [p2]: pts2 },
-    envidoReveal,
-    scores: { ...this.scores },
-    ...gameOverInfo,
-  };
-}
 }
 
 module.exports = { TrucoGame, STATES };

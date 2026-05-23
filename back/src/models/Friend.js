@@ -109,14 +109,15 @@ const Friend = {
   /** Outgoing pending requests (I am the sender). */
   async getPendingSent(userId) {
     return query(
-      `SELECT u.id, u.username, u.avatar, r.elo, f.created_at
+      `SELECT u.id, u.username, u.avatar, r.elo, f.created_at,
+              IF(f.user_id = f.requested_by, f.friend_id, f.user_id) AS to_user_id
        FROM friends f
-       JOIN usuarios u ON u.id = IF(f.requested_by = f.user_id, f.friend_id, f.user_id)
+       JOIN usuarios u ON u.id = IF(f.user_id = f.requested_by, f.friend_id, f.user_id)
        LEFT JOIN ranking r ON r.user_id = u.id
        WHERE f.status = 'pending'
          AND f.requested_by = ?
-         AND (f.user_id = ? OR f.friend_id = ?)`,
-      [userId, userId, userId]
+         AND u.id != ?`,
+      [userId, userId]
     );
   },
 };

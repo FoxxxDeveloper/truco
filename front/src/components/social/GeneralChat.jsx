@@ -35,7 +35,9 @@ export default function GeneralChat({ onClose }) {
         return [...prev, msg];
       });
     };
-    const onError = ({ error }) => console.warn('general:error', error);
+    const onError = ({ error }) => {
+      if (import.meta.env.DEV) console.warn('general:error', error);
+    };
     socket.on('general:message', onMessage);
     socket.on('general:error', onError);
     return () => {
@@ -104,12 +106,21 @@ export default function GeneralChat({ onClose }) {
                   </div>
                   <div className={`chat-message-block${mine ? ' chat-message-block--mine' : ''}`.trim()}>
                     <div className="chat-message-inline-meta">
-                      <span className="chat-message-author">{mine ? 'Vos' : msg.from?.username}</span>
+                      <span className={`chat-message-author${msg.from?.isAdmin ? ' chat-message-author--admin' : ''}`}>
+                        {mine ? 'Vos' : msg.from?.username}
+                        {msg.from?.isAdmin && !mine && (
+                          <span className="chat-admin-badge" title="Administrador TrucoFX">ADMIN</span>
+                        )}
+                      </span>
                       <span className="chat-message-time chat-message-time--inline">
                         {new Date(msg.createdAt || msg.created_at).toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' })}
                       </span>
                     </div>
-                    <div className={`chat-message-bubble chat-message-bubble--compact${mine ? ' chat-message-bubble--mine' : ' chat-message-bubble--other'}`.trim()}>{text}</div>
+                    <div
+                      className={`chat-message-bubble chat-message-bubble--compact${mine ? ' chat-message-bubble--mine' : ' chat-message-bubble--other'}${msg.from?.isAdmin && !mine ? ' chat-message-bubble--admin' : ''}`.trim()}
+                    >
+                      {text}
+                    </div>
                   </div>
                 </div>
               );

@@ -40,6 +40,12 @@ const tournamentActionLimit = rateLimit({
 const USER_ERRORS = [
   'Torneo no encontrado',
   'El torneo no está abierto para inscripción',
+  'Las inscripciones aún no están abiertas',
+  'Las inscripciones están cerradas',
+  'La fecha de inicio del torneo es obligatoria',
+  'La apertura de inscripciones',
+  'El cierre de inscripciones',
+  'El check-in debe comenzar',
   'Ya estás inscripto en este torneo',
   'No estás inscripto en este torneo',
   'El check-in no está abierto',

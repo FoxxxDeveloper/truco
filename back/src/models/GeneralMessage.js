@@ -22,7 +22,7 @@ const GeneralMessage = {
     const safeLimit = Math.min(Math.max(Math.floor(Number(limit)) || 50, 1), 100);
     const rows = await query(
       `SELECT gm.id, gm.content, gm.created_at,
-              u.id AS user_id, u.username, u.avatar
+              u.id AS user_id, u.username, u.avatar, u.role
        FROM general_messages gm
        JOIN usuarios u ON u.id = gm.user_id
        ORDER BY gm.created_at DESC
@@ -32,7 +32,13 @@ const GeneralMessage = {
     // Return in ASC order (oldest first for display)
     return rows.reverse().map(r => ({
       id:        r.id,
-      from:      { id: r.user_id, username: r.username, avatar: r.avatar || null },
+      from:      {
+        id: r.user_id,
+        username: r.username,
+        avatar: r.avatar || null,
+        role: r.role || 'user',
+        isAdmin: r.role === 'admin' || r.role === 'administrador',
+      },
       text:      r.content,
       createdAt: r.created_at,
     }));

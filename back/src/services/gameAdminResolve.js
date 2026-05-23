@@ -45,17 +45,19 @@ async function resolvePausedGameAsAbandon({ roomId, winnerId, adminId, reason })
   });
 
   const scores = { [p1]: p.score_p1, [p2]: p.score_p2 };
-  await TournamentService.finishMatchFromGame(roomId, winnerId, scores).catch((e) => {
-    logger.warn(`resolvePausedGame tournament: ${e.message}`);
-  });
-
-  await Game.finish({
+  const partidaRowsAffected = await Game.finish({
     roomId,
     winnerId: w,
     scoreP1: p.score_p1,
     scoreP2: p.score_p2,
     finishReason: reason || 'admin_resolve_abandon',
   });
+
+  if (partidaRowsAffected > 0) {
+    await TournamentService.finishMatchFromGame(roomId, w, scores).catch((e) => {
+      logger.warn(`resolvePausedGame tournament: ${e.message}`);
+    });
+  }
 
   await gameSession.deleteGame(roomId).catch(() => {});
 

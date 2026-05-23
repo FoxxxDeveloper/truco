@@ -5,6 +5,7 @@
  */
 const { TrucoGame } = require('../game/TrucoGame');
 const redis = require('../config/redis');
+const { query } = require('../config/database');
 const logger = require('../config/logger');
 
 const SESSION_TTL = 60 * 60 * 2; // 2 hours
@@ -59,20 +60,60 @@ async function deleteGame(roomId) {
 
 async function _persist(roomId, game) {
   try {
-    await redis.set(`game:${roomId}`, JSON.stringify(game.toJSON()), { EX: SESSION_TTL });
+    const snap =
+      typeof game.toPersistenceSnapshot === 'function' ? game.toPersistenceSnapshot() : game.toJSON();
+    await redis.set(`game:${roomId}`, JSON.stringify(snap), { EX: SESSION_TTL });
   } catch (_) {
     // Redis unavailable — in-memory store is sufficient for single-process
   }
 }
 
+/**
+ * MySQL dice que la partida ya no es jugable → no rehidratar desde Redis.
+ */
+async function _partidaAllowsRestore(roomId) {
+  try {
+    const rows = await query(
+      `SELECT status, state, winner_id, finished_at, IFNULL(requires_admin_resolution, 0) AS req_admin
+       FROM partidas WHERE room_id = ? LIMIT 1`,
+      [roomId]
+    );
+    if (!rows.length) return true;
+    const p = rows[0];
+    if (p.winner_id != null || p.finished_at != null) return false;
+    if (Number(p.req_admin) === 1) return false;
+    if (['finished', 'cancelled', 'abandoned'].includes(p.status)) return false;
+    if (p.state === 'finished') return false;
+    return true;
+  } catch (e) {
+    logger.warn('partida restore check failed', { roomId, err: e.message });
+    return true;
+  }
+}
+
 async function _restore(roomId) {
   try {
+    if (!(await _partidaAllowsRestore(roomId))) {
+      await redis.del(`game:${roomId}`).catch(() => {});
+      logger.info('Game restore skipped: partida closed in MySQL', { roomId });
+      return null;
+    }
     const raw = await redis.get(`game:${roomId}`);
     if (!raw) return null;
-    // Note: we restore basic state only; full class restoration not needed as
-    // TrucoGame is stored in-memory and Redis is for reconnection recovery.
-    logger.info(`Game restored from Redis: ${roomId}`);
-    return JSON.parse(raw); // plain object, not TrucoGame instance
+    let data;
+    try {
+      data = JSON.parse(raw);
+    } catch (_) {
+      return null;
+    }
+    const restored = TrucoGame.fromPersistenceSnapshot(data);
+    if (restored) {
+      games.set(roomId, restored);
+      logger.info(`Game restored from Redis (TrucoGame): ${roomId}`);
+      return restored;
+    }
+    logger.warn('Game restore from Redis failed (missing hands or bad snapshot)', { roomId });
+    return null;
   } catch (_) {
     return null;
   }

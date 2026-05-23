@@ -6,6 +6,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import toast from 'react-hot-toast';
 import { toastErrorOnce } from '../../utils/toastOnce';
 import { useAuth } from '../../context/AuthContext';
+import { isAdminUser } from '../../utils/adminPlayer';
 import { getSocket } from '../../services/socket';
 import { socialApi, profileApi } from '../../services/api';
 import {
@@ -33,6 +34,10 @@ function FriendAvatar({ username, avatar, className = '' }) {
   );
 }
 
+function requestDisplayName(row) {
+  return row?.username || row?.to_username || (row?.to_user_id ? `Usuario #${row.to_user_id}` : 'Usuario');
+}
+
 function presenceLabel(status) {
   if (status === 'lobby') return 'En línea';
   if (status === 'in_game') return 'En partida';
@@ -41,6 +46,7 @@ function presenceLabel(status) {
 
 export default function FriendsList({ onClose, onStartChat, onChallengeFriend, unreadCounts = {} }) {
   const { user } = useAuth();
+  const isAdmin = isAdminUser(user);
 
   const [friends, setFriends] = useState([]);
   const [requestsReceived, setRequestsReceived] = useState([]);
@@ -365,7 +371,7 @@ export default function FriendsList({ onClose, onStartChat, onChallengeFriend, u
                             </span>
                           </button>
                         )}
-                        {typeof onChallengeFriend === 'function' && (
+                        {typeof onChallengeFriend === 'function' && !isAdmin && (
                           <button
                             type="button"
                             className="friend-action-btn friend-action-btn--outline-challenge"
@@ -465,12 +471,12 @@ export default function FriendsList({ onClose, onStartChat, onChallengeFriend, u
                   <div className="social-friends-list-scroll">
                     <ul className="social-friends-list social-friends-list--rows">
                       {requestsSent.map((r) => (
-                        <li key={r.id} className="friend-row friend-row--request">
+                        <li key={`sent-${r.id}-${r.created_at}`} className="friend-row friend-row--request">
                           <div className="friend-main friend-row__left">
-                            <FriendAvatar username={r.username} avatar={r.avatar} className="friend-avatar--row" />
+                            <FriendAvatar username={requestDisplayName(r)} avatar={r.avatar} className="friend-avatar--row" />
                             <div className="friend-meta friend-row__info">
                               <div className="friend-row__title">
-                                <span className="friend-row__username">{r.username}</span>
+                                <span className="friend-row__username">{requestDisplayName(r)}</span>
                               </div>
                               <span className="fx-badge friend-search-badge">Pendiente</span>
                             </div>

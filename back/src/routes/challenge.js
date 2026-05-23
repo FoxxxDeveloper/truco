@@ -18,8 +18,21 @@ const { query }              = require('../config/database');
 const Friend                 = require('../models/Friend');
 const NotificationService    = require('../services/notificationService');
 
+const { assertPlayerParticipationAllowed } = require('../utils/adminGuard');
+
 const router = express.Router();
 router.use(authMiddleware);
+
+router.use((req, res, next) => {
+  if (req.method === 'POST') {
+    try {
+      assertPlayerParticipationAllowed(req.user);
+    } catch (err) {
+      return res.status(403).json({ error: err.message });
+    }
+  }
+  next();
+});
 
 function userErr(err) {
   const m = (err.message || '').toLowerCase();

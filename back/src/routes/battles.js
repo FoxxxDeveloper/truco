@@ -18,8 +18,21 @@ const BattleService = require('../services/battleService');
 const authMiddleware = require('../middleware/auth');
 const logger         = require('../config/logger');
 
+const { assertPlayerParticipationAllowed } = require('../utils/adminGuard');
+
 const router = express.Router();
 router.use(authMiddleware);
+
+router.use((req, res, next) => {
+  if (req.method === 'POST') {
+    try {
+      assertPlayerParticipationAllowed(req.user);
+    } catch (err) {
+      return res.status(403).json({ error: err.message });
+    }
+  }
+  next();
+});
 
 const battleLimit = rateLimit({
   windowMs: 60 * 1000,

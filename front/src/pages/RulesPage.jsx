@@ -116,6 +116,10 @@ const SECTIONS = [
           <strong>primera mano</strong> antes de jugar cartas, con las excepciones de flujo respecto al Truco que ya
           aplica el juego en línea.
         </p>
+        <p>
+          Con Flor no hay Envido. Si en una ronda algún jugador tiene Flor, no se juega Envido en esa ronda. El tanto
+          de Flor reemplaza al Envido.
+        </p>
         <h4>¿Cómo se calcula?</h4>
         <ul>
           <li>
@@ -167,18 +171,31 @@ const SECTIONS = [
             </tr>
             <tr>
               <td>Falta Envido</td>
-              <td>Puntos para terminar la partida</td>
+              <td>
+                Puntos que le faltan al <strong>rival del ganador</strong> para llegar al objetivo de la partida (mín. 1).
+              </td>
               <td>1 pt</td>
             </tr>
           </tbody>
         </table>
+        <p>
+          La Falta Envido suma al ganador los puntos que le faltan al rival para ganar. Por ejemplo, a 30 puntos: si el
+          ganador del envido tiene 12 y el rival 20, el ganador suma 10; si tiene 28 y el rival 5, suma 25.
+        </p>
         <h4>¿Cuándo se puede cantar?</h4>
         <ul>
           <li>Solo en la <strong>primera mano</strong> de la ronda.</li>
           <li>Solo si <strong>vos mismo todavía no tiraste ninguna carta</strong>.</li>
           <li>
+            No si en esa ronda hay <strong>Flor</strong> (de cualquier jugador): en ese caso el Envido no se juega.
+          </li>
+          <li>
             Si el rival cantó Truco antes de que tires carta, podés cantar Envido <em>antes de responder el Truco</em>.
             Primero se resuelve el Envido, luego respondés el Truco.
+          </li>
+          <li>
+            Cuando te cantan Truco, podés cantar Envido antes de responder. Pero si ya respondiste{' '}
+            <strong>Quiero</strong> al Truco, el Envido queda cerrado y ya no puede cantarse (ni vos ni el rival).
           </li>
         </ul>
         <p className="rules-tip">El desempate de envido lo gana el jugador <strong>mano</strong>.</p>
@@ -220,6 +237,27 @@ const SECTIONS = [
             </tr>
           </tbody>
         </table>
+        <p>
+          Cuando te cantan Truco, podés responder Retruco directamente. Eso implica aceptar el Truco y subir la
+          apuesta. Cuando te cantan Retruco, podés responder Vale 4 directamente. Eso implica aceptar el Retruco y
+          subir a la apuesta máxima. Al Vale 4 solo se responde Quiero o No quiero; no se puede subir más.
+        </p>
+        <p>
+          Para subir la apuesta hay que tener el <strong>Quiero</strong> de la apuesta anterior. Quien quiso el
+          Truco puede cantar Retruco; quien quiso el Retruco puede cantar Vale 4. Quien quiso la última apuesta
+          conserva el derecho de subir, pero solo puede hacerlo cuando le toca actuar y antes de jugar su carta en
+          esa vuelta.
+        </p>
+        <p>
+          También podés subir como <strong>respuesta directa</strong>: si te cantan Truco, podés responder
+          Retruco; si te cantan Retruco, podés responder Vale 4. Eso implica que aceptás la apuesta anterior y subís
+          al siguiente nivel.
+        </p>
+        <p>
+          El derecho de subir <strong>no se pierde</strong> porque el rival haya jugado una carta en la misma vuelta.
+          Se pierde si quien tiene ese derecho ya jugó su carta en la vuelta actual, o si aplica una regla especial
+          como el 4 en mano decisiva.
+        </p>
         <div className="rules-truco-four-rule fx-card">
           <span className="fx-badge rules-inline-badge">Truco</span>
           <h4>Regla del 4 en mano decisiva</h4>
@@ -256,6 +294,10 @@ const SECTIONS = [
     content: (
       <>
         <p>La <strong>Flor</strong> solo está disponible si la partida fue configurada con ella.</p>
+        <p>
+          Con Flor no hay Envido. Si en una ronda algún jugador tiene Flor, no se juega Envido en esa ronda. El tanto
+          de Flor reemplaza al Envido.
+        </p>
         <p>
           Tenés Flor si tus <strong>3 cartas son del mismo palo</strong>. Si tenés Flor, deberías cantarla.
         </p>

@@ -700,6 +700,12 @@ async function runAdditiveMigrations(conn) {
     await addColumnIfMissing(conn, 'tournaments', 'prize_config', 'prize_config JSON DEFAULT NULL');
     await addColumnIfMissing(conn, 'tournaments', 'placement_config', 'placement_config JSON DEFAULT NULL');
     await addColumnIfMissing(conn, 'tournaments', 'finished_at', 'finished_at DATETIME DEFAULT NULL');
+    await addColumnIfMissing(
+      conn,
+      'tournaments',
+      'registration_opens_at',
+      'registration_opens_at DATETIME DEFAULT NULL'
+    );
   }
 
   if (await tableExists(conn, 'tournament_registrations')) {
@@ -749,6 +755,33 @@ CREATE TABLE IF NOT EXISTS tournament_messages (
   `);
 
   // Optional: tournament_standings (for future use / reporting)
+  if (await tableExists(conn, 'partidas')) {
+    await addIndexIfMissing(
+      conn,
+      'partidas',
+      'idx_partidas_p1_status_state',
+      'ALTER TABLE `partidas` ADD INDEX idx_partidas_p1_status_state (player1_id, status, state)'
+    );
+    await addIndexIfMissing(
+      conn,
+      'partidas',
+      'idx_partidas_p2_status_state',
+      'ALTER TABLE `partidas` ADD INDEX idx_partidas_p2_status_state (player2_id, status, state)'
+    );
+    await addIndexIfMissing(
+      conn,
+      'partidas',
+      'idx_partidas_status_state',
+      'ALTER TABLE `partidas` ADD INDEX idx_partidas_status_state (status, state)'
+    );
+    await addIndexIfMissing(
+      conn,
+      'partidas',
+      'idx_partidas_created',
+      'ALTER TABLE `partidas` ADD INDEX idx_partidas_created (created_at)'
+    );
+  }
+
   await runStatements(conn, `
 CREATE TABLE IF NOT EXISTS tournament_standings (
   id             INT AUTO_INCREMENT PRIMARY KEY,

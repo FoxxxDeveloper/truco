@@ -20,6 +20,10 @@ class Deck {
         this.cards.push(new Card(value, suit));
       }
     }
+    const ids = this.cards.map(c => c.id);
+    if (this.cards.length !== 40 || new Set(ids).size !== 40) {
+      throw new Error('Deck: expected 40 unique Spanish deck cards (no 8/9)');
+    }
   }
 
   shuffle() {

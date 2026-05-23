@@ -293,6 +293,8 @@ router.post('/link-telegram', authMiddleware, async (req, res) => {
 });
 
 // ── Active games (reconnectable) ──────────────────────────────────────────────
+const { ACTIVE_PARTIDA_SQL, ACTIVE_PARTIDA_PARAMS } = require('../utils/activeGame');
+
 router.get('/me/active-games', authMiddleware, async (req, res) => {
   try {
     const rows = await query(
@@ -306,17 +308,8 @@ router.get('/me/active-games', authMiddleware, async (req, res) => {
        JOIN usuarios u2 ON u2.id = p.player2_id
        LEFT JOIN challenges c ON c.id = p.challenge_id
        WHERE (p.player1_id = ? OR p.player2_id = ?)
-         AND p.state = 'playing'
-         AND p.status IN ('active','paused')
-         AND IFNULL(p.requires_admin_resolution, 0) = 0
-         AND NOT (
-           p.status = 'paused'
-           AND p.p1_reconnect_deadline_at IS NOT NULL
-           AND p.p2_reconnect_deadline_at IS NOT NULL
-           AND p.p1_reconnect_deadline_at < NOW()
-           AND p.p2_reconnect_deadline_at < NOW()
-         )`,
-      [req.user.id, req.user.id]
+         ${ACTIVE_PARTIDA_SQL}`,
+      [req.user.id, req.user.id, ...ACTIVE_PARTIDA_PARAMS]
     );
     return res.json({ games: rows });
   } catch (err) {

@@ -120,7 +120,13 @@ function registerSocialHandlers(io, socket, user) {
 
       const payload = {
         id:        msg.id,
-        from:      { id: user.id, username: user.username, avatar: user.avatar || null },
+        from:      {
+          id: user.id,
+          username: user.username,
+          avatar: user.avatar || null,
+          role: user.role || 'user',
+          isAdmin: user.role === 'admin' || user.role === 'administrador',
+        },
         text:      trimmed,
         createdAt: msg.createdAt,
       };

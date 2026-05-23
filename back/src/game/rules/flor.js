@@ -31,21 +31,32 @@ function calculateFlor(cards) {
 const FLOR_LADDER = ['flor', 'contraflor', 'contraflor_al_resto'];
 
 /**
- * Points the winner earns when flor is accepted or compared.
- * @param {string[]} betStack   Current bet history
- * @param {number}   scoreP1
- * @param {number}   scoreP2
- * @param {number}   pointsToWin
+ * Points the winner earns when flor / contraflor is accepted (no contraflor_al_resto).
+ * @param {string[]} betStack
  */
-function getFlorStake(betStack, scoreP1, scoreP2, pointsToWin = 30) {
+function getFlorStake(betStack) {
   const last = betStack[betStack.length - 1];
   if (!last) return 0;
-  if (last === 'contraflor_al_resto') {
-    return Math.max(pointsToWin - Math.max(scoreP1, scoreP2), 1);
-  }
   if (last === 'contraflor') return 6;
-  if (last === 'flor')       return 3;
+  if (last === 'flor') return 3;
   return 0;
+}
+
+/**
+ * Contraflor al resto aceptada: puntos que le faltan al oponente del ganador.
+ * Misma lógica que Falta Envido (no usar max(scoreP1, scoreP2)).
+ */
+function getContraFlorAlRestoPointsForWinner({
+  winnerId,
+  player1Id,
+  player2Id,
+  scoreP1,
+  scoreP2,
+  pointsToWin = 30,
+}) {
+  const opponentScore =
+    String(winnerId) === String(player1Id) ? Number(scoreP2) : Number(scoreP1);
+  return Math.max(Number(pointsToWin) - opponentScore, 1);
 }
 
 /**
@@ -56,9 +67,16 @@ function getFlorRejectionStake(betStack) {
   const last = betStack[betStack.length - 1];
   if (!last) return 0;
   if (last === 'contraflor_al_resto') return 6;
-  if (last === 'contraflor')          return 3;
-  if (last === 'flor')                return 2;
+  if (last === 'contraflor') return 4;
+  if (last === 'flor') return 2;
   return 0;
 }
 
-module.exports = { hasFlor, calculateFlor, getFlorStake, getFlorRejectionStake, FLOR_LADDER };
+module.exports = {
+  hasFlor,
+  calculateFlor,
+  getFlorStake,
+  getContraFlorAlRestoPointsForWinner,
+  getFlorRejectionStake,
+  FLOR_LADDER,
+};

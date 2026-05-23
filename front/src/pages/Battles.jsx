@@ -383,10 +383,10 @@ export default function Battles() {
   }, [attachListeners]);
 
   useEffect(() => {
-    if ((gameState || roomId) && !gameOver) {
+    if (gameState && !gameOver) {
       navigate('/game');
     }
-  }, [gameState, roomId, gameOver, navigate]);
+  }, [gameState, gameOver, navigate]);
 
   const loadBalance = useCallback(async () => {
     try {

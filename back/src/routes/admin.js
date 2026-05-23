@@ -12,6 +12,7 @@ const VerificationService = require('../services/verificationService');
 const { resolvePausedGameAsAbandon } = require('../services/gameAdminResolve');
 const staleGameCleanup = require('../services/staleGameCleanup');
 const { enrichPartidaAdminRow } = require('../utils/partidaAdminStatus');
+const { explainActiveGameForUser } = require('../utils/activeGame');
 
 const router = express.Router();
 router.use(authMiddleware, adminAuth);
@@ -550,6 +551,21 @@ router.post('/games/:roomId/resolve-abandon', async (req, res) => {
   }
 });
 
+// ── GET /api/admin/games/active-debug/:userId ───────────────────
+router.get('/games/active-debug/:userId', async (req, res) => {
+  try {
+    const userId = parseInt(req.params.userId, 10);
+    if (!Number.isFinite(userId) || userId <= 0) {
+      return res.status(400).json({ error: 'Invalid user id' });
+    }
+    const debug = await explainActiveGameForUser(userId);
+    return res.json(debug);
+  } catch (err) {
+    logger.error('admin active-debug: ' + err.message);
+    return res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // ── POST /api/admin/games/cleanup-stale ─────────────────────────
 router.post('/games/cleanup-stale', async (req, res) => {
   try {
@@ -779,6 +795,18 @@ router.post('/tournaments/:id/generate-bracket', async (req, res) => {
     return res.json(result);
   } catch (err) {
     return handleTournamentAdminError(res, err, 'generate-bracket');
+  }
+});
+
+// ── POST /api/admin/tournaments/:id/close-checkin ────────────────
+router.post('/tournaments/:id/close-checkin', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const result = await TournamentService.closeCheckinAndPromoteSubstitutes(id, req.user.id);
+    await auditAdmin(req.user.id, 'tournament_close_checkin', 'tournament', id, null, null, null, req.ip);
+    return res.json(result);
+  } catch (err) {
+    return handleTournamentAdminError(res, err, 'close-checkin');
   }
 });
 

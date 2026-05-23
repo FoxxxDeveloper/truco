@@ -2,7 +2,9 @@ const matchmaking = require('../../services/matchmaking');
 const gameSession = require('../../services/gameSession');
 const Game        = require('../../models/Game');
 const { trackUserRoom, startTurnTimerPublic } = require('./gameHandler');
+const { getActiveGameForUser, logActiveGameBlock } = require('../../utils/activeGame');
 const logger      = require('../../config/logger');
+const { assertPlayerParticipationAllowed } = require('../../utils/adminGuard');
 
 /**
  * Handles all matchmaking events for a connected socket.
@@ -10,7 +12,23 @@ const logger      = require('../../config/logger');
 function registerMatchmakingHandlers(io, socket, user) {
   // ── JOIN QUEUE ──────────────────────────────────────────────────
   socket.on('queue:join', async (options = {}) => {
+    try {
+      assertPlayerParticipationAllowed(user);
+    } catch (err) {
+      socket.emit('queue:error', { error: err.message });
+      return;
+    }
+
     const gameOptions = normalizeGameOptions(options);
+
+    const activeRow = await getActiveGameForUser(user.id);
+    if (activeRow) {
+      logActiveGameBlock(user.id, activeRow);
+      socket.emit('queue:error', {
+        error: 'No podés buscar partida mientras tenés una partida activa',
+      });
+      return;
+    }
 
     logger.info(
       `Queue join: user=${user.username} id=${user.id} mode=${gameOptions.modo} points=${gameOptions.puntosMaximos} flor=${gameOptions.florHabilitada}`

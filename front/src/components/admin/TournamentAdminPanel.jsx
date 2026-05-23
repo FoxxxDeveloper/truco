@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Trophy,
@@ -19,89 +19,23 @@ import {
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { tournamentApi, adminTournamentApi } from '../../services/api';
-import { formatDate } from '../../utils/tournaments';
+import {
+  formatDate,
+  tournamentStatusLabel,
+  registrationStatusLabel,
+  matchStatusLabel,
+  tournamentFormatLabel,
+  tournamentPhaseLabel,
+  tournamentLifecycleLabel,
+} from '../../utils/tournaments';
 import TrucoAvatar from '../avatar/TrucoAvatar';
 
-const PRESETS = {
-  opening128: {
-    label: 'Torneo Apertura TrucoFX 128 (recomendado)',
-    name: 'Torneo Apertura TrucoFX',
-    description:
-      'Torneo gratuito de lanzamiento de TrucoFX. Cupo principal de 128 jugadores. Los inscriptos que superen el cupo quedan como suplentes y podrán ingresar si un titular no realiza el check-in.',
-    prize_text: '$100.000 ARS al campeón',
-    paid_positions: 1,
-    prize_currency: 'ARS',
-    prize_1: '$100.000',
-    prize_2: '',
-    prize_3: '',
-    prize_4: '',
-    third_place_match: false,
-    max_players: 128,
-    entry_fee: 0,
-    is_paid: false,
-    prize_amount: '',
-    format: 'single_elimination',
-    phase: 'general',
-    puntos_maximos: 15,
-    flor_habilitada: false,
-    turn_seconds: 30,
-    reconnect_seconds: 60,
-    ready_timeout_minutes: 5,
-    auto_checkin_enabled: true,
-    auto_start_enabled: true,
-    starts_at: '',
-    checkin_starts_at: '',
-    registration_closes_at: '',
-  },
-  qualifierA: {
-    label: 'Clasificatorio A',
-    name: 'Torneo Apertura TrucoFX - Clasificatorio A',
-    description: 'Clasificatorio A — 64 titulares, 4 clasifican.',
-    prize_text: '$100.000 ARS al campeón final',
-    max_players: 64,
-    format: 'qualifier',
-    phase: 'qualifier_a',
-    puntos_maximos: 15,
-    flor_habilitada: false,
-    turn_seconds: 30,
-    reconnect_seconds: 60,
-    starts_at: '',
-    checkin_starts_at: '',
-    registration_closes_at: '',
-  },
-  qualifierB: {
-    label: 'Clasificatorio B',
-    name: 'Torneo Apertura TrucoFX - Clasificatorio B',
-    description: 'Clasificatorio B — 64 titulares, 4 clasifican.',
-    prize_text: '$100.000 ARS al campeón final',
-    max_players: 64,
-    format: 'qualifier',
-    phase: 'qualifier_b',
-    puntos_maximos: 15,
-    flor_habilitada: false,
-    turn_seconds: 30,
-    reconnect_seconds: 60,
-    starts_at: '',
-    checkin_starts_at: '',
-    registration_closes_at: '',
-  },
-  finals: {
-    label: 'Finales',
-    name: 'Torneo Apertura TrucoFX - Finales',
-    description: 'Finales con 8 jugadores.',
-    prize_text: '$100.000 ARS al campeón',
-    max_players: 8,
-    format: 'finals',
-    phase: 'finals',
-    puntos_maximos: 30,
-    flor_habilitada: false,
-    turn_seconds: 30,
-    reconnect_seconds: 60,
-    starts_at: '',
-    checkin_starts_at: '',
-    registration_closes_at: '',
-  },
-};
+const FORCE_REASONS = [
+  { value: 'admin_decision', label: 'Resolución administrativa' },
+  { value: 'no_show', label: 'Abandono / no presente' },
+  { value: 'disconnect', label: 'Desconexión' },
+  { value: 'bug', label: 'Bug / fallo técnico' },
+];
 
 function flattenBracket(bracket) {
   if (!bracket || typeof bracket !== 'object') return [];
@@ -120,16 +54,61 @@ function hasBracket(t) {
   return Object.keys(b).length > 0;
 }
 
-function TournamentStatusBadge({ status }) {
-  return <span className={`admin-t-badge admin-t-badge--${status || 'unknown'}`}>{status || '—'}</span>;
+function TournamentStatusBadge({ status, tournament }) {
+  const label = tournament ? tournamentLifecycleLabel(tournament) : tournamentStatusLabel(status);
+  return <span className={`admin-t-badge admin-t-badge--${status || 'unknown'}`}>{label}</span>;
 }
 
 function RegStatusBadge({ status }) {
-  return <span className={`admin-t-reg-badge admin-t-reg-badge--${status || 'unknown'}`}>{status || '—'}</span>;
+  return (
+    <span className={`admin-t-reg-badge admin-t-reg-badge--${status || 'unknown'}`}>
+      {registrationStatusLabel(status)}
+    </span>
+  );
 }
 
 function MatchStatusBadge({ status }) {
-  return <span className={`admin-t-match-badge admin-t-match-badge--${status || 'unknown'}`}>{status || '—'}</span>;
+  return (
+    <span className={`admin-t-match-badge admin-t-match-badge--${status || 'unknown'}`}>
+      {matchStatusLabel(status)}
+    </span>
+  );
+}
+
+function datetimeLocalPlusMinutes(isoLocal, minutes) {
+  if (!isoLocal) return '';
+  const d = new Date(isoLocal);
+  if (Number.isNaN(d.getTime())) return '';
+  d.setMinutes(d.getMinutes() + minutes);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function validateTournamentForm(f) {
+  if (!f.name?.trim()) return 'El nombre del torneo es obligatorio.';
+  if (!f.starts_at) return 'La fecha de inicio del torneo es obligatoria.';
+  const maxP = Number(f.max_players);
+  if (!Number.isFinite(maxP) || maxP < 2) return 'El cupo mínimo es 2 jugadores.';
+  if (f.registration_opens_at && f.registration_closes_at) {
+    if (new Date(f.registration_opens_at) >= new Date(f.registration_closes_at)) {
+      return 'La apertura de inscripciones debe ser anterior al cierre.';
+    }
+  }
+  if (f.registration_closes_at && f.checkin_starts_at) {
+    if (new Date(f.registration_closes_at) > new Date(f.checkin_starts_at)) {
+      return 'El cierre de inscripciones debe ser antes o igual al inicio de check-in.';
+    }
+  }
+  if (f.checkin_starts_at && f.starts_at) {
+    if (new Date(f.checkin_starts_at) >= new Date(f.starts_at)) {
+      return 'El check-in debe comenzar antes del inicio del torneo.';
+    }
+  }
+  const paid = Number(f.paid_positions) || 1;
+  if (paid >= 3 && !f.third_place_match) {
+    return 'Si premiás 3° o 4° puesto, activá el partido por 3° puesto.';
+  }
+  return null;
 }
 
 const emptyForm = {
@@ -143,7 +122,7 @@ const emptyForm = {
   prize_3: '',
   prize_4: '',
   third_place_match: false,
-  max_players: 128,
+  max_players: 64,
   format: 'single_elimination',
   phase: 'general',
   puntos_maximos: 15,
@@ -156,10 +135,213 @@ const emptyForm = {
   auto_checkin_enabled: true,
   auto_start_enabled: true,
   ready_timeout_minutes: 5,
+  registration_opens_at: '',
   starts_at: '',
   checkin_starts_at: '',
   registration_closes_at: '',
 };
+
+/**
+ * Overlay que solo cierra si pointerdown y pointerup ocurren en el backdrop.
+ * Evita cerrar al seleccionar texto (mousedown en input, mouseup en overlay).
+ */
+function AdminModalBackdrop({ onClose, disabled, dialogClassName = '', children }) {
+  const pointerDownOnBackdropRef = useRef(false);
+
+  const handleBackdropPointerDown = (e) => {
+    pointerDownOnBackdropRef.current = e.target === e.currentTarget;
+  };
+
+  const handleBackdropPointerUp = (e) => {
+    const upOnBackdrop = e.target === e.currentTarget;
+    if (!disabled && pointerDownOnBackdropRef.current && upOnBackdrop) {
+      onClose();
+    }
+    pointerDownOnBackdropRef.current = false;
+  };
+
+  const handleDialogPointerDown = () => {
+    pointerDownOnBackdropRef.current = false;
+  };
+
+  return (
+    <div
+      className="admin-t-modal-overlay"
+      role="presentation"
+      onPointerDown={handleBackdropPointerDown}
+      onPointerUp={handleBackdropPointerUp}
+    >
+      <div
+        className={`admin-t-modal ${dialogClassName}`.trim()}
+        role="dialog"
+        onPointerDown={handleDialogPointerDown}
+        onPointerDownCapture={handleDialogPointerDown}
+      >
+        {children}
+      </div>
+    </div>
+  );
+}
+
+/** Definido fuera del panel para no remontar inputs en cada tecla. */
+function TournamentFormFields({ form, setForm, onStartsAtChange }) {
+  return (
+    <div className="admin-t-form-sections">
+      <h4 className="admin-t-form-section-title">Información básica</h4>
+      <div className="admin-t-form-grid">
+      <label>
+        Nombre *
+        <input className="form-input" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} />
+      </label>
+      <label className="span-2">
+        Descripción
+        <textarea className="form-input" rows={2} value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} />
+      </label>
+      <label>
+        Premio (texto general)
+        <input className="form-input" value={form.prize_text} onChange={(e) => setForm((f) => ({ ...f, prize_text: e.target.value }))} />
+      </label>
+      </div>
+
+      <h4 className="admin-t-form-section-title">Fechas y horarios</h4>
+      <p className="admin-t-form-hint">
+        Si dejás vacío el cierre de inscripción, se usará el inicio de check-in. El check-in por defecto es 30 min antes del torneo.
+      </p>
+      <div className="admin-t-form-grid">
+      <label>
+        Apertura inscripciones (opcional)
+        <input type="datetime-local" className="form-input" value={form.registration_opens_at} onChange={(e) => setForm((f) => ({ ...f, registration_opens_at: e.target.value }))} />
+        <span className="admin-t-field-hint">Vacío = abrir al crear el torneo</span>
+      </label>
+      <label>
+        Cierre inscripciones
+        <input type="datetime-local" className="form-input" value={form.registration_closes_at} onChange={(e) => setForm((f) => ({ ...f, registration_closes_at: e.target.value }))} />
+      </label>
+      <label>
+        Inicio check-in *
+        <input type="datetime-local" className="form-input" value={form.checkin_starts_at} onChange={(e) => setForm((f) => ({ ...f, checkin_starts_at: e.target.value }))} />
+      </label>
+      <label>
+        Inicio del torneo *
+        <input type="datetime-local" className="form-input" value={form.starts_at} onChange={(e) => onStartsAtChange(e.target.value)} />
+      </label>
+      </div>
+
+      <h4 className="admin-t-form-section-title">Premios</h4>
+      <div className="admin-t-form-grid">
+      <label>
+        Puestos premiados
+        <select
+          className="form-input"
+          value={form.paid_positions}
+          onChange={(e) => setForm((f) => ({ ...f, paid_positions: Number(e.target.value) }))}
+        >
+          <option value={1}>1</option>
+          <option value={2}>2</option>
+          <option value={3}>3</option>
+          <option value={4}>4</option>
+        </select>
+      </label>
+      <label>
+        Moneda (opcional, ej. ARS)
+        <input className="form-input" value={form.prize_currency} onChange={(e) => setForm((f) => ({ ...f, prize_currency: e.target.value }))} />
+      </label>
+      {Array.from({ length: form.paid_positions }, (_, i) => i + 1).map((n) => (
+        <label key={`prize-${n}`}>
+          {`Premio ${n}° puesto`}
+          <input
+            className="form-input"
+            value={form[`prize_${n}`]}
+            onChange={(e) => setForm((f) => ({ ...f, [`prize_${n}`]: e.target.value }))}
+            placeholder="Ej: $50.000 o 10.000 créditos"
+          />
+        </label>
+      ))}
+      <label className="checkbox-row span-2">
+        <input
+          type="checkbox"
+          checked={form.third_place_match}
+          onChange={(e) => setForm((f) => ({ ...f, third_place_match: e.target.checked }))}
+        />
+        Disputar partido por 3° puesto (define 3° y 4° con un cruce extra entre perdedores de semifinal)
+      </label>
+      {Number(form.paid_positions) >= 3 && !form.third_place_match && (
+        <p className="admin-t-warn span-2">
+          Si premiás 3° o 4° puesto, activá el partido por 3° puesto.
+        </p>
+      )}
+      <label>
+        Costo inscripción (créditos)
+        <input type="number" className="form-input" min={0} step="0.01" value={form.entry_fee} onChange={(e) => setForm((f) => ({ ...f, entry_fee: e.target.value }))} />
+      </label>
+      <label className="checkbox-row">
+        <input type="checkbox" checked={form.is_paid} onChange={(e) => setForm((f) => ({ ...f, is_paid: e.target.checked }))} />
+        Torneo pago (requiere costo &gt; 0)
+      </label>
+      </div>
+
+      <h4 className="admin-t-form-section-title">Formato</h4>
+      <div className="admin-t-form-grid">
+      <label>
+        Máximo de jugadores
+        <input type="number" className="form-input" min={2} max={128} value={form.max_players} onChange={(e) => setForm((f) => ({ ...f, max_players: e.target.value }))} />
+      </label>
+      <label>
+        Formato
+        <select className="form-input" value={form.format} onChange={(e) => setForm((f) => ({ ...f, format: e.target.value }))}>
+          <option value="single_elimination">{tournamentFormatLabel('single_elimination')}</option>
+          <option value="qualifier">{tournamentFormatLabel('qualifier')}</option>
+          <option value="finals">{tournamentFormatLabel('finals')}</option>
+        </select>
+      </label>
+      <label>
+        Fase
+        <select className="form-input" value={form.phase} onChange={(e) => setForm((f) => ({ ...f, phase: e.target.value }))}>
+          <option value="general">{tournamentPhaseLabel('general')}</option>
+          <option value="qualifier_a">{tournamentPhaseLabel('qualifier_a')}</option>
+          <option value="qualifier_b">{tournamentPhaseLabel('qualifier_b')}</option>
+          <option value="finals">{tournamentPhaseLabel('finals')}</option>
+        </select>
+      </label>
+      <label>
+        Puntos por partida
+        <select className="form-input" value={form.puntos_maximos} onChange={(e) => setForm((f) => ({ ...f, puntos_maximos: Number(e.target.value) }))}>
+          <option value={15}>15</option>
+          <option value={30}>30</option>
+        </select>
+      </label>
+      <label className="checkbox-row">
+        <input type="checkbox" checked={form.flor_habilitada} onChange={(e) => setForm((f) => ({ ...f, flor_habilitada: e.target.checked }))} />
+        Con flor
+      </label>
+      <label>
+        Turno (seg)
+        <input type="number" className="form-input" min={10} max={120} value={form.turn_seconds} onChange={(e) => setForm((f) => ({ ...f, turn_seconds: e.target.value }))} />
+      </label>
+      <label>
+        Reconexión (seg)
+        <input type="number" className="form-input" min={30} max={300} value={form.reconnect_seconds} onChange={(e) => setForm((f) => ({ ...f, reconnect_seconds: e.target.value }))} />
+      </label>
+      </div>
+
+      <h4 className="admin-t-form-section-title">Administración</h4>
+      <div className="admin-t-form-grid">
+      <label className="checkbox-row">
+        <input type="checkbox" checked={form.auto_checkin_enabled} onChange={(e) => setForm((f) => ({ ...f, auto_checkin_enabled: e.target.checked }))} />
+        Abrir check-in automáticamente
+      </label>
+      <label className="checkbox-row">
+        <input type="checkbox" checked={form.auto_start_enabled} onChange={(e) => setForm((f) => ({ ...f, auto_start_enabled: e.target.checked }))} />
+        Iniciar torneo automáticamente a la hora de inicio
+      </label>
+      <label>
+        Minutos para confirmar listo (walkover)
+        <input type="number" className="form-input" min={1} max={60} value={form.ready_timeout_minutes} onChange={(e) => setForm((f) => ({ ...f, ready_timeout_minutes: e.target.value }))} />
+      </label>
+      </div>
+    </div>
+  );
+}
 
 export default function TournamentAdminPanel() {
   const [list, setList] = useState([]);
@@ -172,6 +354,9 @@ export default function TournamentAdminPanel() {
   const [createOpen, setCreateOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [form, setForm] = useState(emptyForm);
+  const [resolveMatch, setResolveMatch] = useState(null);
+  const [resolveWinnerId, setResolveWinnerId] = useState(null);
+  const [resolveReason, setResolveReason] = useState('admin_decision');
 
   const loadList = useCallback(async () => {
     setLoading(true);
@@ -212,8 +397,21 @@ export default function TournamentAdminPanel() {
   const flatMatches = useMemo(() => flattenBracket(detail?.bracket), [detail?.bracket]);
 
   const openCreate = () => {
-    setForm({ ...emptyForm, ...PRESETS.opening128 });
+    setForm({ ...emptyForm });
     setCreateOpen(true);
+  };
+
+  const onStartsAtChange = (value) => {
+    setForm((f) => {
+      const next = { ...f, starts_at: value };
+      if (value) {
+        if (!f.checkin_starts_at) next.checkin_starts_at = datetimeLocalPlusMinutes(value, -30);
+        if (!f.registration_closes_at) {
+          next.registration_closes_at = next.checkin_starts_at || datetimeLocalPlusMinutes(value, -30);
+        }
+      }
+      return next;
+    });
   };
 
   const openEdit = () => {
@@ -250,6 +448,7 @@ export default function TournamentAdminPanel() {
       flor_habilitada: !!detail.flor_habilitada,
       turn_seconds: detail.turn_seconds ?? 30,
       reconnect_seconds: detail.reconnect_seconds ?? 60,
+      registration_opens_at: detail.registration_opens_at ? detail.registration_opens_at.slice(0, 16) : '',
       starts_at: detail.starts_at ? detail.starts_at.slice(0, 16) : '',
       checkin_starts_at: detail.checkin_starts_at ? detail.checkin_starts_at.slice(0, 16) : '',
       registration_closes_at: detail.registration_closes_at ? detail.registration_closes_at.slice(0, 16) : '',
@@ -291,6 +490,7 @@ export default function TournamentAdminPanel() {
     flor_habilitada: !!f.flor_habilitada,
     turn_seconds: Number(f.turn_seconds),
     reconnect_seconds: Number(f.reconnect_seconds),
+    registration_opens_at: f.registration_opens_at || null,
     starts_at: f.starts_at || null,
     checkin_starts_at: f.checkin_starts_at || null,
     registration_closes_at: f.registration_closes_at || null,
@@ -303,14 +503,19 @@ export default function TournamentAdminPanel() {
   });
 
   const handleCreate = async () => {
-    if (!form.name.trim()) {
-      toast.error('El nombre es obligatorio');
+    const err = validateTournamentForm(form);
+    if (err) {
+      toast.error(err);
       return;
     }
     setBusy(true);
     try {
       const r = await adminTournamentApi.create(toBody(form));
-      toast.success('Torneo creado');
+      const msg =
+        r.data?.status === 'open'
+          ? 'Torneo creado — inscripciones abiertas'
+          : 'Torneo creado — inscripciones se abrirán en la fecha programada';
+      toast.success(msg);
       setCreateOpen(false);
       await loadList();
       if (r.data?.tournamentId) setSelected(r.data.tournamentId);
@@ -323,6 +528,11 @@ export default function TournamentAdminPanel() {
 
   const handleUpdate = async () => {
     if (!detail?.id) return;
+    const err = validateTournamentForm(form);
+    if (err) {
+      toast.error(err);
+      return;
+    }
     setBusy(true);
     try {
       await adminTournamentApi.update(detail.id, toBody(form));
@@ -358,14 +568,35 @@ export default function TournamentAdminPanel() {
     runAction('Torneo cancelado', () => adminTournamentApi.cancel(tid, {}));
   };
 
-  const forceWinner = (matchId, winnerId, playerLabel) => {
-    if (!window.confirm(`¿Forzar ganador: ${playerLabel}?`)) return;
-    runAction('Resultado aplicado', () =>
-      adminTournamentApi.forceResult(selected, matchId, {
-        winnerId,
-        reason: 'admin_decision',
-      })
-    );
+  const openResolveMatch = (m) => {
+    setResolveMatch(m);
+    setResolveWinnerId(m.player1_id || null);
+    setResolveReason('admin_decision');
+  };
+
+  const submitResolveMatch = () => {
+    if (!resolveMatch || !resolveWinnerId) {
+      toast.error('Elegí un ganador');
+      return;
+    }
+    const label =
+      Number(resolveWinnerId) === Number(resolveMatch.player1_id)
+        ? resolveMatch.player1?.username || 'P1'
+        : resolveMatch.player2?.username || 'P2';
+    if (
+      !window.confirm(
+        `¿Resolver partido a favor de ${label}? Esta acción avanzará al ganador en el bracket.`
+      )
+    ) {
+      return;
+    }
+    runAction('Partido resuelto', async () => {
+      await adminTournamentApi.forceResult(selected, resolveMatch.id, {
+        winnerId: resolveWinnerId,
+        reason: resolveReason,
+      });
+      setResolveMatch(null);
+    });
   };
 
   const resolveAbsence = (matchId) => {
@@ -385,7 +616,7 @@ export default function TournamentAdminPanel() {
       >
         <div className="admin-t-list-card-top">
           <Trophy size={18} className="admin-t-icon-gold" />
-          <TournamentStatusBadge status={t.status} />
+          <TournamentStatusBadge status={t.status} tournament={t} />
         </div>
         <h3 className="admin-t-list-title">{t.name}</h3>
         {t.prize_text && <p className="admin-t-list-prize">{t.prize_text}</p>}
@@ -439,6 +670,11 @@ export default function TournamentAdminPanel() {
         )}
         {st === 'checkin' && (
           <>
+            {!t.checkin_closed_at && (
+              <button type="button" className="btn btn-secondary btn-sm" disabled={busy} onClick={() => runAction('Check-in cerrado', () => adminTournamentApi.closeCheckin(t.id))}>
+                Cerrar check-in
+              </button>
+            )}
             <button type="button" className="btn btn-primary btn-sm" disabled={busy} onClick={() => runAction('Bracket generado', () => adminTournamentApi.generateBracket(t.id))}>
               <Swords size={14} /> Generar bracket
             </button>
@@ -463,141 +699,6 @@ export default function TournamentAdminPanel() {
       </div>
     );
   };
-
-  const FormFields = () => (
-    <div className="admin-t-form-grid">
-      <label>
-        Nombre *
-        <input className="form-input" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} />
-      </label>
-      <label className="span-2">
-        Descripción
-        <textarea className="form-input" rows={2} value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} />
-      </label>
-      <label>
-        Premio (texto general)
-        <input className="form-input" value={form.prize_text} onChange={(e) => setForm((f) => ({ ...f, prize_text: e.target.value }))} />
-      </label>
-      <label className="span-2 section-label-like">Premios por posición</label>
-      <label>
-        Puestos premiados
-        <select
-          className="form-input"
-          value={form.paid_positions}
-          onChange={(e) => setForm((f) => ({ ...f, paid_positions: Number(e.target.value) }))}
-        >
-          <option value={1}>1</option>
-          <option value={2}>2</option>
-          <option value={3}>3</option>
-          <option value={4}>4</option>
-        </select>
-      </label>
-      <label>
-        Moneda (opcional, ej. ARS)
-        <input className="form-input" value={form.prize_currency} onChange={(e) => setForm((f) => ({ ...f, prize_currency: e.target.value }))} />
-      </label>
-      {Array.from({ length: form.paid_positions }, (_, i) => i + 1).map((n) => (
-        <label key={n}>
-          {`Premio ${n}° puesto`}
-          <input
-            className="form-input"
-            value={form[`prize_${n}`]}
-            onChange={(e) => setForm((f) => ({ ...f, [`prize_${n}`]: e.target.value }))}
-            placeholder="Ej: $50.000 o 10.000 créditos"
-          />
-        </label>
-      ))}
-      <label className="checkbox-row span-2">
-        <input
-          type="checkbox"
-          checked={form.third_place_match}
-          onChange={(e) => setForm((f) => ({ ...f, third_place_match: e.target.checked }))}
-        />
-        Disputar partido por 3° puesto (define 3° y 4° con un cruce extra entre perdedores de semifinal)
-      </label>
-      {Number(form.paid_positions) >= 3 && !form.third_place_match && (
-        <p className="admin-t-warn span-2">
-          Si premiás 3° o 4° puesto, se recomienda activar el partido por 3° puesto para definir posiciones exactas.
-        </p>
-      )}
-      <label>
-        Max jugadores
-        <input type="number" className="form-input" min={2} max={128} value={form.max_players} onChange={(e) => setForm((f) => ({ ...f, max_players: e.target.value }))} />
-      </label>
-      <label>
-        Formato
-        <select className="form-input" value={form.format} onChange={(e) => setForm((f) => ({ ...f, format: e.target.value }))}>
-          <option value="single_elimination">single_elimination</option>
-          <option value="qualifier">qualifier</option>
-          <option value="finals">finals</option>
-        </select>
-      </label>
-      <label>
-        Fase
-        <select className="form-input" value={form.phase} onChange={(e) => setForm((f) => ({ ...f, phase: e.target.value }))}>
-          <option value="general">general</option>
-          <option value="qualifier_a">qualifier_a</option>
-          <option value="qualifier_b">qualifier_b</option>
-          <option value="finals">finals</option>
-        </select>
-      </label>
-      <label>
-        Puntos máximos
-        <select className="form-input" value={form.puntos_maximos} onChange={(e) => setForm((f) => ({ ...f, puntos_maximos: Number(e.target.value) }))}>
-          <option value={15}>15</option>
-          <option value={30}>30</option>
-        </select>
-      </label>
-      <label className="checkbox-row">
-        <input type="checkbox" checked={form.flor_habilitada} onChange={(e) => setForm((f) => ({ ...f, flor_habilitada: e.target.checked }))} />
-        Flor habilitada
-      </label>
-      <label>
-        Turno (seg)
-        <input type="number" className="form-input" min={10} max={120} value={form.turn_seconds} onChange={(e) => setForm((f) => ({ ...f, turn_seconds: e.target.value }))} />
-      </label>
-      <label>
-        Reconexión (seg)
-        <input type="number" className="form-input" min={30} max={300} value={form.reconnect_seconds} onChange={(e) => setForm((f) => ({ ...f, reconnect_seconds: e.target.value }))} />
-      </label>
-      <label>
-        Inicio (datetime-local)
-        <input type="datetime-local" className="form-input" value={form.starts_at} onChange={(e) => setForm((f) => ({ ...f, starts_at: e.target.value }))} />
-      </label>
-      <label>
-        Check-in desde
-        <input type="datetime-local" className="form-input" value={form.checkin_starts_at} onChange={(e) => setForm((f) => ({ ...f, checkin_starts_at: e.target.value }))} />
-      </label>
-      <label>
-        Cierre inscripción
-        <input type="datetime-local" className="form-input" value={form.registration_closes_at} onChange={(e) => setForm((f) => ({ ...f, registration_closes_at: e.target.value }))} />
-      </label>
-      <label>
-        Costo inscripción (créditos)
-        <input type="number" className="form-input" min={0} step="0.01" value={form.entry_fee} onChange={(e) => setForm((f) => ({ ...f, entry_fee: e.target.value }))} />
-      </label>
-      <label>
-        Premio en efectivo (opcional, referencia)
-        <input className="form-input" value={form.prize_amount} onChange={(e) => setForm((f) => ({ ...f, prize_amount: e.target.value }))} />
-      </label>
-      <label className="checkbox-row">
-        <input type="checkbox" checked={form.is_paid} onChange={(e) => setForm((f) => ({ ...f, is_paid: e.target.checked }))} />
-        Marcar como torneo pago (informativo si costo = 0)
-      </label>
-      <label className="checkbox-row">
-        <input type="checkbox" checked={form.auto_checkin_enabled} onChange={(e) => setForm((f) => ({ ...f, auto_checkin_enabled: e.target.checked }))} />
-        Check-in automático por horario
-      </label>
-      <label className="checkbox-row">
-        <input type="checkbox" checked={form.auto_start_enabled} onChange={(e) => setForm((f) => ({ ...f, auto_start_enabled: e.target.checked }))} />
-        Inicio automático por horario
-      </label>
-      <label>
-        Minutos para listo (walkover)
-        <input type="number" className="form-input" min={1} max={60} value={form.ready_timeout_minutes} onChange={(e) => setForm((f) => ({ ...f, ready_timeout_minutes: e.target.value }))} />
-      </label>
-    </div>
-  );
 
   return (
     <div className="admin-tournament-panel">
@@ -637,7 +738,7 @@ export default function TournamentAdminPanel() {
                 <header className="admin-t-detail-head">
                   <div>
                     <h3>{detail.name}</h3>
-                    <TournamentStatusBadge status={detail.status} />
+                    <TournamentStatusBadge status={detail.status} tournament={detail} />
                   </div>
                   {renderQuickActions(detail)}
                 </header>
@@ -658,7 +759,16 @@ export default function TournamentAdminPanel() {
                   <div className="admin-t-panel-card">
                     <dl className="admin-t-dl">
                       <dt>Premio</dt><dd>{detail.prize_text || '—'}</dd>
-                      <dt>Fase / formato</dt><dd>{detail.phase} · {detail.format}</dd>
+                      <dt>Fase / formato</dt><dd>{tournamentPhaseLabel(detail.phase)} · {tournamentFormatLabel(detail.format)}</dd>
+                      {detail.lifecycle?.nextMilestoneLabel && (
+                        <>
+                          <dt>Próximo hito</dt>
+                          <dd>{detail.lifecycle.nextMilestoneLabel} — {formatDate(detail.lifecycle.nextMilestoneAt)}</dd>
+                        </>
+                      )}
+                      <dt>Apertura inscripciones</dt><dd>{formatDate(detail.registration_opens_at)}</dd>
+                      <dt>Cierre inscripciones</dt><dd>{formatDate(detail.registration_closes_at)}</dd>
+                      <dt>Check-in desde</dt><dd>{formatDate(detail.checkin_starts_at)}</dd>
                       <dt>Puntos / flor</dt><dd>{detail.puntos_maximos} · {detail.flor_habilitada ? 'Sí' : 'No'}</dd>
                       <dt>Turno / reconexión</dt><dd>{detail.turn_seconds}s / {detail.reconnect_seconds}s</dd>
                       <dt>Inicio</dt><dd>{formatDate(detail.starts_at)}</dd>
@@ -774,20 +884,15 @@ export default function TournamentAdminPanel() {
                             {detail.status === 'started' && (
                               <td>
                                 <div className="admin-t-match-btns">
-                                  {!['finished', 'walkover', 'cancelled'].includes(m.status) && m.player1_id && m.player2_id && ['ready', 'waiting_ready', 'active'].includes(m.status) && (
-                                    <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => resolveAbsence(m.id)}>
-                                      Ausencia
-                                    </button>
-                                  )}
-                                  {!['finished', 'walkover', 'cancelled'].includes(m.status) && m.player1_id && ['ready', 'waiting_ready', 'active', 'pending'].includes(m.status) && (
-                                    <button type="button" className="btn btn-outline-gold btn-sm" disabled={busy} onClick={() => forceWinner(m.id, m.player1_id, m.player1?.username || 'P1')}>
-                                      P1
-                                    </button>
-                                  )}
-                                  {!['finished', 'walkover', 'cancelled'].includes(m.status) && m.player2_id && ['ready', 'waiting_ready', 'active', 'pending'].includes(m.status) && (
-                                    <button type="button" className="btn btn-outline-gold btn-sm" disabled={busy} onClick={() => forceWinner(m.id, m.player2_id, m.player2?.username || 'P2')}>
-                                      P2
-                                    </button>
+                                  {!['finished', 'walkover', 'cancelled'].includes(m.status) && m.player1_id && m.player2_id && (
+                                    <>
+                                      <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => resolveAbsence(m.id)}>
+                                        Ausencia
+                                      </button>
+                                      <button type="button" className="btn btn-primary btn-sm" disabled={busy} onClick={() => openResolveMatch(m)}>
+                                        Resolver partido
+                                      </button>
+                                    </>
                                   )}
                                 </div>
                               </td>
@@ -819,36 +924,77 @@ export default function TournamentAdminPanel() {
       )}
 
       {createOpen && (
-        <div className="admin-t-modal-overlay" role="presentation" onClick={() => !busy && setCreateOpen(false)}>
-          <div className="admin-t-modal" role="dialog" onClick={(e) => e.stopPropagation()}>
+        <AdminModalBackdrop onClose={() => setCreateOpen(false)} disabled={busy}>
             <h3>Crear torneo</h3>
-            <div className="admin-t-presets">
-              {Object.entries(PRESETS).map(([key, p]) => (
-                <button key={key} type="button" className="btn btn-ghost btn-sm" onClick={() => setForm({ ...emptyForm, ...p })}>
-                  {p.label}
-                </button>
-              ))}
-            </div>
-            <FormFields />
+            <p className="admin-t-form-hint">Al crear, las inscripciones quedan abiertas de inmediato (salvo que programes una apertura futura).</p>
+            <TournamentFormFields form={form} setForm={setForm} onStartsAtChange={onStartsAtChange} />
             <div className="admin-t-modal-actions">
               <button type="button" className="btn btn-primary" disabled={busy} onClick={handleCreate}>Crear</button>
               <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => setCreateOpen(false)}>Cerrar</button>
             </div>
-          </div>
-        </div>
+        </AdminModalBackdrop>
       )}
 
       {editOpen && detail && (
-        <div className="admin-t-modal-overlay" role="presentation" onClick={() => !busy && setEditOpen(false)}>
-          <div className="admin-t-modal" role="dialog" onClick={(e) => e.stopPropagation()}>
+        <AdminModalBackdrop onClose={() => setEditOpen(false)} disabled={busy}>
             <h3>Editar torneo</h3>
-            <FormFields />
+            <TournamentFormFields form={form} setForm={setForm} onStartsAtChange={onStartsAtChange} />
             <div className="admin-t-modal-actions">
               <button type="button" className="btn btn-primary" disabled={busy} onClick={handleUpdate}>Guardar</button>
               <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => setEditOpen(false)}>Cerrar</button>
             </div>
-          </div>
-        </div>
+        </AdminModalBackdrop>
+      )}
+
+      {resolveMatch && (
+        <AdminModalBackdrop
+          onClose={() => setResolveMatch(null)}
+          disabled={busy}
+          dialogClassName="admin-t-modal--resolve"
+        >
+            <h3>Resolver partido</h3>
+            <p className="admin-t-warn">
+              Esta acción avanzará al ganador en el bracket. No se puede cambiar el ganador sin intervención manual adicional.
+            </p>
+            <p>
+              {resolveMatch.player1?.username || 'P1'} vs {resolveMatch.player2?.username || 'P2'}
+            </p>
+            <label>
+              Ganador
+              <select
+                className="form-input"
+                value={resolveWinnerId || ''}
+                onChange={(e) => setResolveWinnerId(Number(e.target.value))}
+              >
+                {resolveMatch.player1_id && (
+                  <option value={resolveMatch.player1_id}>{resolveMatch.player1?.username || 'Jugador 1'}</option>
+                )}
+                {resolveMatch.player2_id && (
+                  <option value={resolveMatch.player2_id}>{resolveMatch.player2?.username || 'Jugador 2'}</option>
+                )}
+              </select>
+            </label>
+            <label>
+              Motivo
+              <select
+                className="form-input"
+                value={resolveReason}
+                onChange={(e) => setResolveReason(e.target.value)}
+              >
+                {FORCE_REASONS.map((r) => (
+                  <option key={r.value} value={r.value}>{r.label}</option>
+                ))}
+              </select>
+            </label>
+            <div className="admin-t-modal-actions">
+              <button type="button" className="btn btn-primary" disabled={busy} onClick={submitResolveMatch}>
+                Confirmar
+              </button>
+              <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => setResolveMatch(null)}>
+                Cancelar
+              </button>
+            </div>
+        </AdminModalBackdrop>
       )}
     </div>
   );

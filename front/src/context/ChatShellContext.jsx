@@ -117,10 +117,13 @@ export function ChatShellProvider({ children }) {
     openChallengeChat,
   ]);
 
+  const hideGlobalChat =
+    location.pathname === '/game' || location.pathname.startsWith('/game/');
+
   return (
     <ChatShellContext.Provider value={value}>
       {children}
-      {user?.id && !loading && (
+      {user?.id && !loading && !hideGlobalChat && (
         <ChatCenter
           unreadCounts={unreadCounts}
           onClearUnread={clearFriendUnread}

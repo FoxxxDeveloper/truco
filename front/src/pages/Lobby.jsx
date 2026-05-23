@@ -2,10 +2,14 @@
 import { Link, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { User, Swords, BookOpen, Trophy, BarChart2, History } from 'lucide-react';
+import { useAuth } from '../context/AuthContext';
 import { useGame } from '../context/GameContext';
+import toast from 'react-hot-toast';
+import { ADMIN_MSG, isAdminUser } from '../utils/adminPlayer';
 import { rankingApi, tournamentApi } from '../services/api';
 import AppHeader from '../components/layout/AppHeader';
 import wordmarkDarkUrl from '../assets/panoramicooscuro.png';
+import { getCardSvgUrl, getCardWebpUrl } from '../utils/cardAssets';
 
 const PREVIEW_CARDS = [
   { value: 1, file: 'swords', suit: 'espada' },
@@ -41,6 +45,8 @@ function tournamentAnnounceLabel(status) {
 }
 
 export default function Lobby() {
+  const { user } = useAuth();
+  const isAdmin = isAdminUser(user);
   const {
     inQueue,
     joinQueue,
@@ -80,11 +86,19 @@ export default function Lobby() {
       .catch(() => setTournaments([]));
   }, []);
 
+  // Solo mandar a /game cuando el tablero ya llegó por socket. Un roomId suelto
+  // (reconexión pendiente o sala que ya no existe) no debe forzar /game → “Game not found”.
   useEffect(() => {
-    if ((gameState || roomId) && !gameOver) navigate('/game');
-  }, [gameState, roomId, gameOver, navigate]);
+    if (gameState && !gameOver) navigate('/game');
+  }, [gameState, gameOver, navigate]);
 
-  const handleJoin = () => joinQueue(gameOptions);
+  const handleJoin = () => {
+    if (isAdmin) {
+      toast.error(ADMIN_MSG);
+      return;
+    }
+    joinQueue(gameOptions);
+  };
 
   const ft = featuredTournament;
   const entryFee = ft ? Number(ft.entry_fee ?? 0) : 0;
@@ -112,12 +126,18 @@ export default function Lobby() {
                   <div className="cards-preview">
                     {PREVIEW_CARDS.map((c) => (
                       <div key={c.value + c.suit} className="card-preview">
-                        <img
-                          src={`/cartas/card_${c.file}_${String(c.value).padStart(2, '0')}.svg`}
-                          alt={`${c.value} de ${c.suit}`}
-                          className="card-preview-img"
-                          draggable={false}
-                        />
+                        <picture>
+                          <source
+                            srcSet={getCardWebpUrl(c.suit, c.value)}
+                            type="image/webp"
+                          />
+                          <img
+                            src={getCardSvgUrl(c.suit, c.value)}
+                            alt={`${c.value} de ${c.suit}`}
+                            className="card-preview-img"
+                            draggable={false}
+                          />
+                        </picture>
                       </div>
                     ))}
                   </div>
@@ -169,9 +189,13 @@ export default function Lobby() {
                       Volver a partida en curso
                     </button>
                   )}
-                  <button type="button" className="btn btn-primary btn-lg btn-block" onClick={handleJoin}>
-                    Buscar partida
-                  </button>
+                  {isAdmin ? (
+                    <p className="lobby-admin-note" role="status">{ADMIN_MSG}</p>
+                  ) : (
+                    <button type="button" className="btn btn-primary btn-lg btn-block" onClick={handleJoin}>
+                      Buscar partida
+                    </button>
+                  )}
                 </motion.div>
               ) : (
                 <motion.div

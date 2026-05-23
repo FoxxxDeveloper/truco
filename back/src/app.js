@@ -1,8 +1,16 @@
-require('dotenv').config();
+const path = require('path');
+require('dotenv').config({ path: path.join(__dirname, '../.env') });
+
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
+const {
+  corsOptions,
+  getSocketCors,
+  refreshAllowedOrigins,
+  allowedOrigins,
+} = require('./config/cors');
 const helmet = require('helmet');
 const morgan = require('morgan');
 const rateLimit = require('express-rate-limit');
@@ -38,24 +46,8 @@ const server = http.createServer(app);
 app.use(helmet());
 app.set('trust proxy', 1);
 
-// ── CORS ──────────────────────────────────────────────────────────
-const allowedOrigins = (process.env.CLIENT_ORIGIN || 'http://localhost:5173')
-  .split(',').map(o => o.trim());
-
-const corsOptions = {
-  origin(origin, cb) {
-    // Allow requests with no origin (curl, mobile apps, same-origin)
-    if (!origin) return cb(null, true);
-    // In development, allow any localhost port
-    if (process.env.NODE_ENV !== 'production' && /^https?:\/\/localhost(:\d+)?$/.test(origin)) {
-      return cb(null, true);
-    }
-    if (allowedOrigins.includes(origin)) return cb(null, true);
-    cb(new Error(`CORS: origin ${origin} not allowed`));
-  },
-  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
-  credentials: true,
-};
+// ── CORS (CLIENT_ORIGIN / CORS_ORIGINS — ver src/config/cors.js) ───
+refreshAllowedOrigins();
 app.use(cors(corsOptions));
 
 // ── BODY PARSING ──────────────────────────────────────────────────
@@ -95,7 +87,14 @@ app.use('/api/verification', verificationRoutes);
 app.use('/api/users',        usersRoutes);
 app.use('/api/tournaments',  tournamentRoutes);
 
-app.get('/api/health', (_req, res) => res.json({ status: 'ok', ts: Date.now() }));
+app.get('/api/health', (_req, res) => res.json({
+  status: 'ok',
+  ts: Date.now(),
+  cors: {
+    allowedCount: allowedOrigins.length,
+    origins: allowedOrigins,
+  },
+}));
 
 // 404 handler
 app.use((_req, res) => res.status(404).json({ error: 'Not found', code: 'NOT_FOUND' }));
@@ -105,7 +104,7 @@ app.use(errorHandler);
 
 // ── SOCKET.IO ─────────────────────────────────────────────────────
 const io = new Server(server, {
-  cors: corsOptions,
+  cors: getSocketCors(),
   transports: ['websocket', 'polling'],
   pingTimeout: 20000,
   pingInterval: 25000,

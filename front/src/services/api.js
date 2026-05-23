@@ -20,7 +20,8 @@ api.interceptors.response.use(
   (err) => {
     if (err.response?.status === 401) {
       localStorage.removeItem('truco_token');
-      window.location.href = '/login';
+      const base = (import.meta.env.BASE_URL || '/').replace(/\/$/, '') || '';
+      window.location.href = `${base}/login`;
     }
     return Promise.reject(err);
   }
@@ -46,6 +47,8 @@ export const profileApi = {
   update:       (body)      => api.put('/profile', body),
   setAvatarChoice: (body)   => api.put('/profile/avatar-choice', body),
   getMatchHistory: (params) => api.get('/profile/me/game-history', { params }),
+  /** Partidas en curso según servidor (reconexión) */
+  getActiveGames: () => api.get('/profile/me/active-games'),
 };
 
 // ── Users (public profiles by ID) ────────────────────────────────
@@ -156,6 +159,7 @@ export const adminTournamentApi = {
   update:         (id, body)   => api.patch(`/admin/tournaments/${id}`, body),
   open:           (id)         => api.post(`/admin/tournaments/${id}/open`),
   startCheckin:   (id)         => api.post(`/admin/tournaments/${id}/start-checkin`),
+  closeCheckin:   (id)         => api.post(`/admin/tournaments/${id}/close-checkin`),
   generateBracket:(id)         => api.post(`/admin/tournaments/${id}/generate-bracket`),
   start:          (id)         => api.post(`/admin/tournaments/${id}/start`),
   cancel:         (id, body)   => api.post(`/admin/tournaments/${id}/cancel`, body || {}),

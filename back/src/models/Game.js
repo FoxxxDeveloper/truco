@@ -14,7 +14,7 @@ const Game = {
    * @param {{ roomId, winnerId, scoreP1, scoreP2, finishReason?: string|null }} p
    */
   async finish({ roomId, winnerId, scoreP1, scoreP2, finishReason = 'completed' }) {
-    await query(
+    const header = await query(
       `UPDATE partidas
        SET state = 'finished',
            status = 'finished',
@@ -30,9 +30,10 @@ const Game = {
            finish_reason = ?
        WHERE room_id = ?
          AND winner_id IS NULL
-         AND (finished_at IS NULL OR finished_at = '0000-00-00 00:00:00')`,
+         AND finished_at IS NULL`,
       [winnerId, scoreP1, scoreP2, finishReason || 'completed', roomId]
     );
+    return Number(header?.affectedRows ?? 0);
   },
 
   /**
@@ -58,7 +59,7 @@ const Game = {
            requires_admin_resolution = ?
        WHERE room_id = ?
          AND winner_id IS NULL
-         AND (finished_at IS NULL OR finished_at = '0000-00-00 00:00:00')`,
+         AND finished_at IS NULL`,
       [status, finishReason, requiresAdminResolution ? 1 : 0, roomId]
     );
   },

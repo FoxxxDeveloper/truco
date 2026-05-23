@@ -87,6 +87,10 @@ router.post('/friends/:userId/request', async (req, res) => {
 router.put('/friends/:userId/accept', async (req, res) => {
   try {
     const requesterId = parseInt(req.params.userId);
+    const existing = await Friend.getFriendshipStatus(req.user.id, requesterId);
+    if (existing === 'friends') {
+      return res.json({ ok: true, alreadyAccepted: true });
+    }
     await Friend.acceptRequest(req.user.id, requesterId);
 
     // Notify requester

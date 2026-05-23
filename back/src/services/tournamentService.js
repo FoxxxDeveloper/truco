@@ -20,6 +20,7 @@ const { query, withTransaction } = require('../config/database');
 const logger = require('../config/logger');
 const VerificationService = require('./verificationService');
 const WalletService = require('./walletService');
+const { assertPlayerParticipationAllowedById } = require('../utils/adminGuard');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CONSTANTS
@@ -27,6 +28,145 @@ const WalletService = require('./walletService');
 
 const ACTIVE_REG_STATUSES = ['registered', 'checked_in', 'substitute'];
 const QUALIFY_COUNT       = 4;   // cuántos avanzan por fase clasificatoria
+
+/** Convierte datetime-local / ISO a Date o null. */
+function parseScheduleDatetime(val) {
+  if (val == null || val === '') return null;
+  const d = new Date(val);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+/** Defaults de horarios cuando el admin define inicio del torneo. */
+function applyScheduleDefaults(fields) {
+  const out = { ...fields };
+  const start = parseScheduleDatetime(out.starts_at);
+  if (start) {
+    if (!out.checkin_starts_at) {
+      out.checkin_starts_at = new Date(start.getTime() - 30 * 60 * 1000);
+    }
+    if (!out.registration_closes_at) {
+      const ci = parseScheduleDatetime(out.checkin_starts_at);
+      out.registration_closes_at = ci || new Date(start.getTime() - 30 * 60 * 1000);
+    }
+  }
+  return out;
+}
+
+/** Valida orden cronológico de inscripción / check-in / inicio. */
+function validateTournamentSchedule({
+  registration_opens_at,
+  registration_closes_at,
+  checkin_starts_at,
+  starts_at,
+}) {
+  const opens = parseScheduleDatetime(registration_opens_at);
+  const closes = parseScheduleDatetime(registration_closes_at);
+  const checkin = parseScheduleDatetime(checkin_starts_at);
+  const start = parseScheduleDatetime(starts_at);
+
+  if (!start) throw new Error('La fecha de inicio del torneo es obligatoria');
+
+  if (opens && closes && opens >= closes) {
+    throw new Error('La apertura de inscripciones debe ser anterior al cierre');
+  }
+  if (closes && checkin && closes > checkin) {
+    throw new Error('El cierre de inscripciones debe ser antes o igual al inicio de check-in');
+  }
+  if (checkin && start && checkin >= start) {
+    throw new Error('El check-in debe comenzar antes del inicio del torneo');
+  }
+  if (opens && start && opens >= start) {
+    throw new Error('La apertura de inscripciones debe ser anterior al inicio del torneo');
+  }
+}
+
+/** Estado inicial: inscripciones abiertas salvo apertura programada en el futuro. */
+function initialStatusFromSchedule(registration_opens_at) {
+  const opens = parseScheduleDatetime(registration_opens_at);
+  if (opens && opens.getTime() > Date.now()) return 'draft';
+  return 'open';
+}
+
+/**
+ * Metadatos de fase para jugador/admin (no reemplaza status DB).
+ * registration_closes_at cierra inscripciones; starts_at cierra check-in.
+ */
+function attachTournamentLifecycle(t) {
+  const now = Date.now();
+  const opens = t.registration_opens_at ? Date.parse(t.registration_opens_at) : null;
+  const closes = t.registration_closes_at ? Date.parse(t.registration_closes_at) : null;
+  const checkinStart = t.checkin_starts_at ? Date.parse(t.checkin_starts_at) : null;
+  const startAt = t.starts_at ? Date.parse(t.starts_at) : null;
+  const st = t.status;
+
+  const regWindowOpen =
+    (opens == null || (!Number.isNaN(opens) && opens <= now)) &&
+    (closes == null || (!Number.isNaN(closes) && closes > now));
+
+  const canRegister = st === 'open' && regWindowOpen;
+  const checkinClosed = !!t.checkin_closed_at;
+  const canCheckin =
+    st === 'checkin' &&
+    !checkinClosed &&
+    (startAt == null || (!Number.isNaN(startAt) && startAt > now));
+
+  let phaseLabel = st;
+  let nextMilestoneAt = null;
+  let nextMilestoneLabel = null;
+
+  if (st === 'draft') {
+    phaseLabel = opens && opens > now ? 'Programado' : 'Borrador';
+    if (opens && opens > now) {
+      nextMilestoneAt = t.registration_opens_at;
+      nextMilestoneLabel = 'Apertura de inscripciones';
+    }
+  } else if (st === 'open') {
+    if (!regWindowOpen && closes && closes <= now) {
+      phaseLabel = 'Inscripciones cerradas';
+      if (checkinStart && checkinStart > now) {
+        nextMilestoneAt = t.checkin_starts_at;
+        nextMilestoneLabel = 'Apertura de check-in';
+      } else if (startAt && startAt > now) {
+        nextMilestoneAt = t.starts_at;
+        nextMilestoneLabel = 'Inicio del torneo';
+      }
+    } else {
+      phaseLabel = 'Inscripciones abiertas';
+      if (closes && closes > now) {
+        nextMilestoneAt = t.registration_closes_at;
+        nextMilestoneLabel = 'Cierre de inscripciones';
+      } else if (checkinStart && checkinStart > now) {
+        nextMilestoneAt = t.checkin_starts_at;
+        nextMilestoneLabel = 'Apertura de check-in';
+      }
+    }
+  } else if (st === 'checkin') {
+    phaseLabel = checkinClosed ? 'Check-in cerrado' : 'Check-in abierto';
+    if (!checkinClosed && startAt && startAt > now) {
+      nextMilestoneAt = t.starts_at;
+      nextMilestoneLabel = 'Inicio del torneo';
+    }
+  } else if (st === 'started') {
+    phaseLabel = 'Torneo en curso';
+  } else if (st === 'finished') {
+    phaseLabel = 'Finalizado';
+  } else if (st === 'cancelled') {
+    phaseLabel = 'Cancelado';
+  }
+
+  t.lifecycle = {
+    registrationOpen: st === 'open' && regWindowOpen,
+    registrationClosed: st === 'open' && closes != null && closes <= now,
+    checkinOpen: st === 'checkin' && !checkinClosed,
+    checkinClosed,
+    canRegister,
+    canCheckin,
+    phaseLabel,
+    nextMilestoneAt,
+    nextMilestoneLabel,
+  };
+  return t;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // HELPERS INTERNOS
@@ -283,7 +423,7 @@ async function getSubstituteCount(conn, tournamentId) {
 
 /**
  * Núcleo del avance de ganador — se ejecuta DENTRO de una transacción existente.
- * Llena el slot del siguiente cruce o marca el resultado final (qualified / champion).
+ * Idempotente: no pisa slot si ya hay otro jugador; no duplica eventos si ya avanzó el mismo ganador.
  */
 async function _advanceWinnerConn(conn, matchId, winnerId) {
   const [rows] = await conn.execute(
@@ -292,7 +432,8 @@ async function _advanceWinnerConn(conn, matchId, winnerId) {
             t.phase
      FROM tournament_matches tm
      JOIN tournaments t ON t.id = tm.tournament_id
-     WHERE tm.id = ?`,
+     WHERE tm.id = ?
+     FOR UPDATE`,
     [matchId]
   );
   if (!rows.length) return;
@@ -306,28 +447,75 @@ async function _advanceWinnerConn(conn, matchId, winnerId) {
   if (!next_match_id) {
     // ── Final del bracket ────────────────────────────────────────────────────
     if (isQualifier) {
-      await conn.execute(
-        `UPDATE tournament_registrations SET status = 'qualified'
-         WHERE tournament_id = ? AND user_id = ?`,
+      const [regRows] = await conn.execute(
+        `SELECT status FROM tournament_registrations
+         WHERE tournament_id = ? AND user_id = ?
+         FOR UPDATE`,
         [tId, winnerId]
       );
-      await createEvent(conn, tId, 'player_qualified', { matchId, winnerId }, winnerId);
+      const st = regRows[0]?.status;
+      if (st !== 'qualified') {
+        await conn.execute(
+          `UPDATE tournament_registrations SET status = 'qualified'
+           WHERE tournament_id = ? AND user_id = ?`,
+          [tId, winnerId]
+        );
+        await createEvent(conn, tId, 'player_qualified', { matchId, winnerId }, winnerId);
+      } else {
+        logger.warn('tournament winner already advanced', {
+          tournamentId: tId,
+          matchId,
+          nextMatchId: null,
+          winnerId,
+          reason: 'already_qualified',
+        });
+      }
 
-      // Si ya hay QUALIFY_COUNT clasificados, marcar torneo como terminado
       const [qRows] = await conn.execute(
         `SELECT COUNT(*) AS cnt FROM tournament_registrations
          WHERE tournament_id = ? AND status = 'qualified'`,
         [tId]
       );
       if (Number(qRows[0].cnt) >= QUALIFY_COUNT) {
-        await conn.execute(
-          "UPDATE tournaments SET status = 'finished', finished_at = COALESCE(finished_at, NOW()) WHERE id = ?",
+        const [tRows] = await conn.execute(
+          `SELECT status FROM tournaments WHERE id = ? FOR UPDATE`,
           [tId]
         );
-        await createEvent(conn, tId, 'qualifier_finished', { qualifiedCount: QUALIFY_COUNT });
+        if (tRows[0]?.status !== 'finished') {
+          await conn.execute(
+            "UPDATE tournaments SET status = 'finished', finished_at = COALESCE(finished_at, NOW()) WHERE id = ?",
+            [tId]
+          );
+          await createEvent(conn, tId, 'qualifier_finished', { qualifiedCount: QUALIFY_COUNT });
+        }
       }
     } else {
-      // finals / general → campeón
+      const [tRows] = await conn.execute(
+        `SELECT id, winner_id, status FROM tournaments WHERE id = ? FOR UPDATE`,
+        [tId]
+      );
+      const tw = tRows[0]?.winner_id;
+      if (tw != null) {
+        if (String(tw) === String(winnerId)) {
+          logger.warn('tournament winner already advanced', {
+            tournamentId: tId,
+            matchId,
+            nextMatchId: null,
+            winnerId,
+            reason: 'champion_already_set',
+          });
+          return;
+        }
+        logger.error('tournament slot conflict', {
+          tournamentId: tId,
+          matchId,
+          nextMatchId: null,
+          slot: 'champion',
+          incomingWinnerId: winnerId,
+          existingPlayerId: tw,
+        });
+        throw new Error('TOURNAMENT_CHAMPION_CONFLICT');
+      }
       await conn.execute(
         `UPDATE tournaments SET status = 'finished', winner_id = ?, finished_at = COALESCE(finished_at, NOW()) WHERE id = ?`,
         [winnerId, tId]
@@ -342,27 +530,55 @@ async function _advanceWinnerConn(conn, matchId, winnerId) {
   } else {
     // ── Avanzar al siguiente cruce ───────────────────────────────────────────
     const col = next_slot === 'player1' ? 'player1_id' : 'player2_id';
-    await conn.execute(
-      `UPDATE tournament_matches SET ${col} = ? WHERE id = ?`,
-      [winnerId, next_match_id]
-    );
-
-    // Si el siguiente cruce ya tiene ambos jugadores, activarlo
     const [nextRows] = await conn.execute(
+      `SELECT id, player1_id, player2_id, status FROM tournament_matches WHERE id = ? FOR UPDATE`,
+      [next_match_id]
+    );
+    if (!nextRows.length) return;
+
+    const cur = nextRows[0][col];
+    if (cur == null) {
+      await conn.execute(
+        `UPDATE tournament_matches SET ${col} = ? WHERE id = ?`,
+        [winnerId, next_match_id]
+      );
+    } else if (String(cur) === String(winnerId)) {
+      logger.warn('tournament winner already advanced', {
+        tournamentId: tId,
+        matchId,
+        nextMatchId: next_match_id,
+        slot: col,
+        winnerId,
+      });
+    } else {
+      logger.error('tournament slot conflict', {
+        tournamentId: tId,
+        matchId,
+        nextMatchId: next_match_id,
+        slot: col,
+        incomingWinnerId: winnerId,
+        existingPlayerId: cur,
+      });
+      throw new Error('TOURNAMENT_SLOT_CONFLICT');
+    }
+
+    const [nextRows2] = await conn.execute(
       'SELECT player1_id, player2_id FROM tournament_matches WHERE id = ?',
       [next_match_id]
     );
-    if (nextRows.length && nextRows[0].player1_id && nextRows[0].player2_id) {
+    if (nextRows2.length && nextRows2[0].player1_id && nextRows2[0].player2_id) {
       await conn.execute(
         "UPDATE tournament_matches SET status = 'ready' WHERE id = ?",
         [next_match_id]
       );
     }
 
-    await createEvent(conn, tId, 'winner_advanced',
-      { fromMatchId: matchId, toMatchId: next_match_id, slot: next_slot, winnerId },
-      winnerId
-    );
+    if (cur == null) {
+      await createEvent(conn, tId, 'winner_advanced',
+        { fromMatchId: matchId, toMatchId: next_match_id, slot: next_slot, winnerId },
+        winnerId
+      );
+    }
   }
 }
 
@@ -491,7 +707,7 @@ const TournamentService = {
          t.id, t.name, t.description, t.prize_text,
          t.max_players, t.status, t.format, t.phase,
          t.puntos_maximos, t.flor_habilitada,
-         t.starts_at, t.checkin_starts_at, t.registration_closes_at,
+         t.starts_at, t.checkin_starts_at, t.registration_opens_at, t.registration_closes_at,
          t.entry_fee, t.prize_amount, t.is_paid,
          t.auto_checkin_enabled, t.auto_start_enabled,
          t.checkin_closed_at, t.bracket_generated_at, t.ready_timeout_minutes,
@@ -507,6 +723,8 @@ const TournamentService = {
          t.starts_at ASC`,
       []
     );
+
+    for (const row of rows) attachTournamentLifecycle(row);
 
     if (!userId || !rows.length) return rows;
 
@@ -536,7 +754,7 @@ const TournamentService = {
          t.max_players, t.status, t.format, t.phase,
          t.puntos_maximos, t.flor_habilitada,
          t.turn_seconds, t.reconnect_seconds,
-         t.starts_at, t.checkin_starts_at, t.registration_closes_at,
+         t.starts_at, t.checkin_starts_at, t.registration_opens_at, t.registration_closes_at,
          t.entry_fee, t.prize_amount, t.is_paid,
          t.auto_checkin_enabled, t.auto_start_enabled,
          t.checkin_closed_at, t.bracket_generated_at, t.ready_timeout_minutes,
@@ -612,7 +830,7 @@ const TournamentService = {
       ? groupMatchesByRound(matchRows.map(normalizeMatch))
       : null;
 
-    return tournament;
+    return attachTournamentLifecycle(tournament);
   },
 
   // ── 3. register ───────────────────────────────────────────────────────────
@@ -621,17 +839,27 @@ const TournamentService = {
    * Usa transacción + FOR UPDATE para evitar race conditions en el último cupo.
    */
   async register(tournamentId, userId) {
+    await assertPlayerParticipationAllowedById(userId);
     await VerificationService.requireVerifiedForTournaments(userId);
 
     return withTransaction(async (conn) => {
       const [tRows] = await conn.execute(
-        `SELECT id, status, max_players, entry_fee, is_paid
+        `SELECT id, status, max_players, entry_fee, is_paid,
+                registration_opens_at, registration_closes_at
          FROM tournaments WHERE id = ? FOR UPDATE`,
         [tournamentId]
       );
       if (!tRows.length) throw new Error('Torneo no encontrado');
       const t = tRows[0];
       if (t.status !== 'open') throw new Error('El torneo no está abierto para inscripción');
+
+      const now = new Date();
+      if (t.registration_opens_at && new Date(t.registration_opens_at) > now) {
+        throw new Error('Las inscripciones aún no están abiertas');
+      }
+      if (t.registration_closes_at && new Date(t.registration_closes_at) <= now) {
+        throw new Error('Las inscripciones están cerradas');
+      }
 
       const entryFee = parseFloat(t.entry_fee || 0);
       const chargeAmount = entryFee > 0 ? entryFee : 0;
@@ -766,6 +994,7 @@ const TournamentService = {
    * - Idempotente si ya hizo check-in.
    */
   async checkin(tournamentId, userId) {
+    await assertPlayerParticipationAllowedById(userId);
     const t = await assertTournamentExists(tournamentId);
     if (t.status !== 'checkin') throw new Error('El check-in no está abierto');
 
@@ -1242,7 +1471,7 @@ const TournamentService = {
    * Actualiza match, marca perdedor y avanza el ganador en la misma transacción.
    */
   async forceResult(tournamentId, matchId, winnerId, adminId, reason = 'admin_decision') {
-    await withTransaction(async (conn) => {
+    const outcome = await withTransaction(async (conn) => {
       const [rows] = await conn.execute(
         `SELECT * FROM tournament_matches
          WHERE id = ? AND tournament_id = ? FOR UPDATE`,
@@ -1251,10 +1480,12 @@ const TournamentService = {
       if (!rows.length) throw new Error('El cruce no existe en este torneo');
       const m = rows[0];
 
-      if (['finished', 'walkover'].includes(m.status)) {
-        throw new Error('Este cruce ya fue finalizado');
+      if (['finished', 'walkover'].includes(m.status) || m.winner_id) {
+        if (String(m.winner_id) === String(winnerId)) {
+          return { ok: true, skipped: true, reason: 'ALREADY_FINISHED_SAME_WINNER' };
+        }
+        throw new Error('Este cruce ya fue finalizado con otro ganador');
       }
-      if (m.winner_id) throw new Error('Este cruce ya tiene un ganador');
 
       const validPlayers = [Number(m.player1_id), Number(m.player2_id)].filter(Boolean);
       if (!validPlayers.includes(Number(winnerId))) throw new Error('Ganador inválido');
@@ -1278,9 +1509,10 @@ const TournamentService = {
       } else {
         await tryScheduleThirdPlaceMatch(conn, tournamentId, m);
       }
+      return { ok: true };
     });
 
-    return { ok: true };
+    return outcome || { ok: true };
   },
 
   // ── 10. advanceWinner ─────────────────────────────────────────────────────
@@ -1297,15 +1529,23 @@ const TournamentService = {
 
   // ── 12. createTournament ─────────────────────────────────────────────────
   /**
-   * Admin crea un torneo nuevo en estado 'draft'.
-   * Valida campos requeridos y rangos permitidos.
+   * Admin crea un torneo. Por defecto inscripciones abiertas (status open)
+   * salvo registration_opens_at en el futuro (queda draft hasta el scheduler).
    */
   async createTournament(adminId, body) {
+    const raw = body || {};
+    const scheduled = applyScheduleDefaults({
+      starts_at: raw.starts_at,
+      checkin_starts_at: raw.checkin_starts_at,
+      registration_closes_at: raw.registration_closes_at,
+      registration_opens_at: raw.registration_opens_at,
+    });
+
     const {
       name,
       description          = null,
       prize_text           = null,
-      max_players          = 128,
+      max_players          = 64,
       format               = 'single_elimination',
       phase                = 'general',
       puntos_maximos       = 15,
@@ -1318,14 +1558,24 @@ const TournamentService = {
       auto_checkin_enabled = 1,
       auto_start_enabled   = 1,
       ready_timeout_minutes = 5,
-      starts_at            = null,
-      checkin_starts_at    = null,
-      registration_closes_at = null,
+      starts_at            = scheduled.starts_at,
+      checkin_starts_at    = scheduled.checkin_starts_at,
+      registration_closes_at = scheduled.registration_closes_at,
+      registration_opens_at = scheduled.registration_opens_at ?? null,
       prize_config         = null,
       placement_config     = null,
-    } = body || {};
+    } = { ...raw, ...scheduled };
 
     if (!name?.trim()) throw new Error('Nombre obligatorio');
+
+    validateTournamentSchedule({
+      registration_opens_at,
+      registration_closes_at,
+      checkin_starts_at,
+      starts_at,
+    });
+
+    const initialStatus = initialStatusFromSchedule(registration_opens_at);
 
     const nPlayers = parseInt(max_players, 10);
     if (!isFinite(nPlayers) || nPlayers < 2 || nPlayers > 128) {
@@ -1372,16 +1622,22 @@ const TournamentService = {
           ? placement_config
           : JSON.stringify(placement_config);
 
+    const fmtDt = (v) => {
+      const d = parseScheduleDatetime(v);
+      if (!d) return null;
+      return d.toISOString().slice(0, 19).replace('T', ' ');
+    };
+
     const result = await query(
       `INSERT INTO tournaments
          (name, description, prize_text, max_players, format, phase,
           puntos_maximos, flor_habilitada, turn_seconds, reconnect_seconds,
           entry_fee, prize_amount, is_paid, auto_checkin_enabled, auto_start_enabled,
           ready_timeout_minutes,
-          starts_at, checkin_starts_at, registration_closes_at,
+          starts_at, checkin_starts_at, registration_opens_at, registration_closes_at,
           prize_config, placement_config,
           status, created_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         name.trim().substring(0, 120),
         description?.trim() || null,
@@ -1399,19 +1655,24 @@ const TournamentService = {
         auto_checkin_enabled ? 1 : 0,
         auto_start_enabled ? 1 : 0,
         rtm,
-        starts_at            || null,
-        checkin_starts_at    || null,
-        registration_closes_at || null,
+        fmtDt(starts_at),
+        fmtDt(checkin_starts_at),
+        fmtDt(registration_opens_at),
+        fmtDt(registration_closes_at),
         prizeConfigJson,
         placementConfigJson,
+        initialStatus,
         adminId,
       ]
     );
 
     const tournamentId = result.insertId;
-    await createEvent(null, tournamentId, 'tournament_created', { adminId }, null, adminId);
-    logger.info(`Torneo creado: id=${tournamentId} name="${name}" by admin=${adminId}`);
-    return { ok: true, tournamentId };
+    const eventType = initialStatus === 'open' ? 'tournament_opened' : 'tournament_created';
+    await createEvent(null, tournamentId, eventType, { adminId, initialStatus }, null, adminId);
+    logger.info(
+      `Torneo creado: id=${tournamentId} name="${name}" status=${initialStatus} by admin=${adminId}`
+    );
+    return { ok: true, tournamentId, status: initialStatus };
   },
 
   // ── 13. updateTournament ─────────────────────────────────────────────────
@@ -1427,7 +1688,7 @@ const TournamentService = {
     const ALLOWED = [
       'name', 'description', 'prize_text', 'max_players', 'format', 'phase',
       'puntos_maximos', 'flor_habilitada', 'turn_seconds', 'reconnect_seconds',
-      'starts_at', 'checkin_starts_at', 'registration_closes_at',
+      'starts_at', 'checkin_starts_at', 'registration_opens_at', 'registration_closes_at',
       'entry_fee', 'prize_amount', 'is_paid',
       'auto_checkin_enabled', 'auto_start_enabled', 'ready_timeout_minutes',
       'prize_config', 'placement_config',
@@ -1453,6 +1714,44 @@ const TournamentService = {
             : JSON.stringify(updates.placement_config);
     }
     if (Object.keys(updates).length === 0) throw new Error('Nada que actualizar');
+
+    const mergedSchedule = applyScheduleDefaults({
+      starts_at: updates.starts_at !== undefined ? updates.starts_at : t.starts_at,
+      checkin_starts_at:
+        updates.checkin_starts_at !== undefined ? updates.checkin_starts_at : t.checkin_starts_at,
+      registration_closes_at:
+        updates.registration_closes_at !== undefined
+          ? updates.registration_closes_at
+          : t.registration_closes_at,
+      registration_opens_at:
+        updates.registration_opens_at !== undefined
+          ? updates.registration_opens_at
+          : t.registration_opens_at,
+    });
+    if (updates.starts_at !== undefined && !updates.checkin_starts_at) {
+      updates.checkin_starts_at = mergedSchedule.checkin_starts_at;
+    }
+    if (updates.starts_at !== undefined && !updates.registration_closes_at) {
+      updates.registration_closes_at = mergedSchedule.registration_closes_at;
+    }
+
+    const effectiveStart =
+      updates.starts_at !== undefined ? updates.starts_at : t.starts_at;
+    if (effectiveStart) {
+      validateTournamentSchedule({
+        registration_opens_at:
+          updates.registration_opens_at !== undefined
+            ? updates.registration_opens_at
+            : t.registration_opens_at,
+        registration_closes_at:
+          updates.registration_closes_at !== undefined
+            ? updates.registration_closes_at
+            : t.registration_closes_at,
+        checkin_starts_at:
+          updates.checkin_starts_at !== undefined ? updates.checkin_starts_at : t.checkin_starts_at,
+        starts_at: effectiveStart,
+      });
+    }
 
     // Validaciones parciales
     if (updates.name !== undefined && !updates.name?.trim()) {
@@ -1551,6 +1850,10 @@ const TournamentService = {
    * Admin inicia el torneo. Requiere que el bracket ya esté generado.
    */
   async startTournament(tournamentId, adminId, opts = {}) {
+    const t = await assertTournamentExists(tournamentId);
+    if (t.status === 'checkin' && !t.checkin_closed_at) {
+      await this.closeCheckinAndPromoteSubstitutes(tournamentId, adminId);
+    }
     const matchCount = await query(
       'SELECT COUNT(*) AS cnt FROM tournament_matches WHERE tournament_id = ?',
       [tournamentId]
@@ -2019,65 +2322,182 @@ const TournamentService = {
   // ── 18. finishMatchFromGame ───────────────────────────────────────────────
   /**
    * Llamado desde _finishGame de gameHandler cuando termina una partida.
-   * Busca si el roomId corresponde a un tournament_match.
-   * Si sí: actualiza scores/winner/status y avanza el bracket en la misma TX.
+   * Idempotente: cruce ya finished / winner_id no repite eventos ni avance.
    * Devuelve null si no es un cruce de torneo (no-op para partidas normales).
    */
   async finishMatchFromGame(roomId, winnerId, scores = {}) {
-    const rows = await query(
-      `SELECT tm.id, tm.tournament_id, tm.player1_id, tm.player2_id, tm.round_number,
-              tm.next_match_id, tm.round_type
-       FROM   tournament_matches tm
-       WHERE  tm.room_id = ?`,
-      [roomId]
-    );
-    if (!rows.length) return null;   // no es cruce de torneo — no-op
+    let outcome = null;
 
-    const m      = rows[0];
-    const loserId = Number(m.player1_id) === Number(winnerId)
-      ? m.player2_id
-      : m.player1_id;
-    const p1Score = scores[m.player1_id] ?? null;
-    const p2Score = scores[m.player2_id] ?? null;
+    try {
+      await withTransaction(async (conn) => {
+        const [locked] = await conn.execute(
+          'SELECT * FROM tournament_matches WHERE room_id = ? FOR UPDATE',
+          [roomId]
+        );
+        if (!locked.length) {
+          outcome = null;
+          return;
+        }
 
-    await withTransaction(async (conn) => {
-      await conn.execute(
-        `UPDATE tournament_matches
-         SET    winner_id     = ?,
-                loser_id      = ?,
-                status        = 'finished',
-                finished_at   = NOW(),
-                player1_score = COALESCE(?, player1_score),
-                player2_score = COALESCE(?, player2_score)
-         WHERE  id = ?`,
-        [winnerId, loserId, p1Score, p2Score, m.id]
-      );
-      await createEvent(conn, m.tournament_id, 'match_finished',
-        { matchId: m.id, winnerId, loserId, roomId }, winnerId);
-      await _markLoserFromFinishedMatch(conn, m.tournament_id, m, loserId);
-      await _advanceWinnerConn(conn, m.id, winnerId);
-      if (String(m.round_type || 'bracket') === 'third_place') {
-        await applyThirdPlaceWinnerPlacement(conn, m.tournament_id, m, winnerId);
-      } else {
-        await tryScheduleThirdPlaceMatch(conn, m.tournament_id, m);
+        const m = locked[0];
+        const loserId =
+          Number(m.player1_id) === Number(winnerId) ? m.player2_id : m.player1_id;
+        const p1Score = scores[m.player1_id] ?? null;
+        const p2Score = scores[m.player2_id] ?? null;
+
+        if (m.status === 'finished' || m.winner_id != null) {
+          if (String(m.winner_id) === String(winnerId)) {
+            logger.warn('tournament match finish skipped already finished', {
+              roomId,
+              matchId: m.id,
+              winnerId,
+              existingWinnerId: m.winner_id,
+            });
+            outcome = {
+              ok:           true,
+              skipped:      true,
+              reason:       'ALREADY_FINISHED_SAME_WINNER',
+              tournamentId: m.tournament_id,
+              matchId:      m.id,
+              winnerId,
+              loserId,
+            };
+            return;
+          }
+          logger.error('tournament match finish conflict', {
+            roomId,
+            matchId: m.id,
+            incomingWinnerId: winnerId,
+            existingWinnerId: m.winner_id,
+          });
+          outcome = {
+            ok:           false,
+            skipped:      true,
+            reason:       'ALREADY_FINISHED_DIFFERENT_WINNER',
+            tournamentId: m.tournament_id,
+            matchId:      m.id,
+          };
+          return;
+        }
+
+        const [upd] = await conn.execute(
+          `UPDATE tournament_matches
+           SET    winner_id     = ?,
+                  loser_id      = ?,
+                  status        = 'finished',
+                  finished_at   = NOW(),
+                  player1_score = COALESCE(?, player1_score),
+                  player2_score = COALESCE(?, player2_score)
+           WHERE  id = ?
+             AND  status <> 'finished'
+             AND  winner_id IS NULL`,
+          [winnerId, loserId, p1Score, p2Score, m.id]
+        );
+
+        if (upd.affectedRows !== 1) {
+          const [reCheck] = await conn.execute(
+            'SELECT status, winner_id FROM tournament_matches WHERE id = ? FOR UPDATE',
+            [m.id]
+          );
+          const row = reCheck[0];
+          if (row?.winner_id != null && String(row.winner_id) === String(winnerId)) {
+            logger.warn('tournament match finish skipped already finished', {
+              roomId,
+              matchId: m.id,
+              winnerId,
+              existingWinnerId: row.winner_id,
+            });
+            outcome = {
+              ok:           true,
+              skipped:      true,
+              reason:       'ALREADY_FINISHED_SAME_WINNER',
+              tournamentId: m.tournament_id,
+              matchId:      m.id,
+              winnerId,
+              loserId,
+            };
+            return;
+          }
+          if (row?.winner_id != null) {
+            logger.error('tournament match finish conflict', {
+              roomId,
+              matchId: m.id,
+              incomingWinnerId: winnerId,
+              existingWinnerId: row.winner_id,
+            });
+            outcome = {
+              ok:           false,
+              skipped:      true,
+              reason:       'ALREADY_FINISHED_DIFFERENT_WINNER',
+              tournamentId: m.tournament_id,
+              matchId:      m.id,
+            };
+            return;
+          }
+          logger.warn('tournament match finish race lost', {
+            roomId,
+            matchId: m.id,
+            winnerId,
+          });
+          outcome = {
+            ok:           true,
+            skipped:      true,
+            reason:       'RACE_LOST',
+            tournamentId: m.tournament_id,
+            matchId:      m.id,
+            winnerId,
+            loserId,
+          };
+          return;
+        }
+
+        await createEvent(conn, m.tournament_id, 'match_finished',
+          { matchId: m.id, winnerId, loserId, roomId }, winnerId);
+        await _markLoserFromFinishedMatch(conn, m.tournament_id, m, loserId);
+        await _advanceWinnerConn(conn, m.id, winnerId);
+        if (String(m.round_type || 'bracket') === 'third_place') {
+          await applyThirdPlaceWinnerPlacement(conn, m.tournament_id, m, winnerId);
+        } else {
+          await tryScheduleThirdPlaceMatch(conn, m.tournament_id, m);
+        }
+
+        outcome = {
+          ok:           true,
+          skipped:      false,
+          tournamentId: m.tournament_id,
+          matchId:      m.id,
+          winnerId,
+          loserId,
+        };
+      });
+    } catch (e) {
+      if (e.message === 'TOURNAMENT_SLOT_CONFLICT' || e.message === 'TOURNAMENT_CHAMPION_CONFLICT') {
+        logger.error(`tournament advance conflict: ${e.message}`, { roomId, winnerId });
+        return {
+          ok:      false,
+          skipped: true,
+          reason:  e.message,
+          roomId,
+          winnerId,
+        };
       }
-    });
+      throw e;
+    }
 
-    // Determinar si este jugador se convirtió en clasificado o campeón
+    if (outcome == null) return null;
+    if (outcome.ok === false) return outcome;
+
     const regRows = await query(
       `SELECT status FROM tournament_registrations
        WHERE  tournament_id = ? AND user_id = ?`,
-      [m.tournament_id, winnerId]
+      [outcome.tournamentId, winnerId]
     );
     const regStatus = regRows[0]?.status;
 
     return {
-      tournamentId: m.tournament_id,
-      matchId:      m.id,
-      winnerId,
-      loserId,
-      qualified:    regStatus === 'qualified',
-      champion:     regStatus === 'winner',
+      ...outcome,
+      qualified: regStatus === 'qualified',
+      champion:  regStatus === 'winner',
     };
   },
 

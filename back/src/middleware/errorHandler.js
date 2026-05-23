@@ -78,6 +78,11 @@ function errorHandler(err, req, res, _next) {
     return res.status(409).json({ error: 'Duplicate entry', code: 'DUPLICATE' });
   }
 
+  // ── CORS (cors middleware pasa Error con message) ─────────────────────────
+  if (/origen no permitido por cors/i.test(err.message) || /^CORS:/i.test(err.message)) {
+    return res.status(403).json({ message: err.message, error: err.message, code: 'CORS_FORBIDDEN' });
+  }
+
   // ── Wallet / money errors (known messages) ────────────────────────────────
   if (/insufficient balance/i.test(err.message)) {
     return res.status(402).json({ error: 'Saldo insuficiente', code: 'INSUFFICIENT_FUNDS' });
@@ -147,7 +152,7 @@ function isValidCardId(id) {
 }
 
 function isValidBetType(bt) {
-  const valid = ['envido', 'real_envido', 'falta_envido', 'truco', 'retruco', 'vale_cuatro', 'flor', 'contraflor', 'contraflor_al_resto'];
+  const valid = ['envido', 'real_envido', 'falta_envido', 'truco', 'retruco', 'vale4', 'vale_cuatro', 'flor', 'contraflor', 'contraflor_al_resto'];
   return typeof bt === 'string' && valid.includes(bt);
 }
 

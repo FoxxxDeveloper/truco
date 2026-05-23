@@ -1,5 +1,4 @@
 import { useEffect, useRef } from 'react';
-import { useGame } from '../context/GameContext';
 import { playSound, preloadSounds, unlockAudio } from '../services/soundManager';
 
 /**
@@ -36,9 +35,10 @@ export function getSoundGenderForActor(speakerId, myUserId) {
  *
  * @param {object | null} gameState
  * @param {{ id?: string | number } | null} user
+ * @param {object | null} lastEvent
+ * @param {object | null} gameOver
  */
-export function useGameSounds(gameState, user) {
-  const { lastEvent } = useGame();
+export function useGameSounds(gameState, user, lastEvent, gameOver) {
   const myId = user?.id != null ? normId(user.id) : null;
 
   const lastTrucoAnnRef = useRef(null);
@@ -47,9 +47,12 @@ export function useGameSounds(gameState, user) {
   const lastEnvidoResultKeyRef = useRef(null);
   const lastFlorAnnounceKeyRef = useRef(null);
   const lastFlorResultKeyRef = useRef(null);
+  const lastEnvidoProofKeyRef = useRef(null);
   const prevWaitingRef = useRef(null);
   const lastManoLenRef = useRef(0);
   const lastGameOverKeyRef = useRef(null);
+  const lastCardPlayedKeyRef = useRef(null);
+  const lastCardInitKeyRef = useRef(null);
   const mountedRef = useRef(false);
   const lastRoomIdRef = useRef(null);
 
@@ -72,7 +75,10 @@ export function useGameSounds(gameState, user) {
       lastEnvidoResultKeyRef.current = null;
       lastFlorAnnounceKeyRef.current = null;
       lastFlorResultKeyRef.current = null;
+      lastEnvidoProofKeyRef.current = null;
       lastGameOverKeyRef.current = null;
+      lastCardPlayedKeyRef.current = null;
+      lastCardInitKeyRef.current = null;
       lastManoLenRef.current = 0;
       prevWaitingRef.current = null;
       mountedRef.current = false;
@@ -177,19 +183,34 @@ export function useGameSounds(gameState, user) {
     }
 
     if (t === 'FLOR_RESULT') {
+      const reason = lastEvent.reason || lastEvent.florResultReason || '';
       const pts = lastEvent.points ?? '';
       const w = lastEvent.winner != null ? normId(lastEvent.winner) : '';
       const respondedBy =
         lastEvent.respondedBy != null ? normId(lastEvent.respondedBy) : null;
-      const key = `${w}-${pts}-${lastEvent.florPoints ? 'cmp' : 'nocmp'}-${respondedBy ?? ''}`;
+      const key = `${reason}-${w}-${pts}-${lastEvent.florPoints ? 'cmp' : 'nocmp'}-${respondedBy ?? ''}`;
       if (lastFlorResultKeyRef.current === key) return;
       lastFlorResultKeyRef.current = key;
-      const g = getSoundGenderForActor(respondedBy, myId);
-      if (lastEvent.florPoints) {
-        playSound('quiero', { gender: g });
-      } else if (lastEvent.respondedBy != null) {
-        playSound('noQuiero', { gender: g });
+
+      if (reason === 'no_rival_flor' || lastEvent.autoResolved) {
+        return () => clearSonBuenas();
       }
+
+      const speakerId = respondedBy ?? (lastEvent.by != null ? normId(lastEvent.by) : null);
+      const g = getSoundGenderForActor(speakerId, myId);
+
+      if (
+        lastEvent.response === 'reject' ||
+        reason === 'contra_flor_rejected'
+      ) {
+        playSound('noQuiero', { gender: g });
+        return () => clearSonBuenas();
+      }
+
+      if (lastEvent.florPoints || reason === 'comparison') {
+        playSound('quiero', { gender: g });
+      }
+
       return () => clearSonBuenas();
     }
 
@@ -199,17 +220,86 @@ export function useGameSounds(gameState, user) {
       return () => clearSonBuenas();
     }
 
+    if (t === 'CARD_PLAYED') {
+      const by = lastEvent.playerId != null ? normId(lastEvent.playerId) : null;
+      const cardId = lastEvent.cardId ?? '';
+      const rid = gameState?.roomId != null ? String(gameState.roomId) : '';
+      const mano = gameState?.currentMano ?? '';
+      const playedLen = gameState?.playedCards?.[mano]?.length ?? '';
+      const key = `${rid}-${mano}-${playedLen}-${by}-${cardId}`;
+      if (lastCardPlayedKeyRef.current === key) return;
+      lastCardPlayedKeyRef.current = key;
+      if (by && samePlayerId(by, myId)) {
+        playSound('cardPlaySelf');
+      } else if (by) {
+        playSound('cardPlayOpponent');
+      } else {
+        playSound('cardPlay');
+      }
+      return () => clearSonBuenas();
+    }
+
     if (t === 'GAME_OVER') {
       const w = lastEvent.winner != null ? normId(lastEvent.winner) : '';
-      const key = `go-${w}`;
+      const rid = gameState?.roomId != null ? String(gameState.roomId) : '';
+      const key = `${rid}-go-${w}-${lastEvent.reason ?? ''}`;
       if (lastGameOverKeyRef.current === key) return;
       lastGameOverKeyRef.current = key;
-      if (w && samePlayerId(w, myId)) playSound('partidaGanada');
-      else if (w) playSound('partidaPerdida');
+      if (w && samePlayerId(w, myId)) playSound('victory');
+      else if (w) playSound('defeat');
     }
 
     return () => clearSonBuenas();
-  }, [lastEvent, myId]);
+  }, [lastEvent, myId, gameState?.roomId, gameState?.currentMano, gameState?.playedCards]);
+
+  useEffect(() => {
+    if (!gameOver || !myId) return;
+    const w = gameOver.winner != null ? normId(gameOver.winner) : null;
+    if (!w) return;
+    const rid = gameState?.roomId != null ? String(gameState.roomId) : '';
+    const key = `${rid}-go-${w}-${gameOver.reason ?? ''}`;
+    if (lastGameOverKeyRef.current === key) return;
+    lastGameOverKeyRef.current = key;
+    if (samePlayerId(w, myId)) playSound('victory');
+    else playSound('defeat');
+  }, [gameOver, gameState?.roomId, myId]);
+
+  useEffect(() => {
+    if (!gameState?.envidoProofReveal?.cards?.length || !myId) return;
+    const pr = gameState.envidoProofReveal;
+    const key = `${pr.playerId}-${pr.reason}-${pr.cards.map(c => c.id).join(',')}`;
+    if (lastEnvidoProofKeyRef.current === key) return;
+    lastEnvidoProofKeyRef.current = key;
+    const ownerId = pr.playerId != null ? normId(pr.playerId) : null;
+    playSound('puntosEnMesa', { gender: getSoundGenderForActor(ownerId, myId) });
+  }, [gameState?.envidoProofReveal, myId]);
+
+  useEffect(() => {
+    if (!gameState || !myId) return;
+    const hand = gameState.myHand;
+    if (!Array.isArray(hand) || hand.length !== 3) return;
+    if (gameState.currentMano !== 0) return;
+    const played = gameState.playedCards;
+    const anyPlayed =
+      Array.isArray(played) && played.some((m) => Array.isArray(m) && m.length > 0);
+    if (anyPlayed) return;
+
+    const handKey = hand
+      .map((c) => c?.id ?? `${c?.value}_${c?.suit}`)
+      .sort()
+      .join(',');
+    const rid = gameState.roomId != null ? String(gameState.roomId) : '';
+    const key = `${rid}-init-${handKey}`;
+    if (lastCardInitKeyRef.current === key) return;
+    lastCardInitKeyRef.current = key;
+    playSound('cardInit');
+  }, [
+    gameState?.myHand,
+    gameState?.currentMano,
+    gameState?.playedCards,
+    gameState?.roomId,
+    myId,
+  ]);
 
   useEffect(() => {
     if (!gameState || !myId) return;

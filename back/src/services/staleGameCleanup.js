@@ -8,6 +8,12 @@ const Game = require('../models/Game');
 const BattleService = require('./battleService');
 const gameSession = require('./gameSession');
 
+/** Minutos sin actividad (sin deadlines válidos) antes de cancelar active/paused huérfanas. */
+const STALE_ACTIVE_MINUTES = Math.max(
+  30,
+  parseInt(process.env.STALE_ACTIVE_PARTIDA_MINUTES || '360', 10) || 360
+);
+
 let lifecycleHooks = {
   /** (io, roomId, game) => Promise<void> */
   finishBothDisconnected: null,
@@ -20,18 +26,31 @@ function setGameLifecycleHooks(hooks = {}) {
 }
 
 async function normalizeInconsistentFinishedPartidas() {
-  const r = await query(
+  const r1 = await query(
     `UPDATE partidas
      SET status = 'finished',
          state = 'finished',
          finished_at = COALESCE(finished_at, NOW()),
          requires_admin_resolution = 0,
          finish_reason = COALESCE(finish_reason, 'normalized_inconsistent')
-     WHERE (winner_id IS NOT NULL OR finished_at IS NOT NULL OR state = 'finished')
+     WHERE (winner_id IS NOT NULL OR finished_at IS NOT NULL OR state IN ('finished', 'cancelled'))
        AND status IN ('active', 'paused')`
   );
-  const n = typeof r?.affectedRows === 'number' ? r.affectedRows : 0;
-  return n;
+  const r2 = await query(
+    `UPDATE partidas
+     SET status = 'cancelled',
+         state = 'finished',
+         finished_at = COALESCE(finished_at, NOW()),
+         requires_admin_resolution = 0,
+         finish_reason = COALESCE(finish_reason, 'normalized_admin_resolution')
+     WHERE IFNULL(requires_admin_resolution, 0) = 1
+       AND winner_id IS NULL
+       AND finished_at IS NULL
+       AND status IN ('active', 'paused')`
+  );
+  const n1 = typeof r1?.affectedRows === 'number' ? r1.affectedRows : 0;
+  const n2 = typeof r2?.affectedRows === 'number' ? r2.affectedRows : 0;
+  return n1 + n2;
 }
 
 /**
@@ -42,7 +61,7 @@ async function resolveBothDisconnectedRows(io) {
     `SELECT room_id, player1_id, player2_id
      FROM partidas
      WHERE winner_id IS NULL
-       AND (finished_at IS NULL OR finished_at = '0000-00-00 00:00:00')
+       AND finished_at IS NULL
        AND status IN ('active', 'paused')
        AND state IN ('waiting', 'playing')
        AND p1_reconnect_deadline_at IS NOT NULL
@@ -99,7 +118,7 @@ async function resolveSingleAbandonRows(io) {
             p1_reconnect_deadline_at, p2_reconnect_deadline_at
      FROM partidas
      WHERE winner_id IS NULL
-       AND (finished_at IS NULL OR finished_at = '0000-00-00 00:00:00')
+       AND finished_at IS NULL
        AND status IN ('active', 'paused')
        AND state IN ('waiting', 'playing')
        AND (
@@ -171,12 +190,84 @@ async function resolveSingleAbandonRows(io) {
  * Partidas muy viejas sin deadlines (pre-migración / datos rotos).
  * Requiere umbral alto por defecto; usar admin con `orphanStaleMinutes` bajo solo en local/test.
  */
+/**
+ * Active/paused viejas sin reconexión válida (huérfanas en DB).
+ */
+async function cancelStaleActivePartidas({ staleMinutes = STALE_ACTIVE_MINUTES } = {}) {
+  const rows = await query(
+    `SELECT room_id, id, player1_id, player2_id, status, created_at, started_at,
+            p1_reconnect_deadline_at, p2_reconnect_deadline_at
+     FROM partidas
+     WHERE winner_id IS NULL
+       AND finished_at IS NULL
+       AND status IN ('active', 'paused')
+       AND state IN ('waiting', 'playing')
+       AND COALESCE(started_at, created_at) < DATE_SUB(NOW(), INTERVAL ? MINUTE)
+       AND (
+         (p1_reconnect_deadline_at IS NULL AND p2_reconnect_deadline_at IS NULL)
+         OR (
+           status = 'paused'
+           AND p1_reconnect_deadline_at IS NOT NULL
+           AND p2_reconnect_deadline_at IS NOT NULL
+           AND p1_reconnect_deadline_at < NOW()
+           AND p2_reconnect_deadline_at < NOW()
+         )
+       )`,
+    [staleMinutes]
+  );
+
+  const touched = [];
+  for (const p of rows) {
+    const roomId = p.room_id;
+    try {
+      const live = await gameSession.getGame(roomId);
+      const hasLiveEngine = live && typeof live.playCard === 'function';
+      if (hasLiveEngine) {
+        logger.info('stale active skip: live session still in memory', { roomId, partidaId: p.id });
+        continue;
+      }
+
+      await BattleService.cancelChallengeForRoomNoWinner(roomId, 'stale_active_cleanup').catch(() => {});
+      const r = await query(
+        `UPDATE partidas
+         SET state = 'finished',
+             status = 'cancelled',
+             winner_id = NULL,
+             finished_at = NOW(),
+             finish_reason = 'stale_active_cleanup',
+             requires_admin_resolution = 0,
+             p1_disconnected_at = NULL,
+             p2_disconnected_at = NULL,
+             p1_reconnect_deadline_at = NULL,
+             p2_reconnect_deadline_at = NULL
+         WHERE room_id = ?
+           AND winner_id IS NULL
+           AND finished_at IS NULL`,
+        [roomId]
+      );
+      if (typeof r?.affectedRows === 'number' && r.affectedRows > 0) {
+        touched.push({
+          roomId,
+          partidaId: p.id,
+          reason: 'stale_active_cleanup',
+          staleMinutes,
+          previousStatus: p.status,
+        });
+      }
+      await gameSession.deleteGame(roomId).catch(() => {});
+    } catch (e) {
+      logger.error(`cancelStaleActive ${roomId}: ${e.message}`);
+    }
+  }
+  return { count: touched.length, touched };
+}
+
 async function cancelAncientOrphanPartidas({ staleMinutes = 43200 } = {}) {
   const rows = await query(
     `SELECT room_id
      FROM partidas
      WHERE winner_id IS NULL
-       AND (finished_at IS NULL OR finished_at = '0000-00-00 00:00:00')
+       AND finished_at IS NULL
        AND status IN ('active', 'paused')
        AND state IN ('waiting', 'playing')
        AND created_at < DATE_SUB(NOW(), INTERVAL ? MINUTE)
@@ -203,7 +294,7 @@ async function cancelAncientOrphanPartidas({ staleMinutes = 43200 } = {}) {
              p2_reconnect_deadline_at = NULL
          WHERE room_id = ?
            AND winner_id IS NULL
-           AND (finished_at IS NULL OR finished_at = '0000-00-00 00:00:00')`,
+           AND finished_at IS NULL`,
         [roomId]
       );
       n += typeof r?.affectedRows === 'number' ? r.affectedRows : 0;
@@ -219,14 +310,28 @@ async function resolveExpiredDisconnectedGames(io = null) {
   const normalizedFinished = await normalizeInconsistentFinishedPartidas();
   const resolvedBoth = await resolveBothDisconnectedRows(io);
   const resolvedAbandoned = await resolveSingleAbandonRows(io);
-  if (normalizedFinished || resolvedBoth || resolvedAbandoned) {
+  const staleActive = await cancelStaleActivePartidas();
+  if (
+    normalizedFinished ||
+    resolvedBoth ||
+    resolvedAbandoned ||
+    staleActive.count
+  ) {
     logger.info('stale games cleanup tick', {
       normalizedFinished,
       resolvedBoth,
       resolvedSingleAbandon: resolvedAbandoned,
+      staleActiveCancelled: staleActive.count,
+      staleActiveRooms: staleActive.touched.map(t => t.roomId),
     });
   }
-  return { normalizedFinished, resolvedBoth, resolvedAbandoned };
+  return {
+    normalizedFinished,
+    resolvedBoth,
+    resolvedAbandoned,
+    staleActiveCancelled: staleActive.count,
+    staleActiveTouched: staleActive.touched,
+  };
 }
 
 /**
@@ -236,18 +341,25 @@ async function runAdminCleanupStaleGames(io = null, { orphanStaleMinutes = 43200
   const normalizedFinished = await normalizeInconsistentFinishedPartidas();
   const resolvedBoth = await resolveBothDisconnectedRows(io);
   const resolvedAbandoned = await resolveSingleAbandonRows(io);
-  const cancelledStale = await cancelAncientOrphanPartidas({ staleMinutes: orphanStaleMinutes });
+  const staleActive = await cancelStaleActivePartidas();
+  const ancient = await cancelAncientOrphanPartidas({ staleMinutes: orphanStaleMinutes });
+  const cancelledStale = ancient + staleActive.count;
   logger.info('stale games cleanup', {
     normalizedFinished,
     cancelledStale,
+    staleActiveRooms: staleActive.touched,
     resolvedAbandoned: resolvedAbandoned + resolvedBoth,
   });
   return {
     normalizedFinished,
     cancelledStale,
+    staleActiveCancelled: staleActive.count,
+    staleActiveTouched: staleActive.touched,
+    ancientOrphanCancelled: ancient,
     resolvedAbandoned: resolvedAbandoned + resolvedBoth,
     resolvedBoth,
     singleAbandon: resolvedAbandoned,
+    staleActiveMinutes: STALE_ACTIVE_MINUTES,
   };
 }
 
@@ -256,4 +368,6 @@ module.exports = {
   resolveExpiredDisconnectedGames,
   runAdminCleanupStaleGames,
   normalizeInconsistentFinishedPartidas,
+  cancelStaleActivePartidas,
+  STALE_ACTIVE_MINUTES,
 };

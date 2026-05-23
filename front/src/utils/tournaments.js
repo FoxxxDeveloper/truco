@@ -22,6 +22,44 @@ export function tournamentStatusLabel(s) {
   return map[s] || s || '—';
 }
 
+export function tournamentFormatLabel(f) {
+  const map = {
+    single_elimination: 'Eliminación directa',
+    qualifier: 'Clasificatorio',
+    finals: 'Finales',
+  };
+  return map[f] || f || '—';
+}
+
+export function tournamentPhaseLabel(p) {
+  const map = {
+    general: 'General',
+    qualifier_a: 'Clasificatorio A',
+    qualifier_b: 'Clasificatorio B',
+    finals: 'Finales',
+  };
+  return map[p] || p || '—';
+}
+
+export function matchStatusLabel(s) {
+  const map = {
+    pending: 'Pendiente',
+    ready: 'Listo para jugar',
+    waiting_ready: 'Esperando rival',
+    active: 'En juego',
+    finished: 'Finalizado',
+    walkover: 'Walkover',
+    cancelled: 'Cancelado',
+  };
+  return map[s] || s || '—';
+}
+
+/** Etiqueta de fase visible (lifecycle del API o status). */
+export function tournamentLifecycleLabel(t) {
+  if (t?.lifecycle?.phaseLabel) return t.lifecycle.phaseLabel;
+  return tournamentStatusLabel(t?.status);
+}
+
 export function registrationStatusLabel(s) {
   const map = {
     registered: 'Titular (pendiente check-in)',

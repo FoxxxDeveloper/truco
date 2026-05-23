@@ -14,7 +14,7 @@ const { v4: uuidv4 } = require('uuid');
 const { withTransaction, query } = require('../config/database');
 const WalletService = require('./walletService');
 const VerificationService = require('./verificationService');
-const { getActiveGameForUser } = require('../utils/activeGame');
+const { getActiveGameForUser, logActiveGameBlock } = require('../utils/activeGame');
 const logger = require('../config/logger');
 
 const CHALLENGE_TTL_MS = 10 * 60 * 1000; // 10 minutes — retos públicos
@@ -32,14 +32,7 @@ function calcPrizeFromAmount(amount) {
 async function assertNoActivePartida(userId) {
   const active = await getActiveGameForUser(userId);
   if (active) {
-    logger.warn('active game check blocked user', {
-      userId,
-      roomId: active.room_id,
-      state: active.state,
-      status: active.status,
-      winner_id: active.winner_id,
-      finished_at: active.finished_at,
-    });
+    logActiveGameBlock(userId, active);
     throw new Error('No podés retar mientras estás en una partida activa');
   }
 }

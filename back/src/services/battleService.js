@@ -12,7 +12,7 @@ const VerificationService = require('./verificationService');
 const NotificationService = require('./notificationService');
 const logger = require('../config/logger');
 const { auditLog } = require('../config/logger');
-const { getActiveGameForUser } = require('../utils/activeGame');
+const { getActiveGameForUser, logActiveGameBlock } = require('../utils/activeGame');
 
 const BATTLE_TTL_MS   = 15 * 60 * 1000; // 15 minutos
 const MIN_BET         = 2500;
@@ -62,14 +62,7 @@ const BattleService = {
       hasOpenBattle(creatorId),
     ]);
     if (activeRow) {
-      logger.warn('active game check blocked user (battle create)', {
-        userId: creatorId,
-        roomId: activeRow.room_id,
-        state: activeRow.state,
-        status: activeRow.status,
-        winner_id: activeRow.winner_id,
-        finished_at: activeRow.finished_at,
-      });
+      logActiveGameBlock(creatorId, activeRow);
       throw new Error('No podés crear una sala mientras estás en una partida activa');
     }
     if (openBattle)  throw new Error('Ya tenés una sala abierta. Cancelala antes de crear otra');
@@ -184,14 +177,7 @@ const BattleService = {
 
     const activeRow = await getActiveGameForUser(opponentId);
     if (activeRow) {
-      logger.warn('active game check blocked user (battle accept)', {
-        userId: opponentId,
-        roomId: activeRow.room_id,
-        state: activeRow.state,
-        status: activeRow.status,
-        winner_id: activeRow.winner_id,
-        finished_at: activeRow.finished_at,
-      });
+      logActiveGameBlock(opponentId, activeRow);
       throw new Error('No podés aceptar una sala mientras estás en una partida activa');
     }
 

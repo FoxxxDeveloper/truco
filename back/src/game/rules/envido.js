@@ -1,4 +1,5 @@
 const { getEnvidoValue } = require('./cardHierarchy');
+const logger = require('../../config/logger');
 
 /**
  * Calculates envido points for a hand of 3 cards.
@@ -26,7 +27,52 @@ function calculateEnvido(cards) {
     if (points > best) best = points;
   }
 
+  if (best > 33) {
+    logger.warn('calculateEnvido: envido > 33 (invalid hand or duplicate cards in deck)', {
+      best,
+      cardIds: cards.map(c => (c && c.id) || `${c?.value}_${c?.suit}`),
+    });
+  }
+
   return best;
+}
+
+/**
+ * Cartas mínimas que justifican el tanto de envido (para proof al irse al mazo).
+ * - 2+ del mismo palo: las 2 de mayor valor de envido de ese palo (no las 3).
+ * - Sin palo repetido: solo la carta de mayor valor de envido.
+ */
+function getEnvidoProofCards(cards) {
+  if (!cards || cards.length === 0) return [];
+
+  const bySuit = {};
+  for (const card of cards) {
+    const suit = card.suit;
+    if (!bySuit[suit]) bySuit[suit] = [];
+    bySuit[suit].push({ card, val: getEnvidoValue(card.value) });
+  }
+
+  let bestPair = null;
+  let bestSingle = null;
+
+  for (const suit of Object.keys(bySuit)) {
+    const entries = bySuit[suit].sort((a, b) => b.val - a.val);
+    if (entries.length >= 2) {
+      const pts = 20 + entries[0].val + entries[1].val;
+      if (!bestPair || pts > bestPair.pts) {
+        bestPair = { pts, entries: entries.slice(0, 2) };
+      }
+    }
+    const top = entries[0];
+    if (top && (!bestSingle || top.val > bestSingle.val)) {
+      bestSingle = top;
+    }
+  }
+
+  if (bestPair) {
+    return bestPair.entries.map(e => e.card);
+  }
+  return bestSingle ? [bestSingle.card] : [];
 }
 
 /**
@@ -64,7 +110,16 @@ function canRaiseEnvido(stack, newBet) {
 }
 
 /**
- * Resolves envido bet value when the bet is ACCEPTED.
+ * Falta Envido (aceptada): puntos que le faltan al oponente del ganador para llegar al objetivo.
+ * No usar max(scoreP1, scoreP2).
+ */
+function getFaltaEnvidoPointsForWinner(winnerId, player1Id, player2Id, scoreP1, scoreP2, pointsToWin = 30) {
+  const opponentScore = String(winnerId) === String(player1Id) ? Number(scoreP2) : Number(scoreP1);
+  return Math.max(Number(pointsToWin) - opponentScore, 1);
+}
+
+/**
+ * Resolves envido bet value when the bet is ACCEPTED (except Falta Envido: usar getFaltaEnvidoPointsForWinner tras conocer ganador).
  *
  * Accepted stakes by chain:
  *  ["envido"]                             → 2
@@ -72,14 +127,13 @@ function canRaiseEnvido(stack, newBet) {
  *  ["envido","envido"]                    → 4  (2 × 2)
  *  ["envido","real_envido"]               → 5  (2 + 3)
  *  ["envido","envido","real_envido"]      → 7  (4 + 3)
- *  any chain ending in "falta_envido"     → pointsToWin − max(scoreP1, scoreP2), min 1
+ *  any chain ending in "falta_envido"     → null (calcular con getFaltaEnvidoPointsForWinner)
  */
 function getEnvidoStake(betStack, scoreP1, scoreP2, pointsToWin = 30) {
   const last = betStack[betStack.length - 1];
 
   if (last === 'falta_envido') {
-    const maxScore = Math.max(scoreP1, scoreP2);
-    return Math.max(pointsToWin - maxScore, 1);
+    return null;
   }
 
   // Count how many 'envido' entries precede the real_envido (or are the entire stack)
@@ -91,4 +145,10 @@ function getEnvidoStake(betStack, scoreP1, scoreP2, pointsToWin = 30) {
   return 1;
 }
 
-module.exports = { calculateEnvido, canRaiseEnvido, getEnvidoStake };
+module.exports = {
+  calculateEnvido,
+  canRaiseEnvido,
+  getEnvidoStake,
+  getFaltaEnvidoPointsForWinner,
+  getEnvidoProofCards,
+};
