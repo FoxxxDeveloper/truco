@@ -157,7 +157,7 @@ export default function PublicProfileModal({
                     <Shield className="public-profile-shield" size={18} aria-label="Identidad no verificada" />
                   )}
                 </div>
-                <p className="public-profile-elo">ELO {profile.elo}</p>
+                <p className="public-profile-elo">{profile.elo} pts</p>
               </div>
             </div>
 

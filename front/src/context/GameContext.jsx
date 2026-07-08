@@ -11,6 +11,7 @@ import { getSocket } from '../services/socket';
 import toast from 'react-hot-toast';
 import { toastErrorOnce } from '../utils/toastOnce';
 import { isPerfEnabled, perfMark } from '../utils/perf';
+import { RANKED_ENABLED } from '../config/features';
 
 const GamePlayContext = createContext(null);
 const GameChatContext = createContext(null);
@@ -233,7 +234,7 @@ socket.on('matchFound', ({ roomId: rid, opponent: opp, gameState: gs }) => {
       return;
     }
     const normalizedOptions = {
-      modo: options.modo === 'ranked' ? 'ranked' : 'casual',
+      modo: RANKED_ENABLED && options.modo === 'ranked' ? 'ranked' : 'casual',
       puntosMaximos: Number(options.puntosMaximos) === 15 ? 15 : 30,
       florHabilitada: Boolean(options.florHabilitada),
     };

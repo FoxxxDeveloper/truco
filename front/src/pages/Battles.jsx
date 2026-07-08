@@ -57,7 +57,7 @@ function PublicBattleCard({ battle, onAccept, loading }) {
       </div>
       <div className="battle-card-header">
         <span className="battle-creator">{battle.creatorUsername}</span>
-        {battle.creatorElo != null && <span className="battle-elo">ELO {battle.creatorElo}</span>}
+        {battle.creatorElo != null && <span className="battle-elo">{battle.creatorElo} pts</span>}
         <Countdown expiresAt={battle.expiresAt} />
       </div>
       <div className="battle-amounts">

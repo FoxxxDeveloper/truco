@@ -410,14 +410,6 @@ this.pendingTrucoAfterEnvido = null;
       return { ok: false, error: 'No podés cantar sobre el 4 en una mano decisiva.' };
     }
 
-    if (
-      this.state === STATES.TRUCO_PENDING &&
-      Number(playerId) !== Number(this.trucoPendingBy) &&
-      this._playerAlreadyPlayedInCurrentMano(playerId)
-    ) {
-      return { ok: false, error: 'No podés cantar después de jugar tu carta.' };
-    }
-
     // Cannot call initial Truco on the last mano holding only a 4 (power 14 = lowest)
     if (this.currentMano === 2 && this.trucoBetStack.length === 0 && betType === 'truco') {
       const hand = this.hands[playerId];
@@ -484,9 +476,6 @@ this.pendingTrucoAfterEnvido = null;
     }
 
     if (response === 'raise') {
-      if (this._playerAlreadyPlayedInCurrentMano(playerId)) {
-        return { ok: false, error: 'No podés subir después de jugar tu carta.' };
-      }
       if (this._cannotTrucoLadderDueToOpeningFourDecisiveMano(playerId)) {
         return { ok: false, error: 'No podés cantar sobre el 4 en una mano decisiva.' };
       }
@@ -509,7 +498,8 @@ this.pendingTrucoAfterEnvido = null;
       this.state = STATES.TRUCO_PENDING;
       return {
         ok: true,
-        event: 'TRUCO_ANNOUNCED',
+        event: 'TRUCO_RAISED',
+        response: 'raise',
         betType: nextBet,
         by: playerId,
         respondingPlayer: this._otherPlayer(playerId),
@@ -957,8 +947,7 @@ case 'falta_envido':
     const canRaiseTruco =
       mustRespondTruco &&
       !!nextRaiseForResponder &&
-      !blockedFour &&
-      !this._playerAlreadyPlayedInCurrentMano(playerId);
+      !blockedFour;
 
     const mustRespondEnvido =
       pendingEnvido && pid !== Number(this.envidoPendingBy);

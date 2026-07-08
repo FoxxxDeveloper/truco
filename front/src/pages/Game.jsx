@@ -250,7 +250,7 @@ export default function Game() {
                 Si abandonás, tu rival gana automáticamente.
               </p>
               <p className="game-modal-warn">
-                Perderás puntos ELO y cualquier apuesta activa.
+                Perderás puntos y cualquier apuesta activa.
               </p>
               <div className="game-modal-actions">
                 <button

@@ -21,6 +21,7 @@ import {
 import { useAuth } from '../../context/AuthContext';
 import { useChatShell } from '../../context/ChatShellContext';
 import { walletApi, rankingApi, verificationApi } from '../../services/api';
+import { RANKED_ENABLED } from '../../config/features';
 import BrandNavLockup from '../brand/BrandNavLockup';
 import NotificationBell from '../social/NotificationBell';
 import FriendsList from '../social/FriendsList';
@@ -139,10 +140,22 @@ export default function AppHeader({
               <Swords size={17} aria-hidden />
               <span className="app-header-nav-text">Batallas</span>
             </button>
-            <button type="button" className="app-header-nav-btn app-header-nav-btn--icon" onClick={() => navigate('/ranking')} title="Ranking">
-              <BarChart2 size={17} aria-hidden />
-              <span className="app-header-nav-text">Ranking</span>
-            </button>
+            {RANKED_ENABLED ? (
+              <button type="button" className="app-header-nav-btn app-header-nav-btn--icon" onClick={() => navigate('/ranking')} title="Ranking">
+                <BarChart2 size={17} aria-hidden />
+                <span className="app-header-nav-text">Ranking</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="app-header-nav-btn app-header-nav-btn--icon app-header-nav-btn--muted"
+                onClick={() => navigate('/ranking')}
+                title="Ranking próximamente"
+              >
+                <BarChart2 size={17} aria-hidden />
+                <span className="app-header-nav-text">Ranking</span>
+              </button>
+            )}
             <Link to="/reglas" className="app-header-nav-btn app-header-nav-btn--icon app-header-nav-btn--ghost" title="Reglas">
               <BookOpen size={17} aria-hidden />
               <span className="app-header-nav-text">Reglas</span>
@@ -215,7 +228,7 @@ export default function AppHeader({
                 <TrucoAvatar username={user?.username} avatar={user?.avatar} size={34} className="app-header-avatar" />
                 <span className="app-header-profile-text">
                   <span className="app-header-profile-name">{user?.username}</span>
-                  {myElo != null && <span className="app-header-profile-elo">ELO {myElo}</span>}
+                  {myElo != null && <span className="app-header-profile-elo">{myElo} pts</span>}
                 </span>
                 <ChevronDown size={14} className={profileMenuOpen ? 'app-header-chev--open' : ''} aria-hidden />
               </button>

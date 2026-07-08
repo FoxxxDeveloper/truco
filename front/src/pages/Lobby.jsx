@@ -7,6 +7,7 @@ import { useGame } from '../context/GameContext';
 import toast from 'react-hot-toast';
 import { ADMIN_MSG, isAdminUser } from '../utils/adminPlayer';
 import { rankingApi, tournamentApi } from '../services/api';
+import { RANKED_ENABLED } from '../config/features';
 import AppHeader from '../components/layout/AppHeader';
 import wordmarkDarkUrl from '../assets/panoramicooscuro.png';
 import { getCardSvgUrl, getCardWebpUrl } from '../utils/cardAssets';
@@ -156,16 +157,18 @@ export default function Lobby() {
                         <option value={30}>30 puntos</option>
                       </select>
                     </label>
-                    <label className="option-row">
-                      <span className="option-label">Modo</span>
-                      <select
-                        value={gameOptions.modo}
-                        onChange={(e) => setGameOptions((o) => ({ ...o, modo: e.target.value }))}
-                      >
-                        <option value="casual">Casual</option>
-                        <option value="ranked">Ranking</option>
-                      </select>
-                    </label>
+                    {RANKED_ENABLED && (
+                      <label className="option-row">
+                        <span className="option-label">Modo</span>
+                        <select
+                          value={gameOptions.modo}
+                          onChange={(e) => setGameOptions((o) => ({ ...o, modo: e.target.value }))}
+                        >
+                          <option value="casual">Casual</option>
+                          <option value="ranked">Ranking</option>
+                        </select>
+                      </label>
+                    )}
                     <label className="option-row">
                       <span className="option-label">Flor habilitada</span>
                       <input
@@ -261,7 +264,7 @@ export default function Lobby() {
                   </div>
                   <div className="lobby-stat-mini">
                     <span className="lobby-stat-val">{myRank.elo ?? 1000}</span>
-                    <span className="lobby-stat-lbl">ELO</span>
+                    <span className="lobby-stat-lbl">Puntos</span>
                   </div>
                 </div>
               </section>
@@ -274,10 +277,22 @@ export default function Lobby() {
                   <History size={16} aria-hidden />
                   Historial
                 </button>
-                <button type="button" className="lobby-quick-btn" onClick={() => navigate('/ranking')}>
-                  <BarChart2 size={16} aria-hidden />
-                  Ranking
-                </button>
+                {RANKED_ENABLED ? (
+                  <button type="button" className="lobby-quick-btn" onClick={() => navigate('/ranking')}>
+                    <BarChart2 size={16} aria-hidden />
+                    Ranking
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="lobby-quick-btn lobby-quick-btn--disabled"
+                    disabled
+                    title="Ranking próximamente"
+                  >
+                    <BarChart2 size={16} aria-hidden />
+                    Ranking (próx.)
+                  </button>
+                )}
                 <button type="button" className="lobby-quick-btn" onClick={() => navigate('/torneos')}>
                   <Trophy size={16} aria-hidden />
                   Torneos

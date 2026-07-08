@@ -2,7 +2,7 @@
  * Auditoría temporal de emits socket por acción de juego.
  * Activar: SOCKET_PERF_AUDIT=1 en .env del backend
  */
-const logger = require('./logger');
+const logger = require('../config/logger');
 
 const enabled = () => process.env.SOCKET_PERF_AUDIT === '1';
 

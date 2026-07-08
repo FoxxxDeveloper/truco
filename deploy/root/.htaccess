@@ -1,0 +1,30 @@
+# TrucoFX — SPA en raíz (https://trucofx.com/)
+# Copiar junto a index.html del build (front/dist/).
+
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteBase /
+
+  # Redirigir /test (deploy anterior) a la raíz
+  RewriteRule ^test/?(.*)$ /$1 [R=301,L]
+
+  # No tocar API, sockets ni uploads (proxy Apache)
+  RewriteRule ^api(/|$) - [L]
+  RewriteRule ^socket\.io(/|$) - [L]
+  RewriteRule ^uploads(/|$) - [L]
+
+  # Archivos estáticos existentes
+  RewriteCond %{REQUEST_FILENAME} -f [OR]
+  RewriteCond %{REQUEST_FILENAME} -d
+  RewriteRule ^ - [L]
+
+  # React Router — todas las rutas de la app
+  RewriteRule ^ index.html [L]
+</IfModule>
+
+# Cache corto para HTML (SPA)
+<IfModule mod_headers.c>
+  <FilesMatch "index\.html$">
+    Header set Cache-Control "no-cache, must-revalidate"
+  </FilesMatch>
+</IfModule>

@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { playSound, preloadSounds, unlockAudio } from '../services/soundManager';
+import { playSound, preloadSounds, unlockAudio, stopVoiceSounds } from '../services/soundManager';
 
 /**
  * Mismo jugador en payload (id numérico o string).
@@ -17,26 +17,26 @@ function normId(v) {
   return String(v);
 }
 
+function roomKey(gameState) {
+  return gameState?.roomId != null ? String(gameState.roomId) : '';
+}
+
 /**
  * Voz masculina = cantás / respondés vos; voz femenina = cantó o respondió el rival.
- *
- * @param {string | number | null | undefined} speakerId  Quién “habla” en el audio
- * @param {string | number | null | undefined} myUserId  Tu id de usuario (Auth)
- * @returns {'male' | 'female' | 'any'}
  */
 export function getSoundGenderForActor(speakerId, myUserId) {
   if (speakerId == null || myUserId == null) return 'any';
   return samePlayerId(speakerId, myUserId) ? 'male' : 'female';
 }
 
+function playTrucoBetSound(betType, gender) {
+  if (betType === 'retruco') playSound('retruco', { gender });
+  else if (betType === 'vale4') playSound('valeCuatro', { gender });
+  else playSound('truco', { gender });
+}
+
 /**
  * Reproduce cantos según eventos confirmados por socket (lastEvent) y cambios de estado.
- * No usa ElevenLabs en runtime.
- *
- * @param {object | null} gameState
- * @param {{ id?: string | number } | null} user
- * @param {object | null} lastEvent
- * @param {object | null} gameOver
  */
 export function useGameSounds(gameState, user, lastEvent, gameOver) {
   const myId = user?.id != null ? normId(user.id) : null;
@@ -66,7 +66,7 @@ export function useGameSounds(gameState, user, lastEvent, gameOver) {
   }, []);
 
   useEffect(() => {
-    const rid = gameState?.roomId != null ? String(gameState.roomId) : null;
+    const rid = roomKey(gameState);
     if (rid && lastRoomIdRef.current !== rid) {
       lastRoomIdRef.current = rid;
       lastTrucoAnnRef.current = null;
@@ -97,17 +97,17 @@ export function useGameSounds(gameState, user, lastEvent, gameOver) {
     };
 
     const t = lastEvent.type;
+    const rid = roomKey(gameState);
 
     if (t === 'TRUCO_ANNOUNCED') {
       const bet = lastEvent.betType;
       const by = lastEvent.by != null ? normId(lastEvent.by) : null;
-      const key = `${by}-${bet}`;
+      const stackLen = gameState?.trucoBetStack?.length ?? '';
+      const key = `${rid}-ta-${by}-${bet}-${stackLen}`;
       if (lastTrucoAnnRef.current === key) return;
       lastTrucoAnnRef.current = key;
       const g = getSoundGenderForActor(by, myId);
-      if (bet === 'retruco') playSound('retruco', { gender: g });
-      else if (bet === 'vale4') playSound('valeCuatro', { gender: g });
-      else playSound('truco', { gender: g });
+      playTrucoBetSound(bet, g);
       return () => clearSonBuenas();
     }
 
@@ -115,19 +115,37 @@ export function useGameSounds(gameState, user, lastEvent, gameOver) {
       const ev = lastEvent.event;
       const respondedBy =
         lastEvent.respondedBy != null ? normId(lastEvent.respondedBy) : null;
-      const key = `${ev}-${lastEvent.stake ?? lastEvent.points ?? ''}-${respondedBy ?? ''}`;
+      const response = lastEvent.response ?? '';
+      const betType = lastEvent.betType ?? '';
+      const stackLen = gameState?.trucoBetStack?.length ?? '';
+      const key = `${rid}-tr-${ev}-${response}-${betType}-${stackLen}-${respondedBy ?? ''}`;
       if (lastTrucoResRef.current === key) return;
       lastTrucoResRef.current = key;
+
       const g = getSoundGenderForActor(respondedBy, myId);
-      if (ev === 'TRUCO_ACCEPTED') playSound('quiero', { gender: g });
-      else if (ev === 'TRUCO_REJECTED') playSound('noQuiero', { gender: g });
+
+      if (ev === 'TRUCO_RAISED' || response === 'raise' || ev === 'TRUCO_ANNOUNCED') {
+        playTrucoBetSound(betType, g);
+        return () => clearSonBuenas();
+      }
+
+      if (ev === 'TRUCO_ACCEPTED') {
+        playSound('quiero', { gender: g });
+        return () => clearSonBuenas();
+      }
+      if (ev === 'TRUCO_REJECTED') {
+        playSound('noQuiero', { gender: g });
+        return () => clearSonBuenas();
+      }
+
       return () => clearSonBuenas();
     }
 
     if (t === 'ENVIDO_ANNOUNCED') {
       const bet = lastEvent.betType;
       const by = lastEvent.by != null ? normId(lastEvent.by) : null;
-      const key = `${by}-${bet}`;
+      const stackLen = gameState?.envidoBetStack?.length ?? '';
+      const key = `${rid}-ea-${by}-${bet}-${stackLen}`;
       if (lastEnvidoAnnounceKeyRef.current === key) return;
       lastEnvidoAnnounceKeyRef.current = key;
       const g = getSoundGenderForActor(by, myId);
@@ -139,10 +157,11 @@ export function useGameSounds(gameState, user, lastEvent, gameOver) {
 
     if (t === 'ENVIDO_RESULT') {
       const ev = lastEvent.event;
-      const pts = lastEvent.points ?? '';
       const respondedBy =
         lastEvent.respondedBy != null ? normId(lastEvent.respondedBy) : null;
-      const key = `${ev}-${pts}-${JSON.stringify(lastEvent.envidoReveal || {})}-${respondedBy ?? ''}`;
+      const s0 = gameState?.scores?.[Object.keys(gameState?.scores || {})[0]];
+      const s1 = gameState?.scores?.[Object.keys(gameState?.scores || {})[1]];
+      const key = `${rid}-er-${ev}-${lastEvent.reason ?? ''}-${respondedBy ?? ''}-${s0}-${s1}`;
       if (lastEnvidoResultKeyRef.current === key) return;
       lastEnvidoResultKeyRef.current = key;
 
@@ -173,7 +192,7 @@ export function useGameSounds(gameState, user, lastEvent, gameOver) {
     if (t === 'FLOR_ANNOUNCED') {
       const inner = lastEvent.event;
       const by = lastEvent.by != null ? normId(lastEvent.by) : null;
-      const key = `${by}-${inner}`;
+      const key = `${rid}-fa-${by}-${inner}`;
       if (lastFlorAnnounceKeyRef.current === key) return;
       lastFlorAnnounceKeyRef.current = key;
       const g = getSoundGenderForActor(by, myId);
@@ -184,11 +203,10 @@ export function useGameSounds(gameState, user, lastEvent, gameOver) {
 
     if (t === 'FLOR_RESULT') {
       const reason = lastEvent.reason || lastEvent.florResultReason || '';
-      const pts = lastEvent.points ?? '';
       const w = lastEvent.winner != null ? normId(lastEvent.winner) : '';
       const respondedBy =
         lastEvent.respondedBy != null ? normId(lastEvent.respondedBy) : null;
-      const key = `${reason}-${w}-${pts}-${lastEvent.florPoints ? 'cmp' : 'nocmp'}-${respondedBy ?? ''}`;
+      const key = `${rid}-fr-${reason}-${w}-${lastEvent.points ?? ''}-${respondedBy ?? ''}`;
       if (lastFlorResultKeyRef.current === key) return;
       lastFlorResultKeyRef.current = key;
 
@@ -223,10 +241,9 @@ export function useGameSounds(gameState, user, lastEvent, gameOver) {
     if (t === 'CARD_PLAYED') {
       const by = lastEvent.playerId != null ? normId(lastEvent.playerId) : null;
       const cardId = lastEvent.cardId ?? '';
-      const rid = gameState?.roomId != null ? String(gameState.roomId) : '';
       const mano = gameState?.currentMano ?? '';
       const playedLen = gameState?.playedCards?.[mano]?.length ?? '';
-      const key = `${rid}-${mano}-${playedLen}-${by}-${cardId}`;
+      const key = `${rid}-cp-${mano}-${playedLen}-${by}-${cardId}`;
       if (lastCardPlayedKeyRef.current === key) return;
       lastCardPlayedKeyRef.current = key;
       if (by && samePlayerId(by, myId)) {
@@ -241,25 +258,28 @@ export function useGameSounds(gameState, user, lastEvent, gameOver) {
 
     if (t === 'GAME_OVER') {
       const w = lastEvent.winner != null ? normId(lastEvent.winner) : '';
-      const rid = gameState?.roomId != null ? String(gameState.roomId) : '';
-      const key = `${rid}-go-${w}-${lastEvent.reason ?? ''}`;
+      const s0 = gameState?.scores?.[Object.keys(gameState?.scores || {})[0]];
+      const s1 = gameState?.scores?.[Object.keys(gameState?.scores || {})[1]];
+      const key = `${rid}-go-${w}-${s0}-${s1}-${lastEvent.reason ?? ''}`;
       if (lastGameOverKeyRef.current === key) return;
       lastGameOverKeyRef.current = key;
+      stopVoiceSounds();
       if (w && samePlayerId(w, myId)) playSound('victory');
       else if (w) playSound('defeat');
     }
 
     return () => clearSonBuenas();
-  }, [lastEvent, myId, gameState?.roomId, gameState?.currentMano, gameState?.playedCards]);
+  }, [lastEvent, myId, gameState?.roomId, gameState?.currentMano, gameState?.playedCards, gameState?.trucoBetStack, gameState?.envidoBetStack, gameState?.scores]);
 
   useEffect(() => {
     if (!gameOver || !myId) return;
     const w = gameOver.winner != null ? normId(gameOver.winner) : null;
     if (!w) return;
-    const rid = gameState?.roomId != null ? String(gameState.roomId) : '';
+    const rid = roomKey(gameState);
     const key = `${rid}-go-${w}-${gameOver.reason ?? ''}`;
     if (lastGameOverKeyRef.current === key) return;
     lastGameOverKeyRef.current = key;
+    stopVoiceSounds();
     if (samePlayerId(w, myId)) playSound('victory');
     else playSound('defeat');
   }, [gameOver, gameState?.roomId, myId]);
@@ -288,8 +308,7 @@ export function useGameSounds(gameState, user, lastEvent, gameOver) {
       .map((c) => c?.id ?? `${c?.value}_${c?.suit}`)
       .sort()
       .join(',');
-    const rid = gameState.roomId != null ? String(gameState.roomId) : '';
-    const key = `${rid}-init-${handKey}`;
+    const key = `${roomKey(gameState)}-init-${handKey}`;
     if (lastCardInitKeyRef.current === key) return;
     lastCardInitKeyRef.current = key;
     playSound('cardInit');
@@ -317,7 +336,8 @@ export function useGameSounds(gameState, user, lastEvent, gameOver) {
   }, [gameState?.waitingForPlayer, gameState, myId]);
 
   useEffect(() => {
-    if (!gameState || !myId) return;
+    if (!gameState || !myId || gameOver) return;
+    if (gameState.state === 'GAME_OVER') return;
     const results = gameState.manoResults;
     if (!Array.isArray(results)) return;
     const len = results.length;
@@ -331,5 +351,5 @@ export function useGameSounds(gameState, user, lastEvent, gameOver) {
     if (winner == null) return;
     if (samePlayerId(winner, myId)) playSound('manoGanada');
     else playSound('manoPerdida');
-  }, [gameState?.manoResults, gameState, myId]);
+  }, [gameState?.manoResults, gameState?.state, gameState, gameOver, myId]);
 }

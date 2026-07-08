@@ -1,6 +1,5 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
 import BrandNavLockup from '../components/brand/BrandNavLockup';
 import wordmarkBwUrl from '../assets/panoramicobw.png';
@@ -15,6 +14,7 @@ export default function Login() {
   });
 
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -29,21 +29,25 @@ export default function Login() {
     e.preventDefault();
 
     if (!form.email.trim() || !form.password.trim()) {
-      toast.error('Completá email y contraseña');
+      setError('Completá email y contraseña.');
       return;
     }
 
+    setError('');
     setLoading(true);
 
     try {
       await login(form.email.trim(), form.password);
-      toast.success('Bienvenido');
       navigate('/lobby');
     } catch (err) {
-      if (err.response?.status === 429) {
-        toast.error('Demasiados intentos. Esperá un momento y volvé a probar.');
+      const status = err.response?.status;
+
+      if (status === 429) {
+        setError('Demasiados intentos. Esperá un momento y volvé a probar.');
+      } else if (status === 400 || status === 401) {
+        setError('Usuario o contraseña incorrectos.');
       } else {
-        toast.error(err.response?.data?.error || 'No se pudo iniciar sesión');
+        setError('No pudimos iniciar sesión. Intentá nuevamente.');
       }
     } finally {
       setLoading(false);
@@ -65,6 +69,12 @@ export default function Login() {
               <div className="auth-title">
                 <h2>Iniciar sesión</h2>
               </div>
+
+              {error && (
+                <div className="auth-error" role="alert">
+                  {error}
+                </div>
+              )}
 
               <div className="form-group">
                 <label className="form-label" htmlFor="email">
@@ -99,8 +109,6 @@ export default function Login() {
                   autoComplete="current-password"
                 />
               </div>
-
-              <p className="auth-form-hint">Los errores se muestran arriba como avisos.</p>
 
               <button type="submit" className="btn btn-primary btn-block" disabled={loading}>
                 {loading ? 'Entrando…' : 'Ingresar'}

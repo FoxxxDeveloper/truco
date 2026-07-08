@@ -180,7 +180,7 @@ export default function ProfilePage() {
           <div className="profile-hero-info">
             <div className="profile-name-row">
               <h1 className="profile-username">{profile.username}</h1>
-              {rank && <span className="fx-badge fx-badge--gold">ELO {rank.elo}</span>}
+              {rank && <span className="fx-badge fx-badge--gold">{rank.elo} pts</span>}
               {rank?.rank != null && <span className="fx-badge fx-badge--muted">Puesto #{rank.rank}</span>}
             </div>
             <div className="profile-history-actions">
@@ -250,7 +250,7 @@ export default function ProfilePage() {
         animate={{ opacity: 1, y: 0 }}
         transition={{ delay: 0.06 }}
       >
-        <StatCard label="ELO" value={rank?.elo ?? profile.elo ?? 1000} mod="profile-stat--elo" />
+        <StatCard label="Puntos" value={rank?.elo ?? profile.elo ?? 1000} mod="profile-stat--elo" />
         <StatCard label="Victorias" value={profile.wins || 0} mod="profile-stat--wins" />
         <StatCard label="Derrotas" value={profile.losses || 0} mod="profile-stat--losses" />
         <StatCard label="Win rate" value={`${winrate}%`} mod={winrate >= 50 ? 'profile-stat--wr-good' : ''} />

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { rankingApi } from '../services/api';
 import { useAuth } from '../context/AuthContext';
@@ -7,6 +8,7 @@ import { Trophy } from 'lucide-react';
 import PublicProfileModal from '../components/profile/PublicProfileModal';
 import AppHeader from '../components/layout/AppHeader';
 import TrucoAvatar from '../components/avatar/TrucoAvatar';
+import { RANKED_ENABLED } from '../config/features';
 
 const MEDAL_LABELS = ['1°', '2°', '3°'];
 
@@ -19,6 +21,10 @@ export default function Ranking() {
   const { user } = useAuth();
 
   useEffect(() => {
+    if (!RANKED_ENABLED) {
+      setLoading(false);
+      return;
+    }
     Promise.all([rankingApi.getGlobal(50), rankingApi.getMe().catch(() => null)])
       .then(([globalRes, meRes]) => {
         setRanking(globalRes.data.ranking || []);
@@ -46,6 +52,27 @@ export default function Ranking() {
     return { isMe, pct, pos, tier };
   };
 
+  if (!RANKED_ENABLED) {
+    return (
+      <div className="ranking-page ranking-page--et4 page-container app-page">
+        <AppHeader />
+        <div className="page-shell">
+          <div className="ranking-hero fx-card ranking-coming-soon">
+            <Trophy className="ranking-hero-icon" size={28} aria-hidden />
+            <h1 className="ranking-page-title">Ranking próximamente</h1>
+            <p className="ranking-page-sub">
+              Por ahora solo hay partidas <strong>Casual</strong> en el lobby. El ranking competitivo
+              se activará cuando haya más jugadores.
+            </p>
+            <Link to="/lobby" className="btn btn-primary">
+              Volver al lobby
+            </Link>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="ranking-page ranking-page--et4 page-container app-page">
       <AppHeader />
@@ -61,7 +88,7 @@ export default function Ranking() {
         </div>
         {myRank && (
           <div className="ranking-my-banner fx-badge fx-badge--gold">
-            Tu posición: #{myRank.rank} · ELO {myRank.elo}
+            Tu posición: #{myRank.rank} · {myRank.elo} pts
           </div>
         )}
       </div>
@@ -86,7 +113,7 @@ export default function Ranking() {
                 <tr>
                   <th className="ranking-th-pos">#</th>
                   <th>Jugador</th>
-                  <th>ELO</th>
+                  <th>Puntos</th>
                   <th>Victorias</th>
                   <th>Derrotas</th>
                   <th>Win rate</th>
@@ -154,7 +181,7 @@ export default function Ranking() {
                         `#${pos}`
                       )}
                     </span>
-                    <span className="ranking-card-elo">{r.elo} ELO</span>
+                    <span className="ranking-card-elo">{r.elo} pts</span>
                   </div>
                   <div className="ranking-card-mobile-player">
                     <TrucoAvatar username={r.username} avatar={r.avatar} size={36} className="ranking-avatar" />

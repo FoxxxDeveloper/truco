@@ -61,7 +61,7 @@ export default function GameOverModal({ gameOver, myId }) {
 
           {delta !== undefined && (
             <div className={`game-over-elo ${delta >= 0 ? 'game-over-elo--up' : 'game-over-elo--down'}`}>
-              ELO: {delta >= 0 ? '+' : ''}{delta}
+              Puntos: {delta >= 0 ? '+' : ''}{delta}
             </div>
           )}
 

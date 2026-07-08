@@ -338,7 +338,7 @@ export default function FriendsList({ onClose, onStartChat, onChallengeFriend, u
                         <div className="friend-meta friend-row__info">
                           <div className="friend-row__title">
                             <span className="friend-row__username">{f.username}</span>
-                            <span className="friend-row__elo">ELO {f.elo ?? '—'}</span>
+                            <span className="friend-row__elo">{f.elo ?? '—'} pts</span>
                           </div>
                           <div className="friend-row__badges">{presenceBadge(f.id)}</div>
                         </div>
@@ -523,7 +523,7 @@ export default function FriendsList({ onClose, onStartChat, onChallengeFriend, u
                     <div className="friend-meta friend-row__info">
                       <div className="friend-row__title">
                         <span className="friend-row__username">{searchResult.username}</span>
-                        <span className="friend-row__elo">ELO {searchResult.elo ?? '—'}</span>
+                        <span className="friend-row__elo">{searchResult.elo ?? '—'} pts</span>
                       </div>
                     </div>
                   </div>

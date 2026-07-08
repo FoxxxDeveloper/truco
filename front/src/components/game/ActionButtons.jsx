@@ -47,6 +47,13 @@ function fallbackNextTrucoRaiseBet(trucoBetStack) {
   return ladder[idx + 1];
 }
 
+function trucoBetButtonLabel(bet) {
+  if (bet === 'vale4') return 'Vale 4';
+  if (bet === 'retruco') return 'Retruco';
+  if (bet === 'truco') return 'Truco';
+  return 'Subir';
+}
+
 /** Próximo canto al responder con subida directa (Truco→Retruco, Retruco→Vale 4). */
 function pickTrucoResponseRaiseBet(gameState, trucoBetStack) {
   const serverBet =
@@ -230,8 +237,8 @@ function ActionButtons({
   const canRaiseTrucoBtn =
     mustRespondTruco &&
     !blockedTrucoLadder &&
-    (gameState.canRaiseTruco === true ||
-      (gameState.canRaiseTruco !== false && trucoResponseRaiseBet != null));
+    trucoResponseRaiseBet != null &&
+    (gameState.canRaiseTruco === true || gameState.canRaiseTruco !== false);
   const canEnvidoBeforeTruco = gameState.canEnvidoBeforeTruco === true;
 
   const showQuieroTruco = mustRespondTruco && gameState.canAcceptTruco !== false;
@@ -271,7 +278,7 @@ function ActionButtons({
   const showNormalActions =
     !isPendingEnvido && !isPendingTruco && !florPanelActive && hasAnyNormalAction;
 
-  const raiseTrucoLabel = trucoResponseRaiseBet === 'vale4' ? 'Vale 4' : 'Retruco';
+  const raiseTrucoLabel = trucoBetButtonLabel(trucoResponseRaiseBet);
 
   const trucoTitle = String(currentTrucoBet).replace(/_/g, ' ').toUpperCase();
   const envidoTitle = String(currentEnvidoBet).replace(/_/g, ' ').toUpperCase();

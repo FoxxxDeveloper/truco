@@ -5,6 +5,7 @@ const { trackUserRoom, startTurnTimerPublic } = require('./gameHandler');
 const { getActiveGameForUser, logActiveGameBlock } = require('../../utils/activeGame');
 const logger      = require('../../config/logger');
 const { assertPlayerParticipationAllowed } = require('../../utils/adminGuard');
+const { isRankedEnabled } = require('../../config/features');
 
 /**
  * Handles all matchmaking events for a connected socket.
@@ -20,6 +21,13 @@ function registerMatchmakingHandlers(io, socket, user) {
     }
 
     const gameOptions = normalizeGameOptions(options);
+
+    if (!isRankedEnabled() && gameOptions.modo === 'ranked') {
+      socket.emit('queue:error', {
+        error: 'Las partidas ranked están deshabilitadas temporalmente.',
+      });
+      return;
+    }
 
     const activeRow = await getActiveGameForUser(user.id);
     if (activeRow) {
@@ -83,10 +91,14 @@ function findUserSocket(io, userId) {
 }
 
 function normalizeGameOptions(options = {}) {
+  const wantsRanked =
+    options.modo === 'ranked' || options.modo === 'ranking';
+  const modo =
+    isRankedEnabled() && wantsRanked ? 'ranked' : 'casual';
   return {
     puntosMaximos: Number(options.puntosMaximos) === 15 ? 15 : 30,
     florHabilitada: Boolean(options.florHabilitada),
-    modo: options.modo === 'ranked' ? 'ranked' : 'casual',
+    modo,
   };
 }
 

@@ -853,7 +853,7 @@ export default function Admin() {
                 <table className="admin-table">
                   <thead>
                     <tr>
-                      {['ID', 'Usuario', 'Email', 'Verificación', 'Rol', 'Estado', 'ELO', 'W/L', 'Créditos', 'Retiro pend.', 'Acciones'].map((h) => (
+                      {['ID', 'Usuario', 'Email', 'Verificación', 'Rol', 'Estado', 'Puntos', 'W/L', 'Créditos', 'Retiro pend.', 'Acciones'].map((h) => (
                         <th key={h}>{h}</th>
                       ))}
                     </tr>

@@ -83,13 +83,13 @@ router.post('/login', loginLimiter, async (req, res) => {
     const user = await User.findByEmail(email);
 
     if (!user) {
-      return res.status(401).json({ error: 'Invalid credentials' });
+      return res.status(401).json({ message: 'Usuario o contraseña incorrectos.' });
     }
 
     const valid = await User.verifyPassword(password, user.password);
 
     if (!valid) {
-      return res.status(401).json({ error: 'Invalid credentials' });
+      return res.status(401).json({ message: 'Usuario o contraseña incorrectos.' });
     }
 
     if (user.status === 'banned') {

@@ -1,13 +1,13 @@
-# Apache — trucofx.com
+# Apache — trucofx.com (producción raíz)
 
 ## Archivos
 
 | Archivo | Uso |
 |---------|-----|
 | `trucofx.com.conf` | HTTP → HTTPS + redirect www |
-| `trucofx.com-le-ssl.conf` | HTTPS: estáticos + proxy `/api` y `/socket.io` → `127.0.0.1:5129` |
+| `trucofx.com-le-ssl.conf` | HTTPS: React en `/` + proxy `/api`, `/socket.io`, `/uploads` |
 
-## Instalar en el servidor
+## Instalar
 
 ```bash
 sudo cp trucofx.com.conf /etc/httpd/conf.d/trucofx.com.conf
@@ -16,53 +16,39 @@ sudo apachectl configtest
 sudo systemctl reload httpd
 ```
 
-Si `configtest` falla por `RewriteRule [P]`, habilitar:
+Módulos necesarios: `proxy`, `proxy_http`, `proxy_wstunnel`, `rewrite`, `ssl`
 
 ```bash
-# En RHEL/CentOS suele venir con httpd:
-sudo httpd -M | grep proxy_wstunnel
+sudo httpd -M | grep -E 'proxy|rewrite|ssl'
 ```
 
 ## Rutas
 
 | URL | Destino |
 |-----|---------|
-| `/` | Landing Próximamente (DocumentRoot) |
-| `/test/` | React + `deploy/test/.htaccess` |
+| `/` | React SPA (`front/dist` + `deploy/root/.htaccess`) |
+| `/test/*` | 301 → `https://trucofx.com/*` |
 | `/api/*` | `http://127.0.0.1:5129/api/*` |
-| `/socket.io/*` | WebSocket `ws://127.0.0.1:5129` o polling `http://` (Rewrite) |
+| `/socket.io/*` | WebSocket / polling → Node 5129 |
 | `/uploads/*` | `http://127.0.0.1:5129/uploads/*` |
+| `/sounds/*`, `/cartas-webp/*` | Archivos estáticos en DocumentRoot |
 
-`PORT` en `back/.env` debe coincidir con el proxy (5129).
+`PORT` en `back/.env` debe coincidir con el proxy (ej. `5129`).
 
-## Pruebas obligatorias
+## Pruebas
 
 ```bash
-# 1) Node directo
-curl -i "http://127.0.0.1:5129/socket.io/?EIO=4&transport=polling"
-
-# 2) Por Apache HTTPS
-curl -i "https://trucofx.com/socket.io/?EIO=4&transport=polling"
-
-# 3) Health API (debe ser TrucoFX, no foxinmo)
 curl -s https://trucofx.com/api/health
-
-# 4) configtest
-sudo apachectl configtest
+curl -s "https://trucofx.com/socket.io/?EIO=4&transport=polling" | head -c 100
+curl -sI https://trucofx.com/lobby
+curl -sI https://trucofx.com/test
 ```
 
-Respuesta esperada polling: `0{"sid":"...","upgrades":["websocket"],...}`
-
-## Socket.IO en el vhost
-
-- **No** mezclar `ProxyPass /socket.io` con `RewriteRule [P]` para el mismo path.
-- WebSocket: `Upgrade: websocket` → `ws://127.0.0.1:5129/socket.io/...`
-- Polling: sin Upgrade → `http://127.0.0.1:5129/socket.io/...`
-
-## Logs si falla
+## Logs
 
 ```bash
 sudo tail -f /var/log/httpd/trucofx.com_error.log
-sudo tail -f /var/log/httpd/error_log
 pm2 logs truco-api
 ```
+
+Ver guía completa: [`../DEPLOY.md`](../DEPLOY.md)

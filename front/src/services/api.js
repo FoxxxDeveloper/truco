@@ -14,14 +14,18 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
-// Handle 401 globally
+// Handle 401 globally (session expired), not failed login/register attempts
 api.interceptors.response.use(
   (res) => res,
   (err) => {
     if (err.response?.status === 401) {
-      localStorage.removeItem('truco_token');
-      const base = (import.meta.env.BASE_URL || '/').replace(/\/$/, '') || '';
-      window.location.href = `${base}/login`;
+      const path = err.config?.url || '';
+      const isAuthAttempt = /\/auth\/(login|register)\/?$/.test(path);
+      if (!isAuthAttempt && localStorage.getItem('truco_token')) {
+        localStorage.removeItem('truco_token');
+        const base = (import.meta.env.BASE_URL || '/').replace(/\/$/, '') || '';
+        window.location.href = `${base}/login`;
+      }
     }
     return Promise.reject(err);
   }

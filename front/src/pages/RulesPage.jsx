@@ -405,15 +405,18 @@ const SECTIONS = [
   },
   {
     id: 'scoring',
-    title: 'Puntuación y ELO',
+    title: 'Puntuación y puntos',
     content: (
       <>
         <p>
           Llegás primero a la cantidad de puntos configurada (<strong>15 ó 30</strong>) → ganás la partida.
         </p>
         <ul>
-          <li>Las partidas <strong>Casual</strong> no modifican tu ELO.</li>
-          <li>Las partidas <strong>Ranked</strong> actualizan tu ELO según el sistema Elo estándar.</li>
+          <li>Las partidas <strong>Casual</strong> no modifican tus puntos competitivos.</li>
+          <li>
+            El <strong>Ranking</strong> competitivo estará disponible próximamente; cuando esté activo,
+            las partidas ranked actualizarán tus puntos.
+          </li>
           <li>Las partidas con <strong>apuesta de créditos</strong> liquidan el premio al ganador al finalizar.</li>
         </ul>
       </>

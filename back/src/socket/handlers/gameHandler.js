@@ -15,11 +15,18 @@ const {
   isValidBetType,
   isValidResponse,
 } = require('../../middleware/errorHandler');
-const {
-  beginAction: perfBeginAction,
-  recordEmit: perfRecordEmit,
-  endAction: perfEndAction,
-} = require('../../utils/socketPerfAudit');
+const perfAuditEnabled = process.env.SOCKET_PERF_AUDIT === '1';
+const perfNoop = {
+  beginAction: () => null,
+  recordEmit: () => {},
+  endAction: () => {},
+};
+const perfAudit = perfAuditEnabled
+  ? require('../../utils/socketPerfAudit')
+  : perfNoop;
+const perfBeginAction = perfAudit.beginAction;
+const perfRecordEmit = perfAudit.recordEmit;
+const perfEndAction = perfAudit.endAction;
 
 // ── Disconnection state ────────────────────────────────────────────────────────
 // userId → roomId: tracks which active game each player is in
@@ -594,11 +601,8 @@ function registerGameHandlers(io, socket, user) {
     _resetManualAfk(game, user.id);
     _clearTurnTimer(roomId);
     await _dispatchAfterGameMutation(io, roomId, game, result, {
-      trucoResult: { ...result, respondedBy: user.id },
+      trucoResult: { ...result, respondedBy: user.id, response },
     });
-    if (result.event === 'TRUCO_ANNOUNCED' && response === 'raise') {
-      io.to(roomId).emit('game:trucoAnnounced', { by: user.id, betType: result.betType });
-    }
   });
 
   // ── IRSE AL MAZO ─────────────────────────────────────────────────

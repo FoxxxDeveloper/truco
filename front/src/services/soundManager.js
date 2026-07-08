@@ -167,6 +167,8 @@ export const SOUND_KEYS = Object.freeze(Object.keys(SOUND_MAP));
 const audioByUrl = new Map();
 const lastPlayByKey = new Map();
 const SAME_KEY_DEBOUNCE_MS = 480;
+/** Una sola voz principal a la vez (cantos). */
+let activeVoiceAudio = null;
 
 function parseBool(v, defaultVal) {
   if (v === null || v === undefined) return defaultVal;
@@ -312,6 +314,17 @@ function preloadVoiceSounds() {
   }
 }
 
+export function stopVoiceSounds() {
+  if (!activeVoiceAudio) return;
+  try {
+    activeVoiceAudio.pause();
+    activeVoiceAudio.currentTime = 0;
+  } catch {
+    /* ignore */
+  }
+  activeVoiceAudio = null;
+}
+
 export function preloadSounds() {
   unlockAudio();
   preloadSfxOnly();
@@ -354,9 +367,10 @@ export function playSound(key, opts = {}) {
   const maxAttempts = Math.min(2, candidates.length);
 
   void (async () => {
+    if (!isSfx) stopVoiceSounds();
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       const url = candidates[attempt];
-      const ok = await tryPlayUrlOnce(url, getSoundVolume());
+      const ok = await tryPlayUrlOnce(url, getSoundVolume(), isSfx ? 'sfx' : 'voice');
       if (ok) return;
     }
   })();
@@ -367,7 +381,7 @@ export function playSound(key, opts = {}) {
  * @param {number} volume
  * @returns {Promise<boolean>}
  */
-async function tryPlayUrlOnce(url, volume) {
+async function tryPlayUrlOnce(url, volume, channel = 'sfx') {
   if (!audioByUrl.has(url)) cacheAudioUrl(url);
 
   let audio;
@@ -387,14 +401,23 @@ async function tryPlayUrlOnce(url, volume) {
       settled = true;
       if (tid) clearTimeout(tid);
       audio.removeEventListener('playing', onPlaying);
+      audio.removeEventListener('ended', onEnded);
       audio.removeEventListener('error', onError);
+      if (channel === 'voice' && activeVoiceAudio === audio) {
+        activeVoiceAudio = null;
+      }
       resolve(ok);
     };
 
-    const onPlaying = () => finish(true);
+    const onPlaying = () => {
+      if (channel === 'voice') activeVoiceAudio = audio;
+      finish(true);
+    };
+    const onEnded = () => finish(true);
     const onError = () => finish(false);
 
     audio.addEventListener('playing', onPlaying, { once: true });
+    audio.addEventListener('ended', onEnded, { once: true });
     audio.addEventListener('error', onError, { once: true });
 
     try {
